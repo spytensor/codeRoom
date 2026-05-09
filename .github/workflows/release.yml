@@ -31,11 +31,15 @@ jobs:
             target: aarch64-unknown-linux-gnu
             archive_suffix: linux-aarch64
             use_cross: true
-          - os: macos-13      # x86_64
+          # Both macOS targets cross-compile from macos-latest (aarch64
+          # native + xcode SDK that ships x86_64 stubs). Using macos-13
+          # for x86_64 was unreliable — those runners queue for a long
+          # time when there's contention.
+          - os: macos-latest
             target: x86_64-apple-darwin
             archive_suffix: macos-x86_64
             use_cross: false
-          - os: macos-latest  # aarch64
+          - os: macos-latest
             target: aarch64-apple-darwin
             archive_suffix: macos-aarch64
             use_cross: false
