@@ -10,6 +10,8 @@
 //! trait object-safe for boxed dispatch (`Box<dyn EngineAdapter>`) and
 //! avoids the indirection cost of `async_trait`'s `Pin<Box<...>>` wrapper.
 
+pub mod cc;
+
 use std::path::PathBuf;
 
 use thiserror::Error;
