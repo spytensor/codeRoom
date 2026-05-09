@@ -59,9 +59,9 @@ pub fn parse_line(input: &str) -> Command {
         let arg = parts.next().unwrap_or("").trim();
         return match cmd {
             "exit" | "quit" => Command::Exit,
-            "help" | "h" => Command::Help,
             "stop" if !arg.is_empty() => Command::Stop(arg.to_owned()),
-            _ => Command::Help, // unknown slash command → show help
+            // /help, /h, and any unknown slash command all fall through here.
+            _ => Command::Help,
         };
     }
     if let Some(rest) = trimmed.strip_prefix('@') {
@@ -318,7 +318,11 @@ fn role_color(role: &str) -> crossterm::style::Color {
         crossterm::style::Color::Blue,
         crossterm::style::Color::Red,
     ];
-    palette[(hasher.finish() as usize) % palette.len()]
+    // The modular result is always in `0..palette.len()` (= 6), so the
+    // `as usize` cast cannot truncate even on 32-bit pointer targets.
+    #[allow(clippy::cast_possible_truncation)]
+    let idx = (hasher.finish() % palette.len() as u64) as usize;
+    palette[idx]
 }
 
 fn summarize_tool_input(input: &serde_json::Value) -> String {
