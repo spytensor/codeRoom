@@ -23,10 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install toolchain (rustfmt component)
-        # rust-toolchain.toml pins the channel; this just ensures rustfmt
-        # is present.
-        run: rustup component add rustfmt
+      # rust-toolchain.toml pins channel + components (rustfmt, clippy);
+      # the first cargo invocation activates them.
+      - name: Activate pinned toolchain
+        run: cargo --version
       - run: cargo fmt --all -- --check
 
   clippy:
@@ -35,8 +35,8 @@ jobs:
     needs: fmt
     steps:
       - uses: actions/checkout@v4
-      - name: Install toolchain (clippy component)
-        run: rustup component add clippy
+      - name: Activate pinned toolchain
+        run: cargo --version
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: clippy
@@ -52,16 +52,21 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
+      - name: Activate pinned toolchain
+        run: cargo --version
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}
+      # NOTE: --locked is intentionally omitted until Cargo.lock lands with
+      # the first vertical slice (CC adapter). Re-enable once Cargo.lock is
+      # committed so dependency resolution becomes reproducible across CI runs.
       - name: Build
-        run: cargo build --all-targets --locked
+        run: cargo build --all-targets
       - name: Test
         # Ignored tests touch real CLI engines; CI runs only fast unit/integration
-        # tests by default. Real-engine tests can be invoked manually via
-        # workflow_dispatch with an additional job (TODO: add when needed).
-        run: cargo test --all-features --locked
+        # tests by default. A separate workflow_dispatch job will run real-engine
+        # tests when explicitly requested (added once tests exist).
+        run: cargo test --all-features
 
   shellcheck:
     name: shellcheck (spike scripts)
