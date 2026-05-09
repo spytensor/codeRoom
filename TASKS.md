@@ -17,9 +17,12 @@ Make the first-run CLI experience match the polished terminal UI direction from 
 - [x] Replace the returning `cr start` banner with a persistent config dashboard.
 - [x] Add `croom` as an alias for environments where `cr` conflicts.
 - [x] Fold live tool traces into one per-turn activity summary while keeping full traces in `cr show`.
+- [x] Detect existing host-only `.coderoom/` projects on `cr` start and offer a checkbox role expansion flow.
+- [x] Keep generated role priors short and role-shaped; move long procedures / references toward engine skills or docs instead of bloating every prompt.
 
 ## Notes
 
 - Default interactive `cr init` should be the good path, not a hidden advanced mode.
 - Non-TTY / `-y` paths must not block automation.
 - Existing user changes must not be reverted.
+- Host-only expansion must append roles without overwriting existing priors or user config.

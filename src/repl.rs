@@ -212,8 +212,13 @@ pub async fn run(project_root: &Path) -> Result<()> {
         println!();
     }
 
-    let cfg = Config::load(project_root)
+    let mut cfg = Config::load(project_root)
         .with_context(|| format!("loading config in {project_root:?}"))?;
+    if crate::init::offer_role_expansion(project_root, &cfg)? {
+        cfg = Config::load(project_root)
+            .with_context(|| format!("reloading config in {project_root:?}"))?;
+        println!();
+    }
 
     let first_run = is_first_run(&coderoom_dir);
     print_home(&cfg, &coderoom_dir, project_root, first_run);

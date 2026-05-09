@@ -24,13 +24,15 @@ use crossterm::terminal::{self, Clear, ClearType};
 use crossterm::{execute, queue};
 
 use crate::adapter::Engine;
-use crate::config::{CODEROOM_DIR, CONFIG_FILE, ROLES_DIR};
+use crate::config::{Config, CODEROOM_DIR, CONFIG_FILE, ROLES_DIR};
 use crate::detect::{self, StackSignal};
+use crate::role::{self, RoleAddition};
 
 const DEFAULT_HOST_PRIORS: &str = include_str!("init_defaults/host.md");
 const DEFAULT_SHARED_PRIORS: &str = include_str!("init_defaults/shared.md");
 const DEFAULT_GITIGNORE: &str = include_str!("init_defaults/gitignore");
 const DEFAULT_ROLE_TEMPLATE: &str = include_str!("init_defaults/role_template.md");
+const ROLE_SUGGESTIONS_DISMISSED: &str = "sessions/role-suggestions-dismissed";
 
 const DEFAULT_ENGINE: Engine = Engine::Cc;
 
@@ -56,7 +58,7 @@ const ROLE_CATALOG: &[RoleInfo] = &[
             "routes bare messages, pulls in specialists, and synthesizes",
             "the final answer without pretending to own risky decisions",
         ],
-        estimated_tokens: "2.4k",
+        estimated_tokens: "0.2k",
     },
     RoleInfo {
         name: "backend",
@@ -65,7 +67,7 @@ const ROLE_CATALOG: &[RoleInfo] = &[
             "knows service contracts, persistence rules, migrations,",
             "background jobs, queues, and backend-only gotchas",
         ],
-        estimated_tokens: "3.4k",
+        estimated_tokens: "0.2k",
     },
     RoleInfo {
         name: "frontend",
@@ -74,7 +76,7 @@ const ROLE_CATALOG: &[RoleInfo] = &[
             "knows component conventions, accessibility expectations,",
             "design tokens, state boundaries, and browser-side regressions",
         ],
-        estimated_tokens: "2.8k",
+        estimated_tokens: "0.2k",
     },
     RoleInfo {
         name: "security",
@@ -83,7 +85,7 @@ const ROLE_CATALOG: &[RoleInfo] = &[
             "checks permission boundaries, secrets, auth flows, injection",
             "surfaces, data exposure, and unsafe operational shortcuts",
         ],
-        estimated_tokens: "3.1k",
+        estimated_tokens: "0.2k",
     },
     RoleInfo {
         name: "data",
@@ -92,7 +94,7 @@ const ROLE_CATALOG: &[RoleInfo] = &[
             "tracks schemas, migrations, data quality assumptions,",
             "query plans, retention rules, and reporting contracts",
         ],
-        estimated_tokens: "2.6k",
+        estimated_tokens: "0.2k",
     },
     RoleInfo {
         name: "devops",
@@ -101,7 +103,7 @@ const ROLE_CATALOG: &[RoleInfo] = &[
             "owns deployment shape, environment drift, observability,",
             "container boundaries, and operational recovery paths",
         ],
-        estimated_tokens: "2.7k",
+        estimated_tokens: "0.2k",
     },
     RoleInfo {
         name: "ci",
@@ -110,7 +112,7 @@ const ROLE_CATALOG: &[RoleInfo] = &[
             "keeps test gates, release jobs, artifact generation,",
             "and flaky workflow recovery grounded in the repo",
         ],
-        estimated_tokens: "2.1k",
+        estimated_tokens: "0.2k",
     },
     RoleInfo {
         name: "qa",
@@ -119,7 +121,7 @@ const ROLE_CATALOG: &[RoleInfo] = &[
             "thinks in scenarios, missing coverage, edge conditions,",
             "and the checks that should fail before users do",
         ],
-        estimated_tokens: "2.4k",
+        estimated_tokens: "0.2k",
     },
     RoleInfo {
         name: "docs",
@@ -128,7 +130,7 @@ const ROLE_CATALOG: &[RoleInfo] = &[
             "keeps installation, usage, architecture, and migration",
             "docs accurate enough that users trust the tool",
         ],
-        estimated_tokens: "1.9k",
+        estimated_tokens: "0.2k",
     },
 ];
 
@@ -226,6 +228,221 @@ pub fn run(project_root: &Path, options: InitOptions) -> Result<()> {
         "next: cr start   ·   edit .coderoom/roles/<role>.md when you want deeper priors".dim()
     );
     Ok(())
+}
+
+/// Offer to expand an older/minimal `.coderoom/` that contains only
+/// the default `@host` role. Returns `true` when config changed and
+/// the caller should reload [`Config`] before spawning roles.
+pub fn offer_role_expansion(project_root: &Path, cfg: &Config) -> Result<bool> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Ok(false);
+    }
+    if !is_default_host_only(cfg) || role_suggestions_dismissed(project_root) {
+        return Ok(false);
+    }
+
+    let scan = detect::scan(project_root);
+    if !scan.suggested_roles.iter().any(|role| *role != "host") {
+        return Ok(false);
+    }
+
+    match prompt_role_expansion(&scan)? {
+        ExpansionPrompt::Add => {}
+        ExpansionPrompt::Later => return Ok(false),
+        ExpansionPrompt::Never => {
+            mark_role_suggestions_dismissed(project_root);
+            return Ok(false);
+        }
+    }
+
+    let installed = detect_installed_engines();
+    let default_plan = expansion_default_plan(&scan, cfg, &installed);
+    let Some(plan) =
+        run_role_expansion_picker(project_root, &scan, cfg, &installed, &default_plan)?
+    else {
+        return Ok(false);
+    };
+
+    let additions = role_additions_from_plan(&plan, cfg);
+    if additions.is_empty() {
+        println!("{}", "no new roles selected.".dark_grey());
+        mark_role_suggestions_dismissed(project_root);
+        return Ok(false);
+    }
+
+    let added = role::add_many(project_root, &additions)?;
+    if added == 0 {
+        return Ok(false);
+    }
+
+    let names = additions
+        .iter()
+        .map(|addition| format!("@{}", addition.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!(
+        "{} {}",
+        format!("✓ added {added} role{}", if added == 1 { "" } else { "s" })
+            .green()
+            .bold(),
+        names.dark_grey()
+    );
+    println!(
+        "  {}",
+        "review .coderoom/roles/<role>.md when you want deeper project priors".dark_grey()
+    );
+    Ok(true)
+}
+
+fn is_default_host_only(cfg: &Config) -> bool {
+    cfg.host_role == "host" && cfg.roles.len() == 1 && cfg.roles.contains_key("host")
+}
+
+fn role_suggestions_dismissed(project_root: &Path) -> bool {
+    project_root
+        .join(CODEROOM_DIR)
+        .join(ROLE_SUGGESTIONS_DISMISSED)
+        .exists()
+}
+
+fn mark_role_suggestions_dismissed(project_root: &Path) {
+    let marker = project_root
+        .join(CODEROOM_DIR)
+        .join(ROLE_SUGGESTIONS_DISMISSED);
+    if let Some(parent) = marker.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(marker, b"");
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExpansionPrompt {
+    Add,
+    Later,
+    Never,
+}
+
+fn prompt_role_expansion(scan: &detect::ProjectScan) -> Result<ExpansionPrompt> {
+    let suggested = scan
+        .suggested_roles
+        .iter()
+        .filter(|role| **role != "host")
+        .map(|role| format!("@{role}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    println!();
+    println!("{} {}", "coderoom".bold(), "· role suggestions".dark_grey());
+    println!(
+        "  {} {}",
+        "only @host is configured; local scan suggests".dark_grey(),
+        suggested.with(Color::White)
+    );
+    println!("  {}", "add suggested roles now? [Y/skip/no]".dark_grey());
+
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    loop {
+        print!("roles? [Y/skip/no]  ");
+        stdout.flush().ok();
+        let mut line = String::new();
+        stdin.lock().read_line(&mut line)?;
+        let answer = line.trim().to_ascii_lowercase();
+        match answer.as_str() {
+            "" | "y" | "yes" => return Ok(ExpansionPrompt::Add),
+            "s" | "skip" | "later" => return Ok(ExpansionPrompt::Later),
+            "n" | "no" | "never" | "d" | "dismiss" => return Ok(ExpansionPrompt::Never),
+            _ => println!("(answer y, skip, or no)"),
+        }
+    }
+}
+
+fn expansion_default_plan(
+    scan: &detect::ProjectScan,
+    cfg: &Config,
+    installed: &InstalledEngines,
+) -> Vec<RolePlan> {
+    scan.suggested_roles
+        .iter()
+        .map(|name| RolePlan {
+            name: (*name).to_owned(),
+            engine: expansion_engine_for_role(name, cfg, installed),
+        })
+        .collect()
+}
+
+fn expansion_engine_for_role(role: &str, cfg: &Config, installed: &InstalledEngines) -> Engine {
+    if cfg.default_model.is_none() && matches!(role, "security" | "qa") && installed.codex {
+        Engine::Codex
+    } else {
+        cfg.default_engine
+    }
+}
+
+fn run_role_expansion_picker(
+    project_root: &Path,
+    scan: &detect::ProjectScan,
+    cfg: &Config,
+    installed: &InstalledEngines,
+    default_plan: &[RolePlan],
+) -> Result<Option<Vec<RolePlan>>> {
+    let mut terminal = WizardTerminal::enter()?;
+    let mut choices = build_role_choices(default_plan);
+    let mut cursor = choices
+        .iter()
+        .position(|choice| choice.info.name != "host" && choice.selected)
+        .unwrap_or(0);
+
+    loop {
+        terminal.render(&render_role_expansion_picker(
+            project_root,
+            scan,
+            &choices,
+            cursor,
+        ))?;
+        match read_key()? {
+            WizardKey::Abort | WizardKey::Back => return Ok(None),
+            WizardKey::Left | WizardKey::Right => {}
+            WizardKey::Up => cursor = cursor.saturating_sub(1),
+            WizardKey::Down => {
+                if cursor + 1 < choices.len() {
+                    cursor += 1;
+                }
+            }
+            WizardKey::Toggle => {
+                if choices[cursor].info.name != "host" {
+                    choices[cursor].selected = !choices[cursor].selected;
+                }
+            }
+            WizardKey::Enter => break,
+        }
+    }
+
+    let roles = selected_role_names(&choices);
+    Ok(Some(
+        roles
+            .iter()
+            .map(|name| RolePlan {
+                name: name.clone(),
+                engine: expansion_engine_for_role(name, cfg, installed),
+            })
+            .collect(),
+    ))
+}
+
+fn role_additions_from_plan(plan: &[RolePlan], cfg: &Config) -> Vec<RoleAddition> {
+    plan.iter()
+        .filter(|role| role.name != cfg.host_role && !cfg.roles.contains_key(&role.name))
+        .map(|role| RoleAddition {
+            name: role.name.clone(),
+            engine: if cfg.default_model.is_some() {
+                None
+            } else {
+                (role.engine != cfg.default_engine).then_some(role.engine)
+            },
+            model: None,
+        })
+        .collect()
 }
 
 /// What `cr init` will create on disk, in render order.
@@ -703,6 +920,71 @@ fn render_role_picker(
     out
 }
 
+fn render_role_expansion_picker(
+    project_root: &Path,
+    scan: &detect::ProjectScan,
+    choices: &[RoleChoice],
+    cursor: usize,
+) -> String {
+    let project_name = project_name(project_root);
+    let selected_count = choices
+        .iter()
+        .filter(|choice| choice.selected && choice.info.name != "host")
+        .count();
+    let mut out = String::new();
+
+    push_header(
+        &mut out,
+        &project_name,
+        "suggest roles",
+        "space toggles · enter adds selected roles · esc skips",
+    );
+    push_scan_compact(&mut out, scan);
+    let _ = writeln!(
+        out,
+        "{}",
+        "CodeRoom found only @host. Choose the specialists to add:".dark_grey()
+    );
+    let _ = writeln!(out);
+
+    for (index, choice) in choices.iter().enumerate() {
+        let marker = if index == cursor { "›" } else { " " };
+        let check = if choice.selected { "[x]" } else { "[ ]" };
+        let lock = if choice.info.name == "host" {
+            " existing"
+        } else {
+            ""
+        };
+        let row = format!(
+            "{marker} {check} ● @{:<10} {:<52} {:>5}{lock}",
+            choice.info.name, choice.info.description, choice.info.estimated_tokens
+        );
+        if index == cursor {
+            let _ = writeln!(out, "{}", row.with(Color::White).on(Color::DarkGrey));
+            for line in choice.info.preview {
+                let _ = writeln!(out, "      {} {}", "└─".dark_grey(), line.dark_grey());
+            }
+        } else {
+            let role = format!("@{}", choice.info.name).with(role_color(choice.info.name));
+            let _ = writeln!(
+                out,
+                "{marker} {check} ● {:<19} {:<52} {:>5}{lock}",
+                role,
+                choice.info.description.dark_grey(),
+                choice.info.estimated_tokens.dark_grey()
+            );
+        }
+    }
+
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "{}",
+        format!("{selected_count} new roles selected · enter writes config and priors").dark_grey()
+    );
+    out
+}
+
 fn render_engine_picker(
     project_root: &Path,
     installed: &InstalledEngines,
@@ -1142,9 +1424,20 @@ fn bin_present(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::{Config, RoleEntry};
     use pretty_assertions::assert_eq;
+    use std::collections::HashMap;
     use tempfile::TempDir;
+
+    fn host_only_config(default_engine: Engine, default_model: Option<&str>) -> Config {
+        Config {
+            default_engine,
+            default_model: default_model.map(ToOwned::to_owned),
+            budget_per_role_usd: 0.50,
+            host_role: "host".into(),
+            roles: HashMap::from([("host".into(), RoleEntry::default())]),
+        }
+    }
 
     #[test]
     fn init_yes_creates_minimal_valid_layout() {
@@ -1174,6 +1467,70 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join(CODEROOM_DIR)).unwrap();
         let err = run(tmp.path(), InitOptions::auto()).expect_err("should refuse to overwrite");
         assert!(err.to_string().contains("already exists"), "got: {err}");
+    }
+
+    #[test]
+    fn default_host_only_config_is_expandable() {
+        let cfg = host_only_config(Engine::Cc, None);
+        assert!(is_default_host_only(&cfg));
+
+        let mut cfg_with_backend = cfg.clone();
+        cfg_with_backend
+            .roles
+            .insert("backend".into(), RoleEntry::default());
+        assert!(!is_default_host_only(&cfg_with_backend));
+    }
+
+    #[test]
+    fn expansion_defaults_keep_model_engine_pair_safe() {
+        let cfg = host_only_config(Engine::Cc, Some("opus"));
+        let installed = InstalledEngines {
+            cc: true,
+            codex: true,
+            gemini: false,
+        };
+
+        assert_eq!(
+            expansion_engine_for_role("security", &cfg, &installed),
+            Engine::Cc
+        );
+        let additions = role_additions_from_plan(
+            &[RolePlan {
+                name: "security".into(),
+                engine: Engine::Codex,
+            }],
+            &cfg,
+        );
+        assert_eq!(additions[0].engine, None);
+    }
+
+    #[test]
+    fn expansion_uses_codex_for_security_when_no_default_model_can_leak() {
+        let cfg = host_only_config(Engine::Cc, None);
+        let installed = InstalledEngines {
+            cc: true,
+            codex: true,
+            gemini: false,
+        };
+        let engine = expansion_engine_for_role("security", &cfg, &installed);
+        assert_eq!(engine, Engine::Codex);
+
+        let additions = role_additions_from_plan(
+            &[RolePlan {
+                name: "security".into(),
+                engine,
+            }],
+            &cfg,
+        );
+        assert_eq!(additions[0].engine, Some(Engine::Codex));
+        assert_eq!(additions[0].model, None);
+    }
+
+    #[test]
+    fn default_priors_templates_stay_compact() {
+        assert!(word_count(DEFAULT_HOST_PRIORS) <= 90);
+        assert!(word_count(DEFAULT_ROLE_TEMPLATE) <= 90);
+        assert!(word_count(DEFAULT_SHARED_PRIORS) <= 45);
     }
 
     #[test]
@@ -1238,5 +1595,9 @@ mod tests {
                 "/tmp/p/.coderoom/.gitignore",
             ]
         );
+    }
+
+    fn word_count(input: &str) -> usize {
+        input.split_whitespace().count()
     }
 }

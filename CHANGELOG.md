@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (nothing yet)
 
+## [0.1.7] - 2026-05-09
+
+### Added
+
+- `cr` / `cr start` now detect existing projects that still have only
+  the default `@host` role and offer an opt-in role suggestion flow.
+  Users can checkbox the specialists they want, and CodeRoom appends
+  config + priors in one loadable write.
+
+### Changed
+
+- Generated host / specialist / shared priors are now compact role
+  boundaries instead of long placeholder instructions. The default
+  guidance now points long procedures and reference material toward
+  engine skills or project docs rather than burning context in every
+  role prompt.
+- Role expansion never blocks non-TTY sessions, never overwrites
+  existing role priors, and avoids cross-engine default-model leaks
+  when adding suggested roles.
+
 ## [0.1.6] - 2026-05-09
 
 ### Changed
@@ -261,7 +281,8 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.7
 [0.1.6]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.6
 [0.1.5]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.5
 [0.1.4]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.4

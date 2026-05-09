@@ -5,6 +5,7 @@
 //! [`crate::config::Config::load`] enforces at REPL startup, so the
 //! generated state is always loadable.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -16,6 +17,19 @@ use crate::config_layered::ProjectConfigRaw;
 /// Default body for a freshly-scaffolded role priors file. Users are
 /// expected to replace this with project-specific guidance.
 const DEFAULT_ROLE_PRIORS: &str = include_str!("init_defaults/role_template.md");
+
+/// One role to append to an existing `.coderoom/` project config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RoleAddition {
+    /// Role name without the leading `@`.
+    pub(crate) name: String,
+    /// Project-layer engine override. `None` inherits the effective
+    /// default engine.
+    pub(crate) engine: Option<Engine>,
+    /// Project-layer model override. `None` inherits the effective
+    /// model for that engine.
+    pub(crate) model: Option<String>,
+}
 
 /// Add a new role. Updates `config.toml` (inserts `[roles.<name>]` with
 /// optional engine/model overrides), then creates an empty priors file
@@ -64,6 +78,46 @@ pub fn add(
     println!("  edit the priors file, then `cr start` (or `/refresh @{name}` if running)");
 
     Ok(())
+}
+
+/// Add several roles in one config write. Priors files are created
+/// before `config.toml` is updated, so a file-write failure cannot
+/// leave config pointing at a missing role priors file.
+pub(crate) fn add_many(project_root: &Path, additions: &[RoleAddition]) -> Result<usize> {
+    let coderoom_dir = project_root.join(CODEROOM_DIR);
+    if !coderoom_dir.is_dir() {
+        bail!("{} not found — run `cr init` first", coderoom_dir.display(),);
+    }
+
+    let raw = read_project_raw(&coderoom_dir)?;
+    let mut to_add = Vec::new();
+    for addition in additions {
+        validate_name(&addition.name)?;
+        if raw.roles.contains_key(&addition.name) {
+            continue;
+        }
+        to_add.push(addition.clone());
+    }
+    if to_add.is_empty() {
+        return Ok(0);
+    }
+
+    let updated_config = append_roles_config_body(&coderoom_dir, &to_add)?;
+
+    let roles_dir = coderoom_dir.join(ROLES_DIR);
+    std::fs::create_dir_all(&roles_dir)
+        .with_context(|| format!("creating {}", roles_dir.display()))?;
+    for addition in &to_add {
+        let priors_path = roles_dir.join(format!("{}.md", addition.name));
+        if !priors_path.exists() {
+            std::fs::write(&priors_path, render_role_template(&addition.name))
+                .with_context(|| format!("writing {}", priors_path.display()))?;
+        }
+    }
+
+    write_project_text(&coderoom_dir, &updated_config)?;
+
+    Ok(to_add.len())
 }
 
 /// Print the configured roles, one per line, with engine + host marker.
@@ -159,10 +213,46 @@ fn read_project_raw(coderoom_dir: &Path) -> Result<ProjectConfigRaw> {
 }
 
 fn write_project_raw(coderoom_dir: &Path, raw: &ProjectConfigRaw) -> Result<()> {
-    let path = coderoom_dir.join(CONFIG_FILE);
     let body = toml::to_string_pretty(raw).map_err(|e| anyhow!("serializing config.toml: {e}"))?;
+    write_project_text(coderoom_dir, &body)?;
+    Ok(())
+}
+
+fn write_project_text(coderoom_dir: &Path, body: &str) -> Result<()> {
+    let path = coderoom_dir.join(CONFIG_FILE);
     std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
+}
+
+fn append_roles_config_body(coderoom_dir: &Path, additions: &[RoleAddition]) -> Result<String> {
+    let path = coderoom_dir.join(CONFIG_FILE);
+    let mut body =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    if !body.ends_with('\n') {
+        body.push('\n');
+    }
+    if !body.ends_with("\n\n") {
+        body.push('\n');
+    }
+
+    for addition in additions {
+        writeln!(&mut body, "[roles.{}]", addition.name)
+            .expect("writing role table header to string should not fail");
+        if let Some(engine) = addition.engine {
+            writeln!(&mut body, "engine = \"{}\"", engine.as_str())
+                .expect("writing role engine to string should not fail");
+        }
+        if let Some(model) = &addition.model {
+            let value = toml::Value::String(model.clone());
+            writeln!(&mut body, "model = {value}")
+                .expect("writing role model to string should not fail");
+        }
+        body.push('\n');
+    }
+
+    let _validated: ProjectConfigRaw =
+        toml::from_str(&body).with_context(|| format!("validating {}", path.display()))?;
+    Ok(body)
 }
 
 fn render_role_template(name: &str) -> String {
@@ -216,6 +306,91 @@ host_role = "host"
         let entry = cfg.roles.get("security").unwrap();
         assert_eq!(entry.engine, Some(Engine::Codex));
         assert_eq!(entry.model.as_deref(), Some("o3"));
+    }
+
+    #[test]
+    fn add_many_creates_roles_in_one_loadable_batch() {
+        let tmp = fixture();
+        let added = add_many(
+            tmp.path(),
+            &[
+                RoleAddition {
+                    name: "backend".into(),
+                    engine: None,
+                    model: None,
+                },
+                RoleAddition {
+                    name: "security".into(),
+                    engine: Some(Engine::Codex),
+                    model: None,
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(added, 2);
+        let cfg = Config::load_test(tmp.path()).unwrap();
+        assert!(cfg.roles.contains_key("backend"));
+        assert_eq!(cfg.roles["security"].engine, Some(Engine::Codex));
+        assert!(tmp
+            .path()
+            .join(CODEROOM_DIR)
+            .join(ROLES_DIR)
+            .join("backend.md")
+            .is_file());
+        assert!(tmp
+            .path()
+            .join(CODEROOM_DIR)
+            .join(ROLES_DIR)
+            .join("security.md")
+            .is_file());
+    }
+
+    #[test]
+    fn add_many_skips_existing_roles() {
+        let tmp = fixture();
+        let added = add_many(
+            tmp.path(),
+            &[RoleAddition {
+                name: "host".into(),
+                engine: None,
+                model: None,
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(added, 0);
+    }
+
+    #[test]
+    fn add_many_preserves_existing_config_text() {
+        let tmp = fixture();
+        let config_path = tmp.path().join(CODEROOM_DIR).join(CONFIG_FILE);
+        fs::write(
+            &config_path,
+            r#"# keep this comment
+default_engine = "cc"
+budget_per_role_usd = 0.50
+host_role = "host"
+
+[roles.host]
+"#,
+        )
+        .unwrap();
+
+        add_many(
+            tmp.path(),
+            &[RoleAddition {
+                name: "backend".into(),
+                engine: None,
+                model: None,
+            }],
+        )
+        .unwrap();
+
+        let body = fs::read_to_string(config_path).unwrap();
+        assert!(body.contains("# keep this comment"));
+        assert!(body.contains("[roles.backend]"));
     }
 
     #[test]

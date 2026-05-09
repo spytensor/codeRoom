@@ -1,12 +1,8 @@
 # Shared priors
 
-Loaded by every role in this project. Put cross-cutting facts here so they
-don't get duplicated across role files:
+Loaded by every role. Keep only facts everyone needs: project purpose,
+stack, commands, repo conventions, and deploy or test constraints.
 
-- Project name and one-line description
-- Languages and frameworks in use
-- Build / test / deploy commands
-- Anything every role needs to know regardless of viewpoint
-
-Keep this short. Role-specific knowledge belongs in
-`.coderoom/roles/<name>.md`, not here.
+Prefer short bullets. Role-specific detail belongs in
+`.coderoom/roles/<name>.md`; long procedures or reference material should
+live in an engine skill or project doc.

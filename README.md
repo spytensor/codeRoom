@@ -8,11 +8,12 @@
 [![CI](https://github.com/spytensor/codeRoom/actions/workflows/ci.yml/badge.svg)](https://github.com/spytensor/codeRoom/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **Status: v0.1.6 — user-runnable, still pre-1.0.** Claude Code,
+> **Status: v0.1.7 — user-runnable, still pre-1.0.** Claude Code,
 > Codex, and Gemini adapters are wired up; bare `cr` now opens CodeRoom
 > directly, guides setup when `.coderoom/` is missing, and shows the
-> effective role / engine / model configuration on entry. Per semver,
-> 0.x.y means the public API is not yet stable.
+> effective role / engine / model configuration on entry. Existing
+> host-only rooms get an opt-in role suggestion flow. Per semver, 0.x.y
+> means the public API is not yet stable.
 
 ## Why
 
@@ -32,6 +33,9 @@ reply.
   `codex`, `@frontend` on `gemini`. No other tool does this today.
 - **One chat stream, not split panes.** Single message log per project,
   colored by role.
+- **Short role priors by default.** Generated roles start with compact
+  responsibilities; long procedures and reference material belong in
+  the underlying engine's skills or project docs, not every role prompt.
 - **Daily journals.** Every role writes an end-of-session log with cited
   evidence. Auto-loaded for the next 7 days.
 - **Patches.** `/patch <role> "..."` saves a session-time correction; the
@@ -78,7 +82,7 @@ aarch64.
 <summary>Don't have npm? Direct binary install.</summary>
 
 ```bash
-TAG=v0.1.6
+TAG=v0.1.7
 ARCH=$(uname -m); case "$ARCH" in arm64|aarch64) ARCH=aarch64 ;; *) ARCH=x86_64 ;; esac
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 curl -fsSL "https://github.com/spytensor/codeRoom/releases/download/${TAG}/cr-${TAG}-${OS}-${ARCH}.tar.gz" \
@@ -127,6 +131,9 @@ Useful commands:
 
 - `cr` and `cr start` both enter the room; if `.coderoom/` is missing, an
   interactive terminal gets the guided setup first.
+- Existing projects with only the default `@host` role get a local-scan
+  role suggestion picker on entry, so users can add specialists without
+  hand-editing config.
 - `cr init` runs setup explicitly when you want to prepare the project without
   entering the REPL.
 - `cr role add <name> --engine codex` adds or pins a specialist role.
