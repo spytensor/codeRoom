@@ -57,6 +57,17 @@ enum Cmd {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Per-role cost summary aggregated from `.coderoom/messages.jsonl`.
+    Cost {
+        /// Project root. Defaults to the current working directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Skip the log entirely if its mtime is older than this date
+        /// (`YYYY-MM-DD`). v0.1 limitation — proper per-event timestamps
+        /// land in v0.2.
+        #[arg(long)]
+        since: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -146,6 +157,22 @@ fn main() -> Result<()> {
             runtime.block_on(async move {
                 let project_root = project_root_or_cwd(project)?;
                 coderoom::repl::show_log(&project_root).await
+            })
+        }
+        Some(Cmd::Cost { project, since }) => {
+            let since_date = match since {
+                Some(s) => Some(
+                    chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+                        .map_err(|e| anyhow::anyhow!("--since must be YYYY-MM-DD: {e}"))?,
+                ),
+                None => None,
+            };
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async move {
+                let project_root = project_root_or_cwd(project)?;
+                coderoom::cost::run(&project_root, since_date).await
             })
         }
     }
