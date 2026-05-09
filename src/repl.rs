@@ -131,7 +131,8 @@ struct RunningRole {
     /// path passed to the engine via `--append-system-prompt-file`
     /// remains valid until the subprocess has fully read it. Dropped
     /// at role removal, which deletes the file.
-    _priors_temp: NamedTempFile,
+    #[allow(dead_code, reason = "kept alive only for its Drop side-effect (tempfile cleanup)")]
+    priors_temp: NamedTempFile,
 }
 
 /// REPL entry point. Loads config, spawns every declared role, forwards
@@ -183,27 +184,7 @@ pub async fn run(project_root: &Path) -> Result<()> {
                 }
             }
             Command::Refresh(role) => {
-                if !cfg.roles.contains_key(&role) {
-                    println!("{}", format!("no such role: @{role}").red());
-                    continue;
-                }
-                if let Some(old) = roles.remove(&role) {
-                    drop(old.tx_user);
-                    drop(old._priors_temp);
-                    println!("{}", format!("refreshing @{role}...").dim());
-                }
-                match spawn_role(&cfg, &cc_adapter, &coderoom_dir, &role, &bus).await {
-                    Ok(running) => {
-                        roles.insert(role.clone(), running);
-                        println!("{}", format!("✓ @{role} refreshed").green());
-                    }
-                    Err(error) => {
-                        println!(
-                            "{}",
-                            format!("✗ refreshing @{role} failed: {error:#}").red()
-                        );
-                    }
-                }
+                refresh_role(&cfg, &cc_adapter, &coderoom_dir, &bus, &mut roles, &role).await;
             }
             Command::Patch { role, text } => {
                 if !cfg.roles.contains_key(&role) {
@@ -437,6 +418,40 @@ fn truncate_inline(s: &str, max_chars: usize) -> String {
     out
 }
 
+/// Drop the running role and re-spawn it with the freshly composed
+/// priors. Validates that the role exists in the loaded config; prints
+/// status to stdout via the same coloured channel as the rest of the
+/// REPL.
+async fn refresh_role(
+    cfg: &Config,
+    cc_adapter: &CcAdapter,
+    coderoom_dir: &Path,
+    bus: &Arc<MessageBus>,
+    roles: &mut HashMap<String, RunningRole>,
+    role: &str,
+) {
+    if !cfg.roles.contains_key(role) {
+        println!("{}", format!("no such role: @{role}").red());
+        return;
+    }
+    if let Some(old) = roles.remove(role) {
+        drop(old);
+        println!("{}", format!("refreshing @{role}...").dim());
+    }
+    match spawn_role(cfg, cc_adapter, coderoom_dir, role, bus).await {
+        Ok(running) => {
+            roles.insert(role.to_owned(), running);
+            println!("{}", format!("✓ @{role} refreshed").green());
+        }
+        Err(error) => {
+            println!(
+                "{}",
+                format!("✗ refreshing @{role} failed: {error:#}").red()
+            );
+        }
+    }
+}
+
 /// Compose priors, stage them in a tempfile, spawn the role's
 /// subprocess via the configured engine adapter, and wire its event
 /// stream into `bus`. Returns the [`RunningRole`] the REPL should
@@ -450,7 +465,7 @@ async fn spawn_role(
 ) -> Result<RunningRole> {
     let composed = priors::compose_for(coderoom_dir, name)
         .with_context(|| format!("composing priors for role `{name}`"))?;
-    let priors_temp = write_priors_tempfile(name, &composed)
+    let priors_temp = writepriors_tempfile(name, &composed)
         .with_context(|| format!("staging priors for role `{name}`"))?;
 
     let mut role_cfg = cfg
@@ -480,7 +495,7 @@ async fn spawn_role(
     spawn_event_forwarder(rname, rx_events, Arc::clone(bus));
     Ok(RunningRole {
         tx_user,
-        _priors_temp: priors_temp,
+        priors_temp: priors_temp,
     })
 }
 
@@ -488,7 +503,7 @@ async fn spawn_role(
 /// tempfile name embeds the role for easier debugging when something
 /// goes wrong. Caller is expected to keep the returned `NamedTempFile`
 /// alive for as long as the engine subprocess might re-read the file.
-fn write_priors_tempfile(role: &str, composed: &str) -> Result<NamedTempFile> {
+fn writepriors_tempfile(role: &str, composed: &str) -> Result<NamedTempFile> {
     let mut tempfile = tempfile::Builder::new()
         .prefix(&format!("coderoom-priors-{role}-"))
         .suffix(".md")
