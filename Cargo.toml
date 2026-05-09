@@ -37,7 +37,7 @@ toml = "0.8"
 clap = { version = "4.5", features = ["derive", "env"] }
 
 # Terminal
-crossterm = "0.28"
+crossterm = "0.29"
 
 # Errors
 thiserror = "2.0"
