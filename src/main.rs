@@ -51,6 +51,12 @@ enum Cmd {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Replay `.coderoom/messages.jsonl` through the live renderer.
+    Show {
+        /// Project root. Defaults to the current working directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -131,6 +137,15 @@ fn main() -> Result<()> {
             runtime.block_on(async move {
                 let project_root = project_root_or_cwd(project)?;
                 coderoom::repl::run(&project_root).await
+            })
+        }
+        Some(Cmd::Show { project }) => {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async move {
+                let project_root = project_root_or_cwd(project)?;
+                coderoom::repl::show_log(&project_root).await
             })
         }
     }

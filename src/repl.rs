@@ -54,6 +54,9 @@ pub enum Command {
     /// composed priors (shared.md + role.md + active patches). The
     /// old subprocess is dropped; a fresh one starts.
     Refresh(String),
+    /// `/transcript <role>` — show the last few RoleSpoke entries for a
+    /// role from `.coderoom/messages.jsonl`.
+    Transcript(String),
     /// `/stop <role>` — terminate the named role's subprocess.
     Stop(String),
     /// `/help` — print the help banner.
@@ -84,6 +87,14 @@ pub fn parse_line(input: &str) -> Command {
                     Command::Help
                 } else {
                     Command::Refresh(role)
+                }
+            }
+            "transcript" if !arg.is_empty() => {
+                let role = arg.strip_prefix('@').unwrap_or(arg).to_owned();
+                if role.is_empty() {
+                    Command::Help
+                } else {
+                    Command::Transcript(role)
                 }
             }
             "patch" => parse_patch_arg(arg).unwrap_or(Command::Help),
@@ -211,6 +222,9 @@ pub async fn run(project_root: &Path) -> Result<()> {
             Command::Refresh(role) => {
                 refresh_role(&cfg, &adapters, &coderoom_dir, &bus, &mut roles, &role).await;
             }
+            Command::Transcript(role) => {
+                show_transcript(&coderoom_dir, &role).await;
+            }
             Command::Patch { role, text } => {
                 if !cfg.roles.contains_key(&role) {
                     println!("{}", format!("no such role: @{role}").red());
@@ -284,6 +298,7 @@ fn print_help(cfg: &Config) {
     println!("  <text>              send to host (@{})", cfg.host_role);
     println!("  /patch <role> <…>   save a correction; loads on next /refresh");
     println!("  /refresh <role>     re-instantiate role with latest priors+patches");
+    println!("  /transcript <role>  show that role's recent spoken turns");
     println!("  /stop <role>        terminate a role's subprocess");
     println!("  /help               this help");
     println!("  /exit, /quit        leave the REPL");
@@ -387,6 +402,65 @@ async fn drain_one_turn(
         }
     }
     Ok(captured)
+}
+
+/// Replay every event in `.coderoom/messages.jsonl` through the same
+/// renderer the live REPL uses. Used by `cr show`.
+pub async fn show_log(project_root: &Path) -> Result<()> {
+    let coderoom_dir = project_root.join(CODEROOM_DIR);
+    let log_path = coderoom_dir.join("messages.jsonl");
+    if !log_path.is_file() {
+        println!("(no messages — has `cr start` ever run in this project?)");
+        return Ok(());
+    }
+    let events = MessageBus::replay(&log_path).await?;
+    if events.is_empty() {
+        println!("(message log is empty)");
+        return Ok(());
+    }
+    for event in &events {
+        render_event(event);
+    }
+    Ok(())
+}
+
+/// In-REPL: print the last few RoleSpoke events for `role` from the
+/// active session's message log.
+async fn show_transcript(coderoom_dir: &Path, role: &str) {
+    const TAIL: usize = 5;
+    let log_path = coderoom_dir.join("messages.jsonl");
+    if !log_path.is_file() {
+        println!("{}", "(no messages logged yet this session)".dim());
+        return;
+    }
+    match MessageBus::replay(&log_path).await {
+        Ok(events) => {
+            let filtered: Vec<&CrepEvent> = events
+                .iter()
+                .filter(|e| matches!(e, CrepEvent::RoleSpoke { role: r, .. } if r == role))
+                .collect();
+            if filtered.is_empty() {
+                println!("{}", format!("(no spoken turns from @{role} yet)").dim());
+                return;
+            }
+            let start = filtered.len().saturating_sub(TAIL);
+            println!(
+                "{}",
+                format!(
+                    "── @{role}: last {} of {} turn(s) ──",
+                    filtered.len() - start,
+                    filtered.len()
+                )
+                .dim()
+            );
+            for event in &filtered[start..] {
+                render_event(event);
+            }
+        }
+        Err(error) => {
+            println!("{}", format!("✗ failed to read message log: {error}").red());
+        }
+    }
 }
 
 fn render_event(event: &CrepEvent) {
@@ -727,6 +801,23 @@ mod tests {
     #[test]
     fn parse_refresh_without_role_shows_help() {
         assert_eq!(parse_line("/refresh"), Command::Help);
+    }
+
+    #[test]
+    fn parse_transcript_with_role() {
+        assert_eq!(
+            parse_line("/transcript backend"),
+            Command::Transcript("backend".into())
+        );
+        assert_eq!(
+            parse_line("/transcript @backend"),
+            Command::Transcript("backend".into())
+        );
+    }
+
+    #[test]
+    fn parse_transcript_without_role_shows_help() {
+        assert_eq!(parse_line("/transcript"), Command::Help);
     }
 
     #[test]
