@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (nothing yet)
 
+## [0.1.6] - 2026-05-09
+
+### Changed
+
+- Live REPL turns now fold `ToolCallProposed` / `ToolCallExecuted`
+  chatter into one dim activity summary, so internal Read / Bash /
+  search traces no longer flood the main conversation.
+- Full tool traces still persist in `.coderoom/messages.jsonl` and
+  remain visible through `cr show` for audits and debugging.
+
 ## [0.1.5] - 2026-05-09
 
 ### Changed
@@ -251,7 +261,8 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.6
 [0.1.5]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.5
 [0.1.4]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.4
 [0.1.3]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.3

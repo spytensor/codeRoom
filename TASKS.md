@@ -16,6 +16,7 @@ Make the first-run CLI experience match the polished terminal UI direction from 
 - [x] Make bare `cr` enter CodeRoom directly and send missing-config users through guided setup.
 - [x] Replace the returning `cr start` banner with a persistent config dashboard.
 - [x] Add `croom` as an alias for environments where `cr` conflicts.
+- [x] Fold live tool traces into one per-turn activity summary while keeping full traces in `cr show`.
 
 ## Notes
 

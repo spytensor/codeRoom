@@ -8,7 +8,7 @@
 //! Cross-role auto-routing (when one role writes `@x` in its reply) and
 //! concurrent role rendering are deferred to a follow-up PR.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{IsTerminal, Write as _};
 use std::path::Path;
 use std::sync::Arc;
@@ -658,6 +658,11 @@ fn print_help(cfg: &Config) {
     println!("  /stop <role>        terminate a role's subprocess");
     println!("  /help               this help");
     println!("  /exit, /quit        leave the REPL");
+    println!();
+    println!(
+        "{}",
+        "tool traces are folded live; run `cr show` for the full event log".dim()
+    );
 }
 
 /// Send `text` to `role` and drain bus events until that role finishes
@@ -780,12 +785,101 @@ struct CapturedTurn {
     mentions: Vec<String>,
 }
 
+/// Fold noisy tool events during a live turn. Full details are still
+/// persisted in `.coderoom/messages.jsonl`; this keeps the terminal
+/// focused on the user's prompt and the role's final answer.
+#[derive(Debug, Default)]
+struct TurnActivity {
+    proposed: usize,
+    completed: usize,
+    failed: usize,
+    tools: BTreeMap<String, usize>,
+}
+
+impl TurnActivity {
+    fn from_foldable_event(event: &CrepEvent, active_role: &str) -> Option<Self> {
+        match event {
+            CrepEvent::ToolCallProposed {
+                role, tool_name, ..
+            } if role == active_role => {
+                let mut tools = BTreeMap::new();
+                tools.insert(tool_name.clone(), 1);
+                Some(Self {
+                    proposed: 1,
+                    tools,
+                    ..Self::default()
+                })
+            }
+            CrepEvent::ToolCallExecuted { role, ok, .. } if role == active_role => Some(Self {
+                completed: 1,
+                failed: usize::from(!ok),
+                ..Self::default()
+            }),
+            _ => None,
+        }
+    }
+
+    fn merge_into(self, other: &mut Self) {
+        other.proposed += self.proposed;
+        other.completed += self.completed;
+        other.failed += self.failed;
+        for (tool, count) in self.tools {
+            *other.tools.entry(tool).or_default() += count;
+        }
+    }
+
+    fn summary_line(&self, role: &str) -> Option<String> {
+        if self.proposed == 0 && self.completed == 0 {
+            return None;
+        }
+
+        let mut parts = self
+            .tools
+            .iter()
+            .take(4)
+            .map(|(tool, count)| {
+                if *count == 1 {
+                    tool.clone()
+                } else {
+                    format!("{tool}×{count}")
+                }
+            })
+            .collect::<Vec<_>>();
+        let hidden = self.tools.len().saturating_sub(parts.len());
+        if hidden > 0 {
+            parts.push(format!("+{hidden}"));
+        }
+        let tools = if parts.is_empty() {
+            "tools".to_owned()
+        } else {
+            parts.join(", ")
+        };
+        let status = if self.failed == 0 {
+            format!("{} ok", self.completed)
+        } else {
+            format!(
+                "{} ok, {} failed",
+                self.completed - self.failed,
+                self.failed
+            )
+        };
+        Some(format!("  @{role} tools folded · {tools} · {status}"))
+    }
+
+    fn render_summary(&self, role: &str) {
+        if let Some(line) = self.summary_line(role) {
+            println!("{}", line.dim());
+        }
+    }
+}
+
 /// Send `text` to `role` and drain bus events until that role's turn
 /// ends. Returns the captured `RoleSpoke` info, or `None` if the role
 /// stopped before producing a `RoleSpoke` (e.g., immediate crash).
 ///
-/// All events are rendered along the way; this only returns to the
-/// caller once the role's turn boundary is observed.
+/// Tool chatter is folded into a one-line live summary; full events are
+/// still persisted in the JSONL log. This only returns to the caller
+/// once the role's turn boundary is observed.
 async fn drain_one_turn(
     roles: &HashMap<String, RunningRole>,
     rx: &mut tokio::sync::broadcast::Receiver<CrepEvent>,
@@ -807,6 +901,7 @@ async fn drain_one_turn(
     }
 
     let mut captured: Option<CapturedTurn> = None;
+    let mut activity = TurnActivity::default();
     let mut spinner = ThinkingSpinner::start(role);
     let mut ticker = tokio::time::interval(Duration::from_millis(SPINNER_TICK_MS));
     // Skip the immediate fire so the spinner doesn't double-redraw on entry.
@@ -816,8 +911,12 @@ async fn drain_one_turn(
             biased;
             recv = rx.recv() => match recv {
                 Ok(event) => {
+                    if let Some(hidden) = TurnActivity::from_foldable_event(&event, role) {
+                        hidden.merge_into(&mut activity);
+                        continue;
+                    }
+
                     spinner.clear();
-                    render_event(&event);
                     let done = match &event {
                         CrepEvent::RoleSpoke {
                             role: spoken,
@@ -829,10 +928,19 @@ async fn drain_one_turn(
                                 text: text.clone(),
                                 mentions: mentions.clone(),
                             });
+                            activity.render_summary(role);
+                            render_event(&event);
                             true
                         }
-                        CrepEvent::RoleStopped { role: stopped, .. } if stopped == role => true,
-                        _ => false,
+                        CrepEvent::RoleStopped { role: stopped, .. } if stopped == role => {
+                            activity.render_summary(role);
+                            render_event(&event);
+                            true
+                        }
+                        _ => {
+                            render_event(&event);
+                            false
+                        }
                     };
                     if done {
                         break;
@@ -1374,6 +1482,58 @@ mod tests {
         // Idempotent: second mark is a no-op (same path, same content)
         mark_welcomed(&coderoom);
         assert!(!is_first_run(&coderoom));
+    }
+
+    #[test]
+    fn turn_activity_folds_tool_events() {
+        let mut activity = TurnActivity::default();
+        for event in [
+            CrepEvent::ToolCallProposed {
+                role: "host".into(),
+                tool_name: "Read".into(),
+                tool_input: serde_json::json!({"file_path": "README.md"}),
+                tool_use_id: "1".into(),
+            },
+            CrepEvent::ToolCallProposed {
+                role: "host".into(),
+                tool_name: "Bash".into(),
+                tool_input: serde_json::json!({"command": "ls"}),
+                tool_use_id: "2".into(),
+            },
+            CrepEvent::ToolCallExecuted {
+                role: "host".into(),
+                tool_use_id: "1".into(),
+                ok: true,
+                output_summary: "README.md".into(),
+            },
+            CrepEvent::ToolCallExecuted {
+                role: "host".into(),
+                tool_use_id: "2".into(),
+                ok: true,
+                output_summary: "Cargo.toml".into(),
+            },
+        ] {
+            TurnActivity::from_foldable_event(&event, "host")
+                .expect("foldable")
+                .merge_into(&mut activity);
+        }
+
+        assert_eq!(
+            activity.summary_line("host").as_deref(),
+            Some("  @host tools folded · Bash, Read · 2 ok")
+        );
+    }
+
+    #[test]
+    fn turn_activity_ignores_other_roles() {
+        let event = CrepEvent::ToolCallProposed {
+            role: "security".into(),
+            tool_name: "Read".into(),
+            tool_input: serde_json::json!({"file_path": "README.md"}),
+            tool_use_id: "1".into(),
+        };
+
+        assert!(TurnActivity::from_foldable_event(&event, "host").is_none());
     }
 
     #[test]

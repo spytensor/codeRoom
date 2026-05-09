@@ -8,7 +8,7 @@
 [![CI](https://github.com/spytensor/codeRoom/actions/workflows/ci.yml/badge.svg)](https://github.com/spytensor/codeRoom/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **Status: v0.1.5 — user-runnable, still pre-1.0.** Claude Code,
+> **Status: v0.1.6 — user-runnable, still pre-1.0.** Claude Code,
 > Codex, and Gemini adapters are wired up; bare `cr` now opens CodeRoom
 > directly, guides setup when `.coderoom/` is missing, and shows the
 > effective role / engine / model configuration on entry. Per semver,
@@ -78,7 +78,7 @@ aarch64.
 <summary>Don't have npm? Direct binary install.</summary>
 
 ```bash
-TAG=v0.1.5
+TAG=v0.1.6
 ARCH=$(uname -m); case "$ARCH" in arm64|aarch64) ARCH=aarch64 ;; *) ARCH=x86_64 ;; esac
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 curl -fsSL "https://github.com/spytensor/codeRoom/releases/download/${TAG}/cr-${TAG}-${OS}-${ARCH}.tar.gz" \
@@ -134,6 +134,8 @@ Useful commands:
   `/journal <role>` are available inside the REPL.
 - `cr show`, `cr cost`, `cr config`, and `cr update` handle inspection,
   spend tracking, layered config, and package upgrades.
+- Live turns fold internal tool traces into one activity summary; `cr show`
+  replays the full event log when you need to audit what happened.
 
 ## Contributing
 
