@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use crossterm::style::Stylize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
@@ -21,7 +21,7 @@ use tracing::{debug, warn};
 use crate::adapter::cc::CcAdapter;
 use crate::adapter::{Engine, EngineAdapter, RoleHandle, UserMessage};
 use crate::bus::MessageBus;
-use crate::config::{CODEROOM_DIR, Config};
+use crate::config::{Config, CODEROOM_DIR};
 use crate::crep::CrepEvent;
 
 /// One parsed user input.
@@ -83,8 +83,8 @@ struct RunningRole {
 /// REPL entry point. Loads config, spawns every declared role, forwards
 /// each role's events into the bus, then enters the line-mode loop.
 pub async fn run(project_root: &Path) -> Result<()> {
-    let cfg =
-        Config::load(project_root).with_context(|| format!("loading config in {project_root:?}"))?;
+    let cfg = Config::load(project_root)
+        .with_context(|| format!("loading config in {project_root:?}"))?;
     let coderoom_dir = project_root.join(CODEROOM_DIR);
 
     let log_path = coderoom_dir.join("messages.jsonl");
@@ -271,10 +271,7 @@ fn render_event(event: &CrepEvent) {
             ..
         } => {
             let summary = summarize_tool_input(tool_input);
-            println!(
-                "{}",
-                format!("  ↳ @{role} · {tool_name} {summary}").dim()
-            );
+            println!("{}", format!("  ↳ @{role} · {tool_name} {summary}").dim());
         }
         CrepEvent::ToolCallExecuted {
             role,
@@ -283,10 +280,7 @@ fn render_event(event: &CrepEvent) {
             ..
         } => {
             let glyph = if *ok { "✓" } else { "✗" };
-            println!(
-                "{}",
-                format!("  {glyph} @{role} · {output_summary}").dim()
-            );
+            println!("{}", format!("  {glyph} @{role} · {output_summary}").dim());
         }
         CrepEvent::PermissionDenied {
             role,
@@ -353,11 +347,7 @@ fn truncate_inline(s: &str, max_chars: usize) -> String {
 }
 
 /// Forward all events from a role's `rx_events` into the shared bus.
-fn spawn_event_forwarder(
-    role: String,
-    mut rx: mpsc::Receiver<CrepEvent>,
-    bus: Arc<MessageBus>,
-) {
+fn spawn_event_forwarder(role: String, mut rx: mpsc::Receiver<CrepEvent>, bus: Arc<MessageBus>) {
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             if let Err(error) = bus.publish(event).await {
