@@ -8,8 +8,10 @@
 [![CI](https://github.com/spytensor/codeRoom/actions/workflows/ci.yml/badge.svg)](https://github.com/spytensor/codeRoom/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **Status: v0.1.7 — user-runnable, still pre-1.0.** Claude Code,
-> Codex, and Gemini adapters are wired up; bare `cr` now opens CodeRoom
+![CodeRoom boot dashboard](docs/images/boot-dashboard.png)
+
+> **Status: v0.1.10 — user-runnable, still pre-1.0.** Claude Code,
+> Codex, and Gemini adapters are wired up; bare `cr` opens CodeRoom
 > directly, guides setup when `.coderoom/` is missing, and shows the
 > effective role / engine / model configuration on entry. Existing
 > host-only rooms get an opt-in role suggestion flow. Per semver, 0.x.y
