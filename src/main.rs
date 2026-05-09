@@ -78,10 +78,15 @@ enum Cmd {
         #[command(subcommand)]
         command: ConfigCmd,
     },
+    /// Check the npm registry for a newer `cr` and report the diff.
+    /// Read-only — does not touch the installed binary. Run
+    /// `cr upgrade` to actually install.
+    Update,
     /// Upgrade the `cr` binary in place via whichever method
     /// originally installed it (currently only `npm install -g` is
-    /// auto-upgradable; other paths print instructions).
-    Update,
+    /// auto-upgradable; other paths print instructions). Verifies
+    /// the binary on disk actually changed before claiming success.
+    Upgrade,
 }
 
 #[derive(Debug, Subcommand)]
@@ -194,11 +199,14 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .try_init();
 
-    // Engine-binary check up front. `cr config` and `cr update` are
-    // useful without any engine installed (inspecting / fixing the very
-    // setup that's missing); everything else requires at least one of
-    // claude / codex / gemini on $PATH.
-    let needs_engine = !matches!(cli.command, Some(Cmd::Config { .. } | Cmd::Update));
+    // Engine-binary check up front. `cr config`, `cr update`, and
+    // `cr upgrade` are useful without any engine installed (inspecting
+    // or fixing the very setup that's missing); everything else
+    // requires at least one of claude / codex / gemini on $PATH.
+    let needs_engine = !matches!(
+        cli.command,
+        Some(Cmd::Config { .. } | Cmd::Update | Cmd::Upgrade)
+    );
     if needs_engine && coderoom::engines::require_any_installed().is_err() {
         std::process::exit(1);
     }
@@ -225,7 +233,8 @@ fn main() -> Result<()> {
             })
         }
         Some(Cmd::Config { command }) => run_config_cmd(command),
-        Some(Cmd::Update) => coderoom::update::run(),
+        Some(Cmd::Update) => coderoom::update::check(),
+        Some(Cmd::Upgrade) => coderoom::update::upgrade(),
         Some(Cmd::Cost { project, since }) => {
             let since_date = match since {
                 Some(s) => Some(

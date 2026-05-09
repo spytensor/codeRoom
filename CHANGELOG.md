@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (nothing yet)
 
+## [0.1.9] - 2026-05-09
+
+### Fixed
+
+- `cr update` no longer lies about success. The previous implementation
+  shelled out to `npm install -g …@latest` and printed `✓ updated`
+  whenever npm exited 0. When npm's tarball cache was stale, npm
+  returned success but extracted the cached old tarball — so users saw
+  `✓ updated` while `cr --version` was unchanged. This was the failure
+  mode that left users stuck on 0.1.7 despite 0.1.8 being available.
+- The new `cr upgrade` re-execs the binary at `current_exe()` after
+  npm finishes and parses `--version` to confirm the bytes on disk
+  actually changed. If the post-install version still matches the
+  pre-install version while the registry has a newer one, it prints
+  the exact remediation (`npm cache clean --force && cr upgrade`) and
+  exits non-zero instead of claiming success.
+
+### Changed
+
+- `cr update` and `cr upgrade` are now distinct commands, brew-style:
+  - `cr update` is read-only. It queries the npm registry for the
+    `@latest` version, prints local vs registry, and tells you whether
+    a new version is available. No side effects.
+  - `cr upgrade` is the side-effecting install path with the
+    verification described above. It pre-flight-checks the registry
+    and skips the install entirely when you're already on latest.
+
+### Notes
+
+- If you're stuck on a prior version after a botched `cr update`,
+  run `npm cache clean --force && npm install -g @spytensor/coderoom@latest`
+  once. Future upgrades via `cr upgrade` will detect the cache-stale
+  case automatically.
+
 ## [0.1.8] - 2026-05-09
 
 ### Fixed
