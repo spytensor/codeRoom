@@ -1,0 +1,11 @@
+//! CodeRoom — a coordination shell for multi-role agent CLI sessions.
+//!
+//! Public API surface is intentionally small at v0.1; the binary `cr` is the
+//! primary consumer. See `docs/architecture.md` for the design constitution.
+
+#![doc(html_root_url = "https://docs.rs/coderoom/0.1.0")]
+#![warn(missing_debug_implementations)]
+#![warn(rust_2018_idioms)]
+
+// Module declarations land here as the implementation grows.
+// Empty for the bootstrap commit; first slice adds `crep` and `adapter`.

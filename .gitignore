@@ -1,0 +1,38 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock — committed for binary crates
+# (do not ignore Cargo.lock)
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local config — never commit project-specific secrets
+.env
+.env.local
+.envrc
+
+# CodeRoom runtime artifacts in development
+/.coderoom/transcripts/
+/.coderoom/messages.jsonl
+/.coderoom/sessions/
+
+# Spike sandbox leftovers (tmp dirs are normally cleaned by mktemp;
+# this catches anything left behind by interrupted runs)
+/spike/sandbox-*/
+
+# Test fixtures created at runtime
+/tests/.tmp/
+
+# Local Claude Code session settings (per-developer; never commit)
+.claude/settings.local.json
+
+# OS noise
+Thumbs.db

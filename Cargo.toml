@@ -1,0 +1,87 @@
+[package]
+name = "coderoom"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+authors = ["Charlie Zhu <chaojie.zhu.cn@gmail.com>"]
+license = "MIT"
+description = "A coordination shell for multi-role agent CLI sessions in a single chat-style terminal."
+homepage = "https://github.com/spytensor/codeRoom"
+repository = "https://github.com/spytensor/codeRoom"
+readme = "README.md"
+keywords = ["cli", "ai", "agents", "claude", "codex"]
+categories = ["command-line-utilities", "development-tools"]
+publish = false  # flip to true when ready to publish to crates.io
+
+[[bin]]
+name = "cr"
+path = "src/main.rs"
+
+[lib]
+name = "coderoom"
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.40", features = [
+    "rt-multi-thread", "macros", "process", "io-util",
+    "sync", "fs", "signal", "time"
+] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# CLI parsing
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Terminal
+crossterm = "0.28"
+
+# Errors
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde", "clock"] }
+
+# Pattern matching
+regex = "1.10"
+
+[dev-dependencies]
+tempfile = "3.10"
+assert_cmd = "2.0"
+predicates = "3.1"
+pretty_assertions = "1.4"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+# Lints applied workspace-wide. (Crate-level overrides go in src/lib.rs.)
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+# Complaint baseline — strict but practical.
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+# Pedantic exceptions that pay no rent for this project.
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"

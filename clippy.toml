@@ -1,0 +1,12 @@
+# clippy configuration. Lint *severities* (warn/deny) live in lib.rs/main.rs
+# via `#![warn(...)]` attributes; this file only sets clippy's tunables.
+
+# Reasonable cognitive-complexity ceiling for adapter-style code.
+cognitive-complexity-threshold = 25
+
+# Encourage explicit error handling.
+disallowed-methods = []
+
+# Allow common test idioms.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
