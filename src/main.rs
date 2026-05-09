@@ -2,10 +2,11 @@
 //!
 //! Subcommands at v0.1:
 //!
-//! - `cr start [--project PATH]` — enter the interactive REPL.
+//! - `cr init [--project PATH]`  — bootstrap `.coderoom/` in a fresh project
+//! - `cr start [--project PATH]` — enter the interactive REPL
 //!
-//! Future subcommands (`cr init`, `cr role`, `cr show`, `cr cost`) land in
-//! their own PRs per the v0.1 sequence in `docs/architecture.md`.
+//! Future subcommands (`cr role`, `cr show`, `cr cost`) land in their own
+//! PRs per the v0.1 sequence in `docs/architecture.md`.
 
 use std::path::PathBuf;
 
@@ -26,6 +27,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
+    /// Bootstrap a `.coderoom/` directory with a default `@host` role.
+    Init {
+        /// Project root in which to create `.coderoom/`. Defaults to the
+        /// current working directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
     /// Enter the interactive REPL using `.coderoom/config.toml` in the
     /// current directory (or `--project`).
     Start {
@@ -47,26 +55,32 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .try_init();
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?;
-
-    runtime.block_on(async move {
-        match cli.command {
-            None => {
-                println!(
-                    "cr {} — pre-alpha. Run `cr start` (and see `cr --help`).",
-                    env!("CARGO_PKG_VERSION")
-                );
-                Ok(())
-            }
-            Some(Cmd::Start { project }) => {
+    match cli.command {
+        None => {
+            println!(
+                "cr {} — try `cr init` then `cr start`. See `cr --help`.",
+                env!("CARGO_PKG_VERSION")
+            );
+            Ok(())
+        }
+        Some(Cmd::Init { project }) => {
+            let project_root = match project {
+                Some(p) => p,
+                None => std::env::current_dir()?,
+            };
+            coderoom::init::run(&project_root)
+        }
+        Some(Cmd::Start { project }) => {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(async move {
                 let project_root = match project {
                     Some(p) => p,
                     None => std::env::current_dir()?,
                 };
                 coderoom::repl::run(&project_root).await
-            }
+            })
         }
-    })
+    }
 }
