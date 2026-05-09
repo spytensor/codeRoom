@@ -40,7 +40,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 crossterm = "0.28"
 
 # Errors
-thiserror = "1.0"
+thiserror = "2.0"
 anyhow = "1.0"
 
 # Logging
