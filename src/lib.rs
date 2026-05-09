@@ -7,4 +7,5 @@
 #![warn(missing_debug_implementations)]
 #![warn(rust_2018_idioms)]
 
+pub mod adapter;
 pub mod crep;
