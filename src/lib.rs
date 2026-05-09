@@ -11,3 +11,4 @@ pub mod adapter;
 pub mod bus;
 pub mod config;
 pub mod crep;
+pub mod repl;

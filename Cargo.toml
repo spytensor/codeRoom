@@ -24,7 +24,7 @@ path = "src/lib.rs"
 [dependencies]
 # Async runtime
 tokio = { version = "1.40", features = [
-    "rt-multi-thread", "macros", "process", "io-util",
+    "rt-multi-thread", "macros", "process", "io-util", "io-std",
     "sync", "fs", "signal", "time"
 ] }
 
