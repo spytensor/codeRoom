@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (nothing yet)
 
+## [0.1.1] - 2026-05-09
+
+UX-only release. No behavioral changes to the engine adapters or CREP.
+
+### Added
+
+- **`cr start` auto-init.** First-time users no longer need to run
+  `cr init` separately; if `.coderoom/` is missing, `cr start`
+  bootstraps a default `@host` role and proceeds into the REPL with
+  the placeholder priors. `cr init` is still available for users who
+  want to set things up explicitly.
+- **Pre-built release binaries.** Tag pushes now trigger
+  `.github/workflows/release.yml`, which builds `cr` for
+  `linux-x86_64`, `linux-aarch64` (via `cross`), `macos-x86_64`, and
+  `macos-aarch64`. Each platform's tarball ships with `cr`, LICENSE,
+  README, CHANGELOG, plus a sha256, uploaded as Release assets.
+
+### Changed
+
+- README install section now leads with the pre-built binary
+  one-liner; `cargo install` is documented as the alternative path
+  with a note that it requires Rust 1.85+ via rustup (the v0.1.0
+  install foot-gun for users with an older system `rustc`).
+
 ## [0.1.0] - 2026-05-09
 
 First user-runnable release. Implements the v0.1 scope locked in
@@ -111,5 +135,6 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.1
 [0.1.0]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.0
