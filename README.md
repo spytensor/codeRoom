@@ -68,32 +68,54 @@ cargo install --git https://github.com/spytensor/codeRoom
 
 ## Install
 
-**Linux / macOS pre-built binary** (recommended):
+```bash
+npm install -g @spytensor/coderoom
+cr --version
+```
+
+That's it. `cr` is now on your PATH. Same install story as
+`@anthropic-ai/claude-code`, `@openai/codex`, and `@google/gemini-cli` —
+which CodeRoom drives.
+
+The npm package is a thin wrapper: on install, its postinstall script
+downloads the right pre-built binary for your platform from the
+matching [GitHub Release](https://github.com/spytensor/codeRoom/releases)
+and verifies its SHA-256. Supported platforms: linux + macOS, x86_64 and
+aarch64.
+
+<details>
+<summary>Don't have npm? Direct binary install.</summary>
 
 ```bash
-# Pick the right archive for your machine from the latest release page,
-# or use the helper one-liner:
-TAG=$(curl -fsSL https://api.github.com/repos/spytensor/codeRoom/releases/latest \
-       | grep -oE '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)
-ARCH=$(uname -m)
+TAG=v0.1.1
+ARCH=$(uname -m); case "$ARCH" in arm64|aarch64) ARCH=aarch64 ;; *) ARCH=x86_64 ;; esac
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-case "$ARCH" in x86_64) ARCH=x86_64 ;; arm64|aarch64) ARCH=aarch64 ;; esac
 curl -fsSL "https://github.com/spytensor/codeRoom/releases/download/${TAG}/cr-${TAG}-${OS}-${ARCH}.tar.gz" \
   | tar -xz
 sudo mv "cr-${TAG}-${OS}-${ARCH}/cr" /usr/local/bin/
 cr --version
 ```
 
-**From source** (needs Rust 1.85+ — install via [rustup](https://rustup.rs)):
+</details>
+
+<details>
+<summary>Building from source.</summary>
+
+Requires Rust 1.85+. Use [rustup](https://rustup.rs) — the
+distro-shipped `rustc` is usually too old (we depend on `edition2024`
+in the wider ecosystem).
 
 ```bash
-cargo install --git https://github.com/spytensor/codeRoom
+git clone https://github.com/spytensor/codeRoom
+cd codeRoom
+cargo build --release
+sudo cp target/release/cr /usr/local/bin/
 ```
 
-If `cargo install` fails with `feature 'edition2024' is required`, your
-local Rust is older than 1.85. `rustup update stable` fixes it; or
-install rustup if you don't have it (the system-package `rustc` doesn't
-honor this repo's pinned toolchain file).
+`cargo install --git ...` works too if your active toolchain is
+1.85+; otherwise the install fails inside a transitive dep.
+
+</details>
 
 ## Quickstart
 

@@ -1,0 +1,46 @@
+{
+  "name": "@spytensor/coderoom",
+  "version": "0.1.1",
+  "description": "A coordination shell for multi-role agent CLI sessions in a single chat-style terminal.",
+  "keywords": [
+    "cli",
+    "ai",
+    "agents",
+    "claude",
+    "codex",
+    "gemini"
+  ],
+  "homepage": "https://github.com/spytensor/codeRoom",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/spytensor/codeRoom.git"
+  },
+  "bugs": {
+    "url": "https://github.com/spytensor/codeRoom/issues"
+  },
+  "license": "MIT",
+  "author": "Charlie Zhu",
+  "bin": {
+    "cr": "./bin/cr"
+  },
+  "scripts": {
+    "postinstall": "node ./install.js"
+  },
+  "files": [
+    "install.js",
+    "bin/cr",
+    "bin/.gitkeep",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=14"
+  },
+  "os": [
+    "linux",
+    "darwin"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}
