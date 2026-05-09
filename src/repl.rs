@@ -9,6 +9,7 @@
 //! concurrent role rendering are deferred to a follow-up PR.
 
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -117,7 +118,7 @@ pub async fn run(project_root: &Path) -> Result<()> {
         let mut role_cfg = cfg
             .role_config(&name, &coderoom_dir)
             .expect("role declared but role_config returned None");
-        role_cfg.priors_path = priors_temp.path().to_owned();
+        priors_temp.path().clone_into(&mut role_cfg.priors_path);
 
         let handle = match role_cfg.engine {
             Engine::Cc => cc_adapter
@@ -384,7 +385,6 @@ fn write_priors_tempfile(role: &str, composed: &str) -> Result<NamedTempFile> {
         .suffix(".md")
         .tempfile()
         .context("creating priors tempfile")?;
-    use std::io::Write as _;
     tempfile
         .write_all(composed.as_bytes())
         .context("writing composed priors")?;

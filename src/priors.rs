@@ -92,7 +92,13 @@ fn ordered_patches(coderoom_dir: &Path, role_name: &str) -> Result<Vec<PathBuf>>
         if name.starts_with('_') {
             continue;
         }
-        if !name.ends_with(".md") {
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref()
+            != Some("md")
+        {
             continue;
         }
         let leading_digits: String = name.chars().take_while(char::is_ascii_digit).collect();
