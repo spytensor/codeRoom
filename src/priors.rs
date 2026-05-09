@@ -30,6 +30,14 @@ pub const MAX_ACTIVE_PATCHES_PER_ROLE: usize = 50;
 /// role's priors; they exist for forensics / opt-in re-promotion.
 pub const ARCHIVE_SUBDIR: &str = "_archive";
 
+/// Subdirectory of `.coderoom/` that holds per-day, per-role journals.
+pub const JOURNAL_DIR: &str = "journal";
+
+/// Number of days of journal entries auto-loaded into a role's priors
+/// at spawn time. Anything older still lives on disk (grep-able) but
+/// stays out of the composed system prompt.
+pub const JOURNAL_WINDOW_DAYS: i64 = 7;
+
 /// File name of the cross-role priors document inside `.coderoom/`.
 pub const SHARED_FILE: &str = "shared.md";
 
@@ -77,8 +85,75 @@ pub fn compose_for(coderoom_dir: &Path, role_name: &str) -> Result<String> {
         }
     }
 
+    let journals = recent_journals(coderoom_dir, role_name, JOURNAL_WINDOW_DAYS)?;
+    if !journals.is_empty() {
+        out.push_str(SECTION_FENCE);
+        out.push_str("## Recent journal entries\n\n");
+        for (date, path) in journals {
+            let content = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading journal {}", path.display()))?;
+            let trimmed = content.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            out.push_str(&format!("### {date}\n\n"));
+            out.push_str(trimmed);
+            out.push_str("\n\n");
+        }
+    }
+
     out.push('\n');
     Ok(out)
+}
+
+/// Return `(date, path)` pairs for the role's journal entries within the
+/// last `window_days`, oldest-first. The on-disk layout is
+/// `.coderoom/journal/YYYY-MM-DD/<role>.md`; only directories whose name
+/// parses as a date and that contain a matching role file are included.
+///
+/// Outside the window, files are skipped (still on disk, still grep-able).
+pub fn recent_journals(
+    coderoom_dir: &Path,
+    role_name: &str,
+    window_days: i64,
+) -> Result<Vec<(String, PathBuf)>> {
+    let dir = coderoom_dir.join(JOURNAL_DIR);
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let today = chrono::Local::now().date_naive();
+    let cutoff = today
+        .checked_sub_signed(chrono::Duration::days(window_days))
+        .unwrap_or(today);
+
+    let mut entries: Vec<(chrono::NaiveDate, String, PathBuf)> = Vec::new();
+    for dirent in std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
+        let dirent = dirent?;
+        let day_path = dirent.path();
+        if !day_path.is_dir() {
+            continue;
+        }
+        let Some(name) = day_path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Ok(date) = chrono::NaiveDate::parse_from_str(name, "%Y-%m-%d") else {
+            continue;
+        };
+        if date < cutoff || date > today {
+            continue;
+        }
+        let role_file = day_path.join(format!("{role_name}.md"));
+        if role_file.is_file() {
+            entries.push((date, name.to_owned(), role_file));
+        }
+    }
+
+    entries.sort_by_key(|(date, _, _)| *date);
+    Ok(entries
+        .into_iter()
+        .map(|(_, label, path)| (label, path))
+        .collect())
 }
 
 /// Outcome of a [`write_patch`] call.
@@ -481,5 +556,73 @@ mod tests {
         let dir = tmp.path().join("patches/backend");
         // No directory at all — should still yield 1.
         assert_eq!(next_patch_seq(&dir).unwrap(), 1);
+    }
+
+    #[test]
+    fn recent_journals_includes_today_and_recent_days() {
+        let tmp = fixture("backend", "BACKEND_PRIORS");
+        let coderoom = coderoom_of(&tmp);
+        let today = chrono::Local::now().date_naive();
+        let yesterday = today - chrono::Duration::days(1);
+        let too_old = today - chrono::Duration::days(30);
+
+        for date in [today, yesterday, too_old] {
+            let dir = coderoom
+                .join(JOURNAL_DIR)
+                .join(date.format("%Y-%m-%d").to_string());
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("backend.md"),
+                format!("entry for {date}"),
+            )
+            .unwrap();
+        }
+
+        let entries = recent_journals(&coderoom, "backend", 7).unwrap();
+        assert_eq!(entries.len(), 2, "today + yesterday only");
+        // chronological order: yesterday first, then today.
+        assert_eq!(entries[0].0, yesterday.format("%Y-%m-%d").to_string());
+        assert_eq!(entries[1].0, today.format("%Y-%m-%d").to_string());
+    }
+
+    #[test]
+    fn recent_journals_filters_by_role() {
+        let tmp = fixture("backend", "BACKEND_PRIORS");
+        let coderoom = coderoom_of(&tmp);
+        let today = chrono::Local::now().date_naive();
+        let dir = coderoom
+            .join(JOURNAL_DIR)
+            .join(today.format("%Y-%m-%d").to_string());
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("backend.md"), "BE").unwrap();
+        fs::write(dir.join("frontend.md"), "FE").unwrap();
+
+        let backend = recent_journals(&coderoom, "backend", 7).unwrap();
+        assert_eq!(backend.len(), 1);
+        assert!(backend[0].1.ends_with("backend.md"));
+    }
+
+    #[test]
+    fn recent_journals_handles_missing_dir() {
+        let tmp = fixture("backend", "BACKEND_PRIORS");
+        let coderoom = coderoom_of(&tmp);
+        let entries = recent_journals(&coderoom, "backend", 7).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn compose_includes_recent_journal_section() {
+        let tmp = fixture("backend", "BACKEND_PRIORS");
+        let coderoom = coderoom_of(&tmp);
+        let today = chrono::Local::now().date_naive();
+        let dir = coderoom
+            .join(JOURNAL_DIR)
+            .join(today.format("%Y-%m-%d").to_string());
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("backend.md"), "JOURNAL_TODAY").unwrap();
+
+        let composed = compose_for(&coderoom, "backend").unwrap();
+        assert!(composed.contains("Recent journal"));
+        assert!(composed.contains("JOURNAL_TODAY"));
     }
 }
