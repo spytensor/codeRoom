@@ -18,5 +18,8 @@ struct Cli {}
 
 fn main() {
     let _cli = Cli::parse();
-    println!("cr {} — bootstrap build (no subcommands yet)", env!("CARGO_PKG_VERSION"));
+    println!(
+        "cr {} — bootstrap build (no subcommands yet)",
+        env!("CARGO_PKG_VERSION")
+    );
 }
