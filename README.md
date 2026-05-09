@@ -66,18 +66,42 @@ sudo mv cr /usr/local/bin/
 cargo install --git https://github.com/spytensor/codeRoom
 ```
 
-## Quickstart
+## Install
 
-What works today (v0.1, pre-alpha):
+**Linux / macOS pre-built binary** (recommended):
 
 ```bash
-# Build from source — no release binaries yet.
-cargo install --git https://github.com/spytensor/codeRoom
+# Pick the right archive for your machine from the latest release page,
+# or use the helper one-liner:
+TAG=$(curl -fsSL https://api.github.com/repos/spytensor/codeRoom/releases/latest \
+       | grep -oE '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)
+ARCH=$(uname -m)
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+case "$ARCH" in x86_64) ARCH=x86_64 ;; arm64|aarch64) ARCH=aarch64 ;; esac
+curl -fsSL "https://github.com/spytensor/codeRoom/releases/download/${TAG}/cr-${TAG}-${OS}-${ARCH}.tar.gz" \
+  | tar -xz
+sudo mv "cr-${TAG}-${OS}-${ARCH}/cr" /usr/local/bin/
+cr --version
+```
 
+**From source** (needs Rust 1.85+ — install via [rustup](https://rustup.rs)):
+
+```bash
+cargo install --git https://github.com/spytensor/codeRoom
+```
+
+If `cargo install` fails with `feature 'edition2024' is required`, your
+local Rust is older than 1.85. `rustup update stable` fixes it; or
+install rustup if you don't have it (the system-package `rustc` doesn't
+honor this repo's pinned toolchain file).
+
+## Quickstart
+
+```bash
 cd your-project
-cr init                         # creates .coderoom/ with one @host role
-$EDITOR .coderoom/roles/host.md # write project-specific priors
-cr start                        # enter the REPL
+cr start                        # auto-creates .coderoom/ on first run
+$EDITOR .coderoom/roles/host.md # optional: give @host real priors
+cr start                        # subsequent runs just enter the REPL
 
 > hello
 [@host ready · model=claude-opus-4-7]

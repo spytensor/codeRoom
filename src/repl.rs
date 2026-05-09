@@ -186,10 +186,26 @@ struct RunningRole {
 
 /// REPL entry point. Loads config, spawns every declared role, forwards
 /// each role's events into the bus, then enters the line-mode loop.
+///
+/// If the project doesn't have a `.coderoom/` yet, this calls
+/// [`crate::init::run`] first so first-time users get a working setup
+/// with a single `cr start`. The auto-init message tells the user
+/// where to edit the host role's priors, but the REPL proceeds anyway —
+/// the default host role works out of the box for first-run dogfooding.
 pub async fn run(project_root: &Path) -> Result<()> {
+    let coderoom_dir = project_root.join(CODEROOM_DIR);
+    if !coderoom_dir.exists() {
+        println!(
+            "{}",
+            "no .coderoom/ found here — bootstrapping a default one with @host (engine: cc)..."
+                .dim()
+        );
+        crate::init::run(project_root).context("auto-initializing .coderoom/")?;
+        println!();
+    }
+
     let cfg = Config::load(project_root)
         .with_context(|| format!("loading config in {project_root:?}"))?;
-    let coderoom_dir = project_root.join(CODEROOM_DIR);
 
     let log_path = coderoom_dir.join("messages.jsonl");
     let bus = Arc::new(MessageBus::open(&log_path).await?);
