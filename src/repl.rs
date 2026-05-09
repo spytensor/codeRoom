@@ -48,6 +48,10 @@ pub enum Command {
         /// Correction text — written verbatim into the new patch file.
         text: String,
     },
+    /// `/refresh <role>` — re-instantiate the role with the latest
+    /// composed priors (shared.md + role.md + active patches). The
+    /// old subprocess is dropped; a fresh one starts.
+    Refresh(String),
     /// `/stop <role>` — terminate the named role's subprocess.
     Stop(String),
     /// `/help` — print the help banner.
@@ -72,6 +76,14 @@ pub fn parse_line(input: &str) -> Command {
         return match cmd {
             "exit" | "quit" => Command::Exit,
             "stop" if !arg.is_empty() => Command::Stop(arg.to_owned()),
+            "refresh" if !arg.is_empty() => {
+                let role = arg.strip_prefix('@').unwrap_or(arg).to_owned();
+                if role.is_empty() {
+                    Command::Help
+                } else {
+                    Command::Refresh(role)
+                }
+            }
             "patch" => parse_patch_arg(arg).unwrap_or(Command::Help),
             // /help, /h, and any unknown slash command all fall through here.
             _ => Command::Help,
@@ -119,7 +131,11 @@ struct RunningRole {
     /// path passed to the engine via `--append-system-prompt-file`
     /// remains valid until the subprocess has fully read it. Dropped
     /// at role removal, which deletes the file.
-    _priors_temp: NamedTempFile,
+    #[allow(
+        dead_code,
+        reason = "kept alive only for its Drop side-effect (tempfile cleanup)"
+    )]
+    priors_temp: NamedTempFile,
 }
 
 /// REPL entry point. Loads config, spawns every declared role, forwards
@@ -169,6 +185,9 @@ pub async fn run(project_root: &Path) -> Result<()> {
                 } else {
                     println!("{}", format!("no such role: @{role}").red());
                 }
+            }
+            Command::Refresh(role) => {
+                refresh_role(&cfg, &cc_adapter, &coderoom_dir, &bus, &mut roles, &role).await;
             }
             Command::Patch { role, text } => {
                 if !cfg.roles.contains_key(&role) {
@@ -242,6 +261,7 @@ fn print_help(cfg: &Config) {
     println!("  @<role> <text>      send to a specific role");
     println!("  <text>              send to host (@{})", cfg.host_role);
     println!("  /patch <role> <…>   save a correction; loads on next /refresh");
+    println!("  /refresh <role>     re-instantiate role with latest priors+patches");
     println!("  /stop <role>        terminate a role's subprocess");
     println!("  /help               this help");
     println!("  /exit, /quit        leave the REPL");
@@ -401,6 +421,40 @@ fn truncate_inline(s: &str, max_chars: usize) -> String {
     out
 }
 
+/// Drop the running role and re-spawn it with the freshly composed
+/// priors. Validates that the role exists in the loaded config; prints
+/// status to stdout via the same coloured channel as the rest of the
+/// REPL.
+async fn refresh_role(
+    cfg: &Config,
+    cc_adapter: &CcAdapter,
+    coderoom_dir: &Path,
+    bus: &Arc<MessageBus>,
+    roles: &mut HashMap<String, RunningRole>,
+    role: &str,
+) {
+    if !cfg.roles.contains_key(role) {
+        println!("{}", format!("no such role: @{role}").red());
+        return;
+    }
+    if let Some(old) = roles.remove(role) {
+        drop(old);
+        println!("{}", format!("refreshing @{role}...").dim());
+    }
+    match spawn_role(cfg, cc_adapter, coderoom_dir, role, bus).await {
+        Ok(running) => {
+            roles.insert(role.to_owned(), running);
+            println!("{}", format!("✓ @{role} refreshed").green());
+        }
+        Err(error) => {
+            println!(
+                "{}",
+                format!("✗ refreshing @{role} failed: {error:#}").red()
+            );
+        }
+    }
+}
+
 /// Compose priors, stage them in a tempfile, spawn the role's
 /// subprocess via the configured engine adapter, and wire its event
 /// stream into `bus`. Returns the [`RunningRole`] the REPL should
@@ -414,7 +468,7 @@ async fn spawn_role(
 ) -> Result<RunningRole> {
     let composed = priors::compose_for(coderoom_dir, name)
         .with_context(|| format!("composing priors for role `{name}`"))?;
-    let priors_temp = write_priors_tempfile(name, &composed)
+    let priors_temp = writepriors_tempfile(name, &composed)
         .with_context(|| format!("staging priors for role `{name}`"))?;
 
     let mut role_cfg = cfg
@@ -444,7 +498,7 @@ async fn spawn_role(
     spawn_event_forwarder(rname, rx_events, Arc::clone(bus));
     Ok(RunningRole {
         tx_user,
-        _priors_temp: priors_temp,
+        priors_temp,
     })
 }
 
@@ -452,7 +506,7 @@ async fn spawn_role(
 /// tempfile name embeds the role for easier debugging when something
 /// goes wrong. Caller is expected to keep the returned `NamedTempFile`
 /// alive for as long as the engine subprocess might re-read the file.
-fn write_priors_tempfile(role: &str, composed: &str) -> Result<NamedTempFile> {
+fn writepriors_tempfile(role: &str, composed: &str) -> Result<NamedTempFile> {
     let mut tempfile = tempfile::Builder::new()
         .prefix(&format!("coderoom-priors-{role}-"))
         .suffix(".md")
@@ -572,6 +626,27 @@ mod tests {
     #[test]
     fn parse_patch_without_role_shows_help() {
         assert_eq!(parse_line("/patch"), Command::Help);
+    }
+
+    #[test]
+    fn parse_refresh_with_role() {
+        assert_eq!(
+            parse_line("/refresh backend"),
+            Command::Refresh("backend".into())
+        );
+    }
+
+    #[test]
+    fn parse_refresh_accepts_at_prefixed_role() {
+        assert_eq!(
+            parse_line("/refresh @backend"),
+            Command::Refresh("backend".into())
+        );
+    }
+
+    #[test]
+    fn parse_refresh_without_role_shows_help() {
+        assert_eq!(parse_line("/refresh"), Command::Help);
     }
 
     #[test]
