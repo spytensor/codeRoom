@@ -85,3 +85,6 @@ module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+# CodeRoom is the project name and shows up in prose throughout doc comments;
+# backticking it everywhere would clutter the docs without informing the reader.
+doc_markdown = "allow"
