@@ -159,7 +159,10 @@ impl EngineAdapter for CcAdapter {
 /// content across runs (within a single Rust release; `DefaultHasher` is
 /// allowed to change algorithms across releases). Sufficient for drift
 /// detection in v0.1 — replace with `sha2` if/when we publish hashes.
-fn fingerprint(content: &str) -> String {
+///
+/// `pub(crate)` so sibling adapters (codex, gemini) can reuse the same
+/// fingerprint format and produce comparable `priors_hash` values.
+pub(crate) fn fingerprint(content: &str) -> String {
     let mut hasher = DefaultHasher::new();
     content.hash(&mut hasher);
     format!("dh1:{:016x}", hasher.finish())
@@ -168,7 +171,10 @@ fn fingerprint(content: &str) -> String {
 /// Parse `@<name>` references out of a reply, deduplicated, in order of
 /// first appearance. Names use the same character set as Rust identifiers
 /// minus underscores at the start (mirrors Slack conventions).
-fn parse_mentions(text: &str) -> Vec<String> {
+///
+/// `pub(crate)` so other adapters (codex, gemini) can populate
+/// `RoleSpoke.mentions` with the same parsing semantics CC uses.
+pub(crate) fn parse_mentions(text: &str) -> Vec<String> {
     static MENTION_RE: OnceLock<Regex> = OnceLock::new();
     let re = MENTION_RE.get_or_init(|| {
         Regex::new(r"@([A-Za-z][A-Za-z0-9_-]*)").expect("compile-time-valid regex")

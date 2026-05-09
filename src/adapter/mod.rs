@@ -11,6 +11,7 @@
 //! avoids the indirection cost of `async_trait`'s `Pin<Box<...>>` wrapper.
 
 pub mod cc;
+pub mod codex;
 
 use std::path::PathBuf;
 

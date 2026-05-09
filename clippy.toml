@@ -4,6 +4,12 @@
 # Reasonable cognitive-complexity ceiling for adapter-style code.
 cognitive-complexity-threshold = 25
 
+# REPL-style dispatch + setup functions naturally exceed the 100-line
+# default. Bump to 150 so `repl::run` and CLI-dispatch functions can
+# stay coherent in one place rather than being broken up just to
+# satisfy a line count.
+too-many-lines-threshold = 150
+
 # Encourage explicit error handling.
 disallowed-methods = []
 
