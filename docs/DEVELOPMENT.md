@@ -6,7 +6,7 @@ How to actually work on CodeRoom locally. For higher-level concerns
 ## Toolchain
 
 ```bash
-# Rust — version pinned in rust-toolchain.toml (currently 1.82)
+# Rust — version pinned in rust-toolchain.toml (currently 1.85)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup component add rustfmt clippy
 

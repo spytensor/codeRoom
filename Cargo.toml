@@ -2,7 +2,7 @@
 name = "coderoom"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.85"
 authors = ["Charlie Zhu <chaojie.zhu.cn@gmail.com>"]
 license = "MIT"
 description = "A coordination shell for multi-role agent CLI sessions in a single chat-style terminal."
