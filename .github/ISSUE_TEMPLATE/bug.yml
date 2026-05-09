@@ -1,0 +1,79 @@
+name: Bug report
+description: Something is wrong with `cr` or one of its engine adapters.
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please confirm the bug isn't already covered by
+        an existing issue, and that you've read `docs/architecture.md` if your
+        complaint touches design.
+
+  - type: input
+    id: cr_version
+    attributes:
+      label: cr version
+      description: Output of `cr --version`.
+      placeholder: "cr 0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Engine involved
+      multiple: true
+      options:
+        - claude-code
+        - codex
+        - gemini
+        - n/a (wrapper-only)
+    validations:
+      required: true
+
+  - type: input
+    id: engine_version
+    attributes:
+      label: Engine version
+      description: Output of `claude --version` / `codex --version` / `gemini --version` (whichever applies).
+      placeholder: "claude 2.1.137"
+
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "Ubuntu 24.04 / macOS 14.5"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal sequence of `cr` commands or REPL inputs that triggers the bug.
+      render: bash
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include relevant output, stack traces, or excerpts from `.coderoom/messages.jsonl`.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that might matter — config snippets, role priors, hooks, etc.

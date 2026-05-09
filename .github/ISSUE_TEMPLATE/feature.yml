@@ -1,0 +1,45 @@
+name: Feature request
+description: Propose a new capability for `cr`.
+title: "feat: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please check `docs/architecture.md` — many ideas are
+        already in scope for v0.x. If your request contradicts a locked v0.1
+        decision, expect it to be redirected to `docs/proposed-amendments.md`.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow are you trying to do that `cr` doesn't support?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Concrete shape — new command? new flag? changed behavior? attach a sketch if you have one.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What did you try before reaching for a feature request?
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope target
+      options:
+        - v0.1 (would block release)
+        - v0.2 (post-bootstrap polish)
+        - v0.x or later (deferred is fine)
+        - unsure
+    validations:
+      required: true

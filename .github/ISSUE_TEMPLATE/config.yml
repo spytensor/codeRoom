@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Architecture question
+    url: https://github.com/spytensor/codeRoom/blob/main/docs/architecture.md
+    about: Read the v0.1 design constitution before opening a design issue.
+  - name: Discussion
+    url: https://github.com/spytensor/codeRoom/discussions
+    about: For open-ended questions, use Discussions instead of Issues.
