@@ -16,7 +16,7 @@ use std::path::Path;
 
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{broadcast, Mutex};
 
 use crate::crep::CrepEvent;
 
@@ -185,10 +185,7 @@ mod tests {
         let replayed = MessageBus::replay(&log).await.unwrap();
         assert_eq!(replayed.len(), 2);
         match (&replayed[0], &replayed[1]) {
-            (
-                CrepEvent::RoleStarted { role: r0, .. },
-                CrepEvent::RoleStarted { role: r1, .. },
-            ) => {
+            (CrepEvent::RoleStarted { role: r0, .. }, CrepEvent::RoleStarted { role: r1, .. }) => {
                 assert_eq!(r0, "first");
                 assert_eq!(r1, "second");
             }
@@ -222,6 +219,9 @@ mod tests {
         let bus = MessageBus::open(&log).await.unwrap();
         let dbg = format!("{bus:?}");
         assert!(dbg.contains("MessageBus"));
-        assert!(!dbg.contains("File"), "Debug should not expose tokio::fs::File internals");
+        assert!(
+            !dbg.contains("File"),
+            "Debug should not expose tokio::fs::File internals"
+        );
     }
 }
