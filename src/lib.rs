@@ -7,5 +7,4 @@
 #![warn(missing_debug_implementations)]
 #![warn(rust_2018_idioms)]
 
-// Module declarations land here as the implementation grows.
-// Empty for the bootstrap commit; first slice adds `crep` and `adapter`.
+pub mod crep;
