@@ -23,10 +23,16 @@ pub enum CrepEvent {
     /// A role's subprocess is up and the system prompt has been loaded.
     /// First event for any role; emitted exactly once per session.
     RoleStarted {
+        /// Configured name of the role (e.g. `"backend"`, `"security"`).
         role: String,
+        /// Engine driving this role: `"cc"`, `"codex"`, or `"gemini"`.
         engine: String,
+        /// Model identifier as reported by the engine.
         model: String,
+        /// Engine-issued session id; stable across turns of the same session.
         session_id: String,
+        /// Hash of the composed system prompt (priors + patches + journal).
+        /// Used to detect drift between intended and actual role identity.
         priors_hash: String,
     },
     /// The role emitted a final assistant turn (the LLM finished its
@@ -35,41 +41,68 @@ pub enum CrepEvent {
     /// `mentions` is the list of `@<name>` references parsed out of the
     /// reply text; the wrapper uses this to route briefs to other roles.
     RoleSpoke {
+        /// Configured name of the role that spoke.
         role: String,
+        /// Final assistant-turn text. UI and message-bus consumers render
+        /// this directly.
         text: String,
+        /// Parsed `@<name>` references from `text`, in order of first
+        /// appearance, deduplicated.
         mentions: Vec<String>,
+        /// Cost of this turn in USD (engine-reported).
         cost_usd: f64,
+        /// Tokens served from prompt cache for this turn (engine-reported).
         cache_read: u64,
     },
     /// Engine asked to call a tool; the wrapper's PreToolUse hook saw it
     /// before the tool ran. May be followed by either `ToolCallExecuted`
     /// (if approved) or `PermissionDenied` (if vetoed).
     ToolCallProposed {
+        /// Configured name of the role proposing the call.
         role: String,
+        /// Engine-native tool identifier (e.g. `"Bash"`, `"Edit"`, `"Read"`).
         tool_name: String,
+        /// Engine-native tool input as opaque JSON; preserved verbatim so
+        /// the PreToolUse gate can pattern-match on it.
         tool_input: serde_json::Value,
+        /// Engine-issued tool-use id; pairs this proposal with its later
+        /// `ToolCallExecuted` or `PermissionDenied` event.
         tool_use_id: String,
     },
     /// Tool call ran to completion. `output_summary` is a one-line
     /// human-readable summary; full output lives in the transcript.
     ToolCallExecuted {
+        /// Configured name of the role that ran the tool.
         role: String,
+        /// Engine-issued tool-use id matching a prior `ToolCallProposed`.
         tool_use_id: String,
+        /// Whether the tool exited successfully.
         ok: bool,
+        /// One-line summary of the tool output (truncated to a reasonable
+        /// width); full output is captured in the transcript JSONL.
         output_summary: String,
     },
     /// Wrapper denied a proposed tool call via the PreToolUse hook.
     /// The tool did not run.
     PermissionDenied {
+        /// Configured name of the role whose tool call was denied.
         role: String,
+        /// Engine-native tool identifier of the denied call.
         tool_name: String,
+        /// Engine-native tool input that triggered the deny.
         tool_input: serde_json::Value,
+        /// Human-readable reason from the hook.
         reason: String,
     },
     /// Role subprocess exited. Final event emitted for the role's
     /// session id — any subsequent activity comes from a re-instantiated
     /// session with a new `session_id`.
-    RoleStopped { role: String, reason: StopReason },
+    RoleStopped {
+        /// Configured name of the role that stopped.
+        role: String,
+        /// Why the role stopped.
+        reason: StopReason,
+    },
 }
 
 /// Why a role stopped.
@@ -214,7 +247,7 @@ mod tests {
                     role: "r".into(),
                     tool_use_id: "id".into(),
                     ok: true,
-                    output_summary: "".into(),
+                    output_summary: String::new(),
                 },
                 "tool_call_executed",
             ),
