@@ -14,3 +14,4 @@ pub mod crep;
 pub mod init;
 pub mod priors;
 pub mod repl;
+pub mod role;

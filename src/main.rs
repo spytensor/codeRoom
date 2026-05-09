@@ -3,15 +3,19 @@
 //! Subcommands at v0.1:
 //!
 //! - `cr init [--project PATH]`  — bootstrap `.coderoom/` in a fresh project
+//! - `cr role add <name> [--engine cc|codex|gemini] [--model X]` — add a role
+//! - `cr role list`              — list configured roles
+//! - `cr role rm <name>`         — remove a role (refuses for the host)
 //! - `cr start [--project PATH]` — enter the interactive REPL
 //!
-//! Future subcommands (`cr role`, `cr show`, `cr cost`) land in their own
-//! PRs per the v0.1 sequence in `docs/architecture.md`.
+//! Future subcommands (`cr show`, `cr cost`) land in their own PRs per the
+//! v0.1 sequence in `docs/architecture.md`.
 
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use coderoom::adapter::Engine;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -34,6 +38,11 @@ enum Cmd {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Manage roles in the current project's `.coderoom/config.toml`.
+    Role {
+        #[command(subcommand)]
+        command: RoleCmd,
+    },
     /// Enter the interactive REPL using `.coderoom/config.toml` in the
     /// current directory (or `--project`).
     Start {
@@ -42,6 +51,56 @@ enum Cmd {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum RoleCmd {
+    /// Add a new role.
+    Add {
+        /// Role name (ASCII letters/digits/`-`/`_`, must start with a letter).
+        name: String,
+        /// Override default engine for this role.
+        #[arg(long, value_parser = parse_engine)]
+        engine: Option<Engine>,
+        /// Override default model for this role.
+        #[arg(long)]
+        model: Option<String>,
+        /// Project root. Defaults to the current working directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// List configured roles.
+    List {
+        /// Project root. Defaults to the current working directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+    /// Remove a role (refuses for the configured host).
+    Rm {
+        /// Role name to remove.
+        name: String,
+        /// Project root. Defaults to the current working directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+}
+
+fn parse_engine(s: &str) -> Result<Engine, String> {
+    match s {
+        "cc" => Ok(Engine::Cc),
+        "codex" => Ok(Engine::Codex),
+        "gemini" => Ok(Engine::Gemini),
+        other => Err(format!(
+            "unknown engine `{other}` — valid: cc, codex, gemini"
+        )),
+    }
+}
+
+fn project_root_or_cwd(arg: Option<PathBuf>) -> std::io::Result<PathBuf> {
+    match arg {
+        Some(p) => Ok(p),
+        None => std::env::current_dir(),
+    }
 }
 
 fn main() -> Result<()> {
@@ -63,24 +122,34 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Some(Cmd::Init { project }) => {
-            let project_root = match project {
-                Some(p) => p,
-                None => std::env::current_dir()?,
-            };
-            coderoom::init::run(&project_root)
-        }
+        Some(Cmd::Init { project }) => coderoom::init::run(&project_root_or_cwd(project)?),
+        Some(Cmd::Role { command }) => run_role_cmd(command),
         Some(Cmd::Start { project }) => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
             runtime.block_on(async move {
-                let project_root = match project {
-                    Some(p) => p,
-                    None => std::env::current_dir()?,
-                };
+                let project_root = project_root_or_cwd(project)?;
                 coderoom::repl::run(&project_root).await
             })
+        }
+    }
+}
+
+fn run_role_cmd(cmd: RoleCmd) -> Result<()> {
+    match cmd {
+        RoleCmd::Add {
+            name,
+            engine,
+            model,
+            project,
+        } => {
+            let root = project_root_or_cwd(project)?;
+            coderoom::role::add(&root, &name, engine, model.as_deref())
+        }
+        RoleCmd::List { project } => coderoom::role::list(&project_root_or_cwd(project)?),
+        RoleCmd::Rm { name, project } => {
+            coderoom::role::rm(&project_root_or_cwd(project)?, &name)
         }
     }
 }
