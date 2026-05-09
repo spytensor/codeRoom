@@ -8,11 +8,11 @@
 [![CI](https://github.com/spytensor/codeRoom/actions/workflows/ci.yml/badge.svg)](https://github.com/spytensor/codeRoom/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **Status: v0.1.0 — first user-runnable release.** All three engines
-> (Claude Code, Codex, Gemini) wired up; full REPL + CLI surface per
-> [docs/architecture.md](docs/architecture.md). Per semver, 0.x.y means
-> the public API is not yet stable; expect breaking changes during v0.x.
-> Known v0.1 limitations live in [CHANGELOG.md](CHANGELOG.md#known-limitations-deferred-to-v02-or-later).
+> **Status: v0.1.4 — user-runnable, still pre-1.0.** Claude Code,
+> Codex, and Gemini adapters are wired up; `cr init` now opens with a
+> polished role / engine setup flow on interactive terminals and a clean
+> non-interactive summary for scripts. Per semver, 0.x.y means the public
+> API is not yet stable.
 
 ## Why
 
@@ -45,26 +45,14 @@ reply.
 
 | Milestone | Scope |
 | --------- | ----- |
-| v0.1 (in progress) | Single-engine CC adapter, REPL, `@`-mention routing, journal, patch (manual promote) |
-| v0.2 | Codex + Gemini adapters, `cr review` (patch clustering), `cr verify` (journal fact-check) |
+| v0.1 | Multi-engine REPL, role priors, `@` routing, patch / refresh / journal / show / cost, npm install |
+| v0.1.x | First-run UI polish, config layering, updater, release hardening |
+| v0.2 | `cr review` (patch clustering), `cr verify` (journal fact-check) |
 | v0.x | Team mode (per-role human owners), auto-router (opt-in), replay viewer |
 
 See [docs/architecture.md](docs/architecture.md) for the v0.1 constitution
 and [docs/spike-2026-05-09.md](docs/spike-2026-05-09.md) for the feasibility
 spike that grounds it.
-
-## Install
-
-Not yet released. Once v0.1.0 ships:
-
-```bash
-# from a release binary (linux / macOS):
-curl -fsSL https://github.com/spytensor/codeRoom/releases/latest/download/cr-$(uname -s)-$(uname -m).tar.gz | tar xz
-sudo mv cr /usr/local/bin/
-
-# or from source:
-cargo install --git https://github.com/spytensor/codeRoom
-```
 
 ## Install
 
@@ -87,7 +75,7 @@ aarch64.
 <summary>Don't have npm? Direct binary install.</summary>
 
 ```bash
-TAG=v0.1.1
+TAG=v0.1.4
 ARCH=$(uname -m); case "$ARCH" in arm64|aarch64) ARCH=aarch64 ;; *) ARCH=x86_64 ;; esac
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 curl -fsSL "https://github.com/spytensor/codeRoom/releases/download/${TAG}/cr-${TAG}-${OS}-${ARCH}.tar.gz" \
@@ -121,24 +109,27 @@ sudo cp target/release/cr /usr/local/bin/
 
 ```bash
 cd your-project
-cr start                        # auto-creates .coderoom/ on first run
+cr init                         # polished role + engine setup
+cr start                        # enter the REPL
 $EDITOR .coderoom/roles/host.md # optional: give @host real priors
-cr start                        # subsequent runs just enter the REPL
 
-> hello
+cr › hello
 [@host ready · model=claude-opus-4-7]
 @host  Hi — what would you like to work on?
 
-> @host scope out adding email verification
+cr › @host scope out adding email verification
 @host  This touches auth, DB schema, and probably the front-end signup flow…
 ```
 
-What's planned for v0.2:
+Useful commands:
 
-- `cr role add <name> --engine codex` — adopt Codex / Gemini for specific roles.
-- `/patch <role> <text>`, `/refresh`, `/transcript` REPL commands.
-- End-of-session journals written by each role (with citation requirements).
-- `cr show <session>`, `cr cost`.
+- `cr start` auto-creates `.coderoom/` with sensible defaults when you skip
+  `cr init`.
+- `cr role add <name> --engine codex` adds or pins a specialist role.
+- `/patch <role> <text>`, `/refresh <role>`, `/transcript <role>`, and
+  `/journal <role>` are available inside the REPL.
+- `cr show`, `cr cost`, `cr config`, and `cr update` handle inspection,
+  spend tracking, layered config, and package upgrades.
 
 ## Contributing
 

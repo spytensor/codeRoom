@@ -78,6 +78,10 @@ enum Cmd {
         #[command(subcommand)]
         command: ConfigCmd,
     },
+    /// Upgrade the `cr` binary in place via whichever method
+    /// originally installed it (currently only `npm install -g` is
+    /// auto-upgradable; other paths print instructions).
+    Update,
 }
 
 #[derive(Debug, Subcommand)]
@@ -200,7 +204,7 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Init { project, yes }) => {
             let opts = if yes {
-                coderoom::init::InitOptions::auto()
+                coderoom::init::InitOptions::accepted_defaults()
             } else {
                 coderoom::init::InitOptions::manual()
             };
@@ -226,6 +230,7 @@ fn main() -> Result<()> {
             })
         }
         Some(Cmd::Config { command }) => run_config_cmd(command),
+        Some(Cmd::Update) => coderoom::update::run(),
         Some(Cmd::Cost { project, since }) => {
             let since_date = match since {
                 Some(s) => Some(

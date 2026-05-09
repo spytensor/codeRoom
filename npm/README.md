@@ -7,6 +7,7 @@ chat-style terminal.
 npm install -g @spytensor/coderoom
 
 cd your-project
+cr init
 cr start
 ```
 

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (nothing yet)
 
+## [0.1.4] - 2026-05-09
+
+### Changed
+
+- `cr init` now uses a polished default terminal flow on interactive
+  terminals: role picking, per-role engine assignment, and a final
+  file-tree confirmation before writing `.coderoom/`.
+- `cr init -y` keeps the clean summary but skips prompts, instead of
+  taking the terse `cr start` auto-init path.
+- `cr start` first-run and steady-state screens now present CodeRoom as
+  a product surface (`cr ›` prompt, compact project / role / token
+  summary) rather than plain logs.
+- README install / quickstart / roadmap copy now matches the released
+  npm + binary distribution path.
+
 ## [0.1.3] - 2026-05-09
 
 UI redesign release. Closes 4 of the 5 issues opened after the
@@ -221,7 +236,8 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.4
 [0.1.3]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.3
 [0.1.2]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.2
 [0.1.1]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.1

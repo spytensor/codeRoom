@@ -200,11 +200,6 @@ struct RunningRole {
 pub async fn run(project_root: &Path) -> Result<()> {
     let coderoom_dir = project_root.join(CODEROOM_DIR);
     if !coderoom_dir.exists() {
-        println!(
-            "{}",
-            "no .coderoom/ found here — bootstrapping a default one with @host (engine: cc)..."
-                .dim()
-        );
         crate::init::run(project_root, crate::init::InitOptions::auto())
             .context("auto-initializing .coderoom/")?;
         println!();
@@ -317,7 +312,8 @@ pub async fn run(project_root: &Path) -> Result<()> {
 }
 
 async fn prompt(stdout: &mut tokio::io::Stdout) -> Result<()> {
-    stdout.write_all(b"\n> ").await?;
+    let prompt = format!("\n{} ", "cr ›".green().bold());
+    stdout.write_all(prompt.as_bytes()).await?;
     stdout.flush().await?;
     Ok(())
 }
@@ -349,57 +345,76 @@ fn print_welcome(cfg: &Config, coderoom_dir: &Path, project_root: &Path) {
         .unwrap_or("(this project)");
     let mut role_names: Vec<&str> = cfg.role_names().collect();
     role_names.sort_unstable();
+    let total_tokens: u64 = role_names
+        .iter()
+        .map(|n| priors::estimate_role_tokens(coderoom_dir, n))
+        .sum();
 
     println!();
-    println!("{}", "welcome to coderoom".bold());
-    println!();
-    println!("  a single CLAUDE.md doesn't scale. coderoom runs separate");
-    println!("  Claude Code / Codex / Gemini sessions per role — backend, frontend,");
-    println!("  security, whoever — each carrying only its own organizational");
-    println!("  priors. you @-mention them like a group chat.");
-    println!();
     println!(
-        "  i found {} role{} in {project_name}/.coderoom/roles/:",
-        role_names.len(),
-        if role_names.len() == 1 { "" } else { "s" },
+        "{} {} {}",
+        "coderoom".bold(),
+        format!("v{}", env!("CARGO_PKG_VERSION")).dim(),
+        "· role-scoped agent sessions".dim()
+    );
+    println!(
+        "{}",
+        "────────────────────────────────────────────────────────".dim()
     );
     println!();
-    let max_name = role_names.iter().map(|n| n.len()).max().unwrap_or(0);
+    println!(
+        "  {:<9} {}",
+        "project".dim(),
+        project_name.with(crossterm::style::Color::White).bold()
+    );
+    println!(
+        "  {:<9} {} role{} · {} base tokens",
+        "loaded".dim(),
+        role_names.len(),
+        if role_names.len() == 1 { "" } else { "s" },
+        priors::format_token_count(total_tokens)
+    );
+    println!();
+    println!("{}", "roles".bold());
+    println!();
     for name in &role_names {
         let tokens = priors::estimate_role_tokens(coderoom_dir, name);
         let tokens_str = priors::format_token_count(tokens);
         let host_tag = if cfg.is_host(name) { " (host)" } else { "" };
+        let engine = cfg
+            .role_config(name, coderoom_dir)
+            .map_or(cfg.default_engine, |role| role.engine);
         println!(
-            "    {:width$}  {} tokens{}",
+            "  {} {:<13} {:<12} {:>7}{}",
+            "●".with(role_color(name)),
             format!("@{name}").with(role_color(name)).bold(),
+            engine.as_str().dim(),
             tokens_str.dim(),
             host_tag.dim(),
-            width = max_name + 1, // +1 for the leading '@'
         );
     }
     println!();
-    println!("  three things to know:");
+    println!("{}", "commands".bold());
     println!();
     println!(
-        "    {}                e.g. @backend can we use the gateway?",
-        "@<role> <text>".bold()
+        "  {:<26} {}",
+        "@<role> <text>".yellow(),
+        "send to a specialist".dim()
     );
     println!(
-        "    {}      saves a correction; loads on next /refresh",
-        "/patch <role> <text>".bold()
+        "  {:<26} {}",
+        "/patch <role> <text>".yellow(),
+        "save a correction for next refresh".dim()
     );
     println!(
-        "    {}                 re-spawn a role when its context drifts",
-        "/refresh <role>".bold()
+        "  {:<26} {}",
+        "/refresh <role>".yellow(),
+        "respawn a role with fresh priors".dim()
     );
     println!();
     println!(
-        "  docs:  {}",
-        "https://github.com/spytensor/codeRoom".underlined()
-    );
-    println!(
-        "  {}",
-        "won't show this again. type /welcome to revisit.".dim()
+        "{}",
+        "won't show this again automatically; type /welcome to revisit.".dim()
     );
     println!();
 }
@@ -426,10 +441,10 @@ fn print_steady_state(cfg: &Config, coderoom_dir: &Path, project_root: &Path) {
         .join(" ");
 
     println!(
-        "{} {} {} role-scoped agent sessions",
+        "{} {} {}",
         "coderoom".bold(),
         format!("v{}", env!("CARGO_PKG_VERSION")).dim(),
-        "·".dim(),
+        "· role-scoped agent sessions".dim(),
     );
     println!(
         "{} {} {} {} {} base tokens",
@@ -442,7 +457,7 @@ fn print_steady_state(cfg: &Config, coderoom_dir: &Path, project_root: &Path) {
     let host = &cfg.host_role;
     println!(
         "{}",
-        format!("type @<role> <text>; bare text → @{host}; /help, /exit").dim()
+        format!("type @<role> <text>; bare text → @{host}; /help, /welcome, /exit").dim()
     );
 }
 
