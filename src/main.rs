@@ -31,12 +31,16 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Cmd {
-    /// Bootstrap a `.coderoom/` directory with a default `@host` role.
+    /// Bootstrap a `.coderoom/` directory with detected default roles.
     Init {
         /// Project root in which to create `.coderoom/`. Defaults to the
         /// current working directory.
         #[arg(long)]
         project: Option<PathBuf>,
+        /// Skip the `proceed?` prompt and accept all defaults.
+        /// For dotfile repos / onboarding scripts.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
     },
     /// Manage roles in the current project's `.coderoom/config.toml`.
     Role {
@@ -139,7 +143,14 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Some(Cmd::Init { project }) => coderoom::init::run(&project_root_or_cwd(project)?),
+        Some(Cmd::Init { project, yes }) => {
+            let opts = if yes {
+                coderoom::init::InitOptions::auto()
+            } else {
+                coderoom::init::InitOptions::manual()
+            };
+            coderoom::init::run(&project_root_or_cwd(project)?, opts)
+        }
         Some(Cmd::Role { command }) => run_role_cmd(command),
         Some(Cmd::Start { project }) => {
             let runtime = tokio::runtime::Builder::new_multi_thread()

@@ -205,7 +205,8 @@ pub async fn run(project_root: &Path) -> Result<()> {
             "no .coderoom/ found here — bootstrapping a default one with @host (engine: cc)..."
                 .dim()
         );
-        crate::init::run(project_root).context("auto-initializing .coderoom/")?;
+        crate::init::run(project_root, crate::init::InitOptions::auto())
+            .context("auto-initializing .coderoom/")?;
         println!();
     }
 
