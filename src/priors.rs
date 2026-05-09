@@ -44,11 +44,13 @@ pub fn compose_for(coderoom_dir: &Path, role_name: &str) -> Result<String> {
         }
     }
 
-    let role_path = coderoom_dir
-        .join(ROLES_DIR)
-        .join(format!("{role_name}.md"));
-    let role_content = std::fs::read_to_string(&role_path)
-        .with_context(|| format!("reading priors for role `{role_name}` at {}", role_path.display()))?;
+    let role_path = coderoom_dir.join(ROLES_DIR).join(format!("{role_name}.md"));
+    let role_content = std::fs::read_to_string(&role_path).with_context(|| {
+        format!(
+            "reading priors for role `{role_name}` at {}",
+            role_path.display()
+        )
+    })?;
     out.push_str(role_content.trim_end());
 
     let patches = ordered_patches(coderoom_dir, role_name)?;
@@ -151,7 +153,10 @@ mod tests {
         let tmp = fixture("backend", "BACKEND_PRIORS");
         fs::write(coderoom_of(&tmp).join(SHARED_FILE), "   \n").unwrap();
         let composed = compose_for(&coderoom_of(&tmp), "backend").unwrap();
-        assert!(!composed.contains("---"), "composed should have no fence: {composed:?}");
+        assert!(
+            !composed.contains("---"),
+            "composed should have no fence: {composed:?}"
+        );
     }
 
     #[test]
