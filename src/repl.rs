@@ -498,7 +498,7 @@ async fn spawn_role(
     spawn_event_forwarder(rname, rx_events, Arc::clone(bus));
     Ok(RunningRole {
         tx_user,
-        priors_temp: priors_temp,
+        priors_temp,
     })
 }
 
