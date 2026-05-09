@@ -8,4 +8,5 @@
 #![warn(rust_2018_idioms)]
 
 pub mod adapter;
+pub mod bus;
 pub mod crep;
