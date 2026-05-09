@@ -65,23 +65,33 @@ sudo mv cr /usr/local/bin/
 cargo install --git https://github.com/spytensor/codeRoom
 ```
 
-## Quickstart (target shape, not yet runnable)
+## Quickstart
+
+What works today (v0.1, pre-alpha):
 
 ```bash
-cd your-project
-cr init                         # walk through role setup, pick a host
-cr role add backend --engine cc
-cr role add security --engine codex
-cr role add frontend --engine gemini
+# Build from source — no release binaries yet.
+cargo install --git https://github.com/spytensor/codeRoom
 
+cd your-project
+cr init                         # creates .coderoom/ with one @host role
+$EDITOR .coderoom/roles/host.md # write project-specific priors
 cr start                        # enter the REPL
-> we want email verification on signup
-[host] looked at the auth module. @backend / @security please scope it.
-[backend] would add /v1/auth/email-verify behind the gateway, plus...
-[security] hard requirements: 5/hr/IP rate limit, single-use 24h tokens, ...
-> /patch backend rate limit lives in gateway/routes/auth.yaml, not in code
-[backend] noted; will configure in gateway.
+
+> hello
+[@host ready · model=claude-opus-4-7]
+@host  Hi — what would you like to work on?
+
+> @host scope out adding email verification
+@host  This touches auth, DB schema, and probably the front-end signup flow…
 ```
+
+What's planned for v0.2:
+
+- `cr role add <name> --engine codex` — adopt Codex / Gemini for specific roles.
+- `/patch <role> <text>`, `/refresh`, `/transcript` REPL commands.
+- End-of-session journals written by each role (with citation requirements).
+- `cr show <session>`, `cr cost`.
 
 ## Contributing
 

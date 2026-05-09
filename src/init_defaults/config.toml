@@ -1,0 +1,21 @@
+# CodeRoom project config. See https://github.com/spytensor/codeRoom for docs.
+
+# Engine used by any role that doesn't override.
+# Options: "cc" (Claude Code), "codex", "gemini".
+default_engine = "cc"
+
+# Default model id; engine-specific (e.g. "opus" for cc, "o3" for codex).
+# default_model = "opus"
+
+# Per-role budget cap in USD, fed to each engine's native budget flag.
+budget_per_role_usd = 0.50
+
+# Role that catches un-addressed text in the REPL.
+host_role = "host"
+
+# Each [roles.<name>] declares a role. The role's priors live at
+# .coderoom/roles/<name>.md. Add more by creating the .md file AND
+# adding a table here. Empty tables inherit the defaults above.
+[roles.host]
+# engine = "cc"
+# model = "opus"

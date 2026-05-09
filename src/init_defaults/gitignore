@@ -1,0 +1,9 @@
+# Runtime artifacts — never committed.
+messages.jsonl
+sessions/
+transcripts/
+
+# Patches and journals are committed by default (they're the project's
+# accumulated knowledge). If you'd rather keep them local, uncomment:
+# patches/
+# journal/
