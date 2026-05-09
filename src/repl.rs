@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use crossterm::style::Stylize;
+use tempfile::NamedTempFile;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -23,6 +24,7 @@ use crate::adapter::{Engine, EngineAdapter, RoleHandle, UserMessage};
 use crate::bus::MessageBus;
 use crate::config::{Config, CODEROOM_DIR};
 use crate::crep::CrepEvent;
+use crate::priors;
 
 /// One parsed user input.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +80,11 @@ pub fn parse_line(input: &str) -> Command {
 /// Live state for a single running role inside the REPL.
 struct RunningRole {
     tx_user: mpsc::Sender<UserMessage>,
+    /// Composed priors temp file. Held for the role's lifetime so the
+    /// path passed to the engine via `--append-system-prompt-file`
+    /// remains valid until the subprocess has fully read it. Dropped
+    /// at role removal, which deletes the file.
+    _priors_temp: NamedTempFile,
 }
 
 /// REPL entry point. Loads config, spawns every declared role, forwards
@@ -98,9 +105,20 @@ pub async fn run(project_root: &Path) -> Result<()> {
         .map(ToOwned::to_owned)
         .collect::<Vec<String>>()
     {
-        let role_cfg = cfg
+        // Compose shared.md + role.md + active patches into a single
+        // tempfile; the engine's --append-system-prompt-file points at it.
+        // We hold the tempfile in RunningRole so it survives until the
+        // role exits.
+        let composed = priors::compose_for(&coderoom_dir, &name)
+            .with_context(|| format!("composing priors for role `{name}`"))?;
+        let priors_temp = write_priors_tempfile(&name, &composed)
+            .with_context(|| format!("staging priors for role `{name}`"))?;
+
+        let mut role_cfg = cfg
             .role_config(&name, &coderoom_dir)
             .expect("role declared but role_config returned None");
+        role_cfg.priors_path = priors_temp.path().to_owned();
+
         let handle = match role_cfg.engine {
             Engine::Cc => cc_adapter
                 .start(role_cfg)
@@ -123,7 +141,13 @@ pub async fn run(project_root: &Path) -> Result<()> {
             rx_events,
         } = handle;
         spawn_event_forwarder(rname.clone(), rx_events, Arc::clone(&bus));
-        roles.insert(rname, RunningRole { tx_user });
+        roles.insert(
+            rname,
+            RunningRole {
+                tx_user,
+                _priors_temp: priors_temp,
+            },
+        );
     }
 
     print_banner(&cfg);
@@ -348,6 +372,24 @@ fn truncate_inline(s: &str, max_chars: usize) -> String {
     let mut out: String = s.chars().take(max_chars.saturating_sub(1)).collect();
     out.push('…');
     out
+}
+
+/// Write composed priors to a tempfile in the system temp dir. The
+/// tempfile name embeds the role for easier debugging when something
+/// goes wrong. Caller is expected to keep the returned `NamedTempFile`
+/// alive for as long as the engine subprocess might re-read the file.
+fn write_priors_tempfile(role: &str, composed: &str) -> Result<NamedTempFile> {
+    let mut tempfile = tempfile::Builder::new()
+        .prefix(&format!("coderoom-priors-{role}-"))
+        .suffix(".md")
+        .tempfile()
+        .context("creating priors tempfile")?;
+    use std::io::Write as _;
+    tempfile
+        .write_all(composed.as_bytes())
+        .context("writing composed priors")?;
+    tempfile.flush().context("flushing composed priors")?;
+    Ok(tempfile)
 }
 
 /// Forward all events from a role's `rx_events` into the shared bus.

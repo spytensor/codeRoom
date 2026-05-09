@@ -53,8 +53,11 @@ chrono = { version = "0.4", features = ["serde", "clock"] }
 # Pattern matching
 regex = "1.10"
 
-[dev-dependencies]
+# Used by the REPL to stage composed priors for spawned roles. Also
+# pulled in by tests (a regular dep is visible there too).
 tempfile = "3.10"
+
+[dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
 pretty_assertions = "1.4"
