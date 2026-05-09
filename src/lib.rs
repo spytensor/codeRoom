@@ -12,6 +12,7 @@ pub mod bus;
 pub mod config;
 pub mod cost;
 pub mod crep;
+pub mod detect;
 pub mod init;
 pub mod priors;
 pub mod repl;
