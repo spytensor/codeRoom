@@ -267,15 +267,61 @@ fn print_help(cfg: &Config) {
     println!("  /exit, /quit        leave the REPL");
 }
 
+/// Send `text` to `role` and drain bus events until that role finishes
+/// its turn. If the role's final `RoleSpoke` mentions other running
+/// roles, automatically forwards a brief to each (one hop only at v0.1
+/// — multi-hop + hop-depth escalation are tracked in
+/// `docs/proposed-amendments.md`).
 async fn send_and_drain(
     roles: &HashMap<String, RunningRole>,
     rx: &mut tokio::sync::broadcast::Receiver<CrepEvent>,
     role: &str,
     text: &str,
 ) -> Result<()> {
+    let Some(captured) = drain_one_turn(roles, rx, role, text).await? else {
+        return Ok(());
+    };
+
+    // One-hop auto-routing: forward to each mentioned running role.
+    // Self-references and unknown roles are skipped silently.
+    for mention in &captured.mentions {
+        if mention == role || !roles.contains_key(mention) {
+            continue;
+        }
+        let brief = format!("From @{role}: {}", captured.text);
+        println!(
+            "{}",
+            format!("  ↳ auto-routing to @{mention}").dim().italic()
+        );
+        if drain_one_turn(roles, rx, mention, &brief).await?.is_none() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// Final assistant-turn fields captured during a single role's drain.
+#[derive(Debug, Clone)]
+struct CapturedTurn {
+    text: String,
+    mentions: Vec<String>,
+}
+
+/// Send `text` to `role` and drain bus events until that role's turn
+/// ends. Returns the captured `RoleSpoke` info, or `None` if the role
+/// stopped before producing a `RoleSpoke` (e.g., immediate crash).
+///
+/// All events are rendered along the way; this only returns to the
+/// caller once the role's turn boundary is observed.
+async fn drain_one_turn(
+    roles: &HashMap<String, RunningRole>,
+    rx: &mut tokio::sync::broadcast::Receiver<CrepEvent>,
+    role: &str,
+    text: &str,
+) -> Result<Option<CapturedTurn>> {
     let Some(running) = roles.get(role) else {
         println!("{}", format!("no such role: @{role}").red());
-        return Ok(());
+        return Ok(None);
     };
 
     if let Err(error) = running
@@ -284,22 +330,29 @@ async fn send_and_drain(
         .await
     {
         warn!(role, %error, "user-message channel for role closed");
-        return Ok(());
+        return Ok(None);
     }
 
-    // Drain bus events until the addressed role finishes its turn.
+    let mut captured: Option<CapturedTurn> = None;
     loop {
         match rx.recv().await {
             Ok(event) => {
                 render_event(&event);
-                if let CrepEvent::RoleSpoke { role: spoken, .. } = &event {
-                    if spoken == role {
+                match &event {
+                    CrepEvent::RoleSpoke {
+                        role: spoken,
+                        text,
+                        mentions,
+                        ..
+                    } if spoken == role => {
+                        captured = Some(CapturedTurn {
+                            text: text.clone(),
+                            mentions: mentions.clone(),
+                        });
                         break;
                     }
-                }
-                if matches!(&event, CrepEvent::RoleStopped { role: stopped, .. } if stopped == role)
-                {
-                    break;
+                    CrepEvent::RoleStopped { role: stopped, .. } if stopped == role => break,
+                    _ => {}
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -311,7 +364,7 @@ async fn send_and_drain(
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
     }
-    Ok(())
+    Ok(captured)
 }
 
 fn render_event(event: &CrepEvent) {
