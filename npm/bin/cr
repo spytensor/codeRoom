@@ -1,0 +1,15 @@
+#!/usr/bin/env node
+// Placeholder shim. Replaced by the real `cr` binary during `npm install`'s
+// postinstall step (see ../install.js). If you're seeing this message,
+// the postinstall didn't run — try `npm install -g coderoom` again, or
+// download the binary directly from
+// https://github.com/spytensor/codeRoom/releases.
+
+'use strict';
+
+console.error(
+  'coderoom: install incomplete — the platform binary is missing.\n' +
+    '  try: npm install -g coderoom\n' +
+    '  or:  https://github.com/spytensor/codeRoom/releases'
+);
+process.exit(1);
