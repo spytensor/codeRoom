@@ -48,6 +48,10 @@ pub enum Command {
         /// Correction text — written verbatim into the new patch file.
         text: String,
     },
+    /// `/refresh <role>` — re-instantiate the role with the latest
+    /// composed priors (shared.md + role.md + active patches). The
+    /// old subprocess is dropped; a fresh one starts.
+    Refresh(String),
     /// `/stop <role>` — terminate the named role's subprocess.
     Stop(String),
     /// `/help` — print the help banner.
@@ -72,6 +76,14 @@ pub fn parse_line(input: &str) -> Command {
         return match cmd {
             "exit" | "quit" => Command::Exit,
             "stop" if !arg.is_empty() => Command::Stop(arg.to_owned()),
+            "refresh" if !arg.is_empty() => {
+                let role = arg.strip_prefix('@').unwrap_or(arg).to_owned();
+                if role.is_empty() {
+                    Command::Help
+                } else {
+                    Command::Refresh(role)
+                }
+            }
             "patch" => parse_patch_arg(arg).unwrap_or(Command::Help),
             // /help, /h, and any unknown slash command all fall through here.
             _ => Command::Help,
@@ -170,6 +182,29 @@ pub async fn run(project_root: &Path) -> Result<()> {
                     println!("{}", format!("no such role: @{role}").red());
                 }
             }
+            Command::Refresh(role) => {
+                if !cfg.roles.contains_key(&role) {
+                    println!("{}", format!("no such role: @{role}").red());
+                    continue;
+                }
+                if let Some(old) = roles.remove(&role) {
+                    drop(old.tx_user);
+                    drop(old._priors_temp);
+                    println!("{}", format!("refreshing @{role}...").dim());
+                }
+                match spawn_role(&cfg, &cc_adapter, &coderoom_dir, &role, &bus).await {
+                    Ok(running) => {
+                        roles.insert(role.clone(), running);
+                        println!("{}", format!("✓ @{role} refreshed").green());
+                    }
+                    Err(error) => {
+                        println!(
+                            "{}",
+                            format!("✗ refreshing @{role} failed: {error:#}").red()
+                        );
+                    }
+                }
+            }
             Command::Patch { role, text } => {
                 if !cfg.roles.contains_key(&role) {
                     println!("{}", format!("no such role: @{role}").red());
@@ -242,6 +277,7 @@ fn print_help(cfg: &Config) {
     println!("  @<role> <text>      send to a specific role");
     println!("  <text>              send to host (@{})", cfg.host_role);
     println!("  /patch <role> <…>   save a correction; loads on next /refresh");
+    println!("  /refresh <role>     re-instantiate role with latest priors+patches");
     println!("  /stop <role>        terminate a role's subprocess");
     println!("  /help               this help");
     println!("  /exit, /quit        leave the REPL");
@@ -572,6 +608,27 @@ mod tests {
     #[test]
     fn parse_patch_without_role_shows_help() {
         assert_eq!(parse_line("/patch"), Command::Help);
+    }
+
+    #[test]
+    fn parse_refresh_with_role() {
+        assert_eq!(
+            parse_line("/refresh backend"),
+            Command::Refresh("backend".into())
+        );
+    }
+
+    #[test]
+    fn parse_refresh_accepts_at_prefixed_role() {
+        assert_eq!(
+            parse_line("/refresh @backend"),
+            Command::Refresh("backend".into())
+        );
+    }
+
+    #[test]
+    fn parse_refresh_without_role_shows_help() {
+        assert_eq!(parse_line("/refresh"), Command::Help);
     }
 
     #[test]
