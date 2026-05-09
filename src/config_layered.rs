@@ -598,10 +598,10 @@ engine = "codex"
         let user_path = tmp.path().join("user-config.toml");
         write_user(
             &user_path,
-            r#"
+            r"
 [defaults]
 budget_per_role_usd = 0.20
-"#,
+",
         );
         let coderoom = tmp.path().join(CODEROOM_DIR);
         write_minimal_project(&coderoom, ""); // project: 0.50
@@ -615,10 +615,10 @@ budget_per_role_usd = 0.20
         let user_path = tmp.path().join("user-config.toml");
         write_user(
             &user_path,
-            r#"
+            r"
 [defaults]
 budget_per_role_usd = 5.00
-"#,
+",
         );
         let coderoom = tmp.path().join(CODEROOM_DIR);
         write_minimal_project(&coderoom, ""); // 0.50 wins
