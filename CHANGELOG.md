@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (nothing yet)
 
+## [0.1.10] - 2026-05-09
+
+### Fixed
+
+- The interactive role picker (and the engine picker, and the confirm
+  screen) no longer renders diagonally down-right across the terminal.
+  `WizardTerminal::render` writes its body with `\n` line endings, but
+  raw mode disables ONLCR — so each `\n` only moved the cursor down
+  without returning to column 0, and every row started where the row
+  above ended. Width-aware row formatting (added in 0.1.8) was correct;
+  the line terminator wasn't. Now translates `\n` → `\r\n` once before
+  writing. This is the bug users saw as "garbled picker" in 0.1.7,
+  0.1.8, and 0.1.9.
+
 ## [0.1.9] - 2026-05-09
 
 ### Fixed

@@ -722,8 +722,15 @@ impl WizardTerminal {
     }
 
     fn render(&mut self, body: &str) -> Result<()> {
+        // Raw mode disables ONLCR — bare `\n` only moves the cursor down,
+        // it does NOT return to column 0. Picker bodies are built with
+        // `writeln!` (LF only); without translation each row starts at
+        // the column where the previous row ended, and the layout
+        // marches diagonally down-right across the screen. This is the
+        // "garbled picker" bug users reported in 0.1.7 / 0.1.8 / 0.1.9.
         queue!(self.stdout, MoveTo(0, 0), Clear(ClearType::All))?;
-        self.stdout.write_all(body.as_bytes())?;
+        let crlf = body.replace('\n', "\r\n");
+        self.stdout.write_all(crlf.as_bytes())?;
         self.stdout.flush()?;
         Ok(())
     }
