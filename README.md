@@ -8,10 +8,11 @@
 [![CI](https://github.com/spytensor/codeRoom/actions/workflows/ci.yml/badge.svg)](https://github.com/spytensor/codeRoom/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **Status: pre-alpha.** Architecture is locked
-> ([docs/architecture.md](docs/architecture.md)); v0.1 implementation is in
-> progress. Not yet usable. The first user-runnable build will be tagged
-> `v0.1.0`.
+> **Status: v0.1.0 — first user-runnable release.** All three engines
+> (Claude Code, Codex, Gemini) wired up; full REPL + CLI surface per
+> [docs/architecture.md](docs/architecture.md). Per semver, 0.x.y means
+> the public API is not yet stable; expect breaking changes during v0.x.
+> Known v0.1 limitations live in [CHANGELOG.md](CHANGELOG.md#known-limitations-deferred-to-v02-or-later).
 
 ## Why
 
