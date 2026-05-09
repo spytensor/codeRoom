@@ -124,7 +124,9 @@ impl ProjectScan {
                     | StackSignal::Kubernetes
             )
         });
-        let has_ci = stack.iter().any(|s| matches!(s, StackSignal::GithubWorkflows));
+        let has_ci = stack
+            .iter()
+            .any(|s| matches!(s, StackSignal::GithubWorkflows));
 
         if has_backend_lang {
             out.push(BACKEND);
@@ -293,10 +295,12 @@ mod tests {
         )
         .unwrap();
         let scan = scan(tmp.path());
-        assert!(scan
-            .stack
-            .iter()
-            .any(|s| matches!(s, StackSignal::PackageJson { has_ui_framework: true })));
+        assert!(scan.stack.iter().any(|s| matches!(
+            s,
+            StackSignal::PackageJson {
+                has_ui_framework: true
+            }
+        )));
         assert!(scan.suggested_roles.contains(&"frontend"));
         // No backend lang signal here → no @backend, no @security
         assert!(!scan.suggested_roles.contains(&"backend"));
@@ -322,10 +326,12 @@ mod tests {
         fs::write(tmp.path().join("package.json"), "this is not json").unwrap();
         let scan = scan(tmp.path());
         // Still recognised as PackageJson, but UI flag is false
-        assert!(scan
-            .stack
-            .iter()
-            .any(|s| matches!(s, StackSignal::PackageJson { has_ui_framework: false })));
+        assert!(scan.stack.iter().any(|s| matches!(
+            s,
+            StackSignal::PackageJson {
+                has_ui_framework: false
+            }
+        )));
     }
 
     #[test]
