@@ -9,9 +9,10 @@
 //! concurrent role rendering are deferred to a follow-up PR.
 
 use std::collections::HashMap;
-use std::io::Write as _;
+use std::io::{IsTerminal, Write as _};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use crossterm::style::Stylize;
@@ -370,6 +371,86 @@ async fn send_and_drain(
     Ok(())
 }
 
+/// Frames of the standard braille spinner. ~10 frames at 100 ms gives
+/// a familiar one-second rotation that matches `cargo`, `npm`, etc.
+const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Tick interval for the spinner, in milliseconds. Below ~80 ms users
+/// notice the redraws as flicker; above ~120 ms it looks frozen.
+const SPINNER_TICK_MS: u64 = 100;
+
+/// Inline "@<role> thinking <spinner>" line that lives below the user's
+/// last input while we wait for the role to respond. Repaints in place
+/// via carriage-return + clear-line so it stays on a single screen row,
+/// then erases itself before any real event is rendered.
+///
+/// Skips all output when stdout is not a TTY (`cr ... | tee log.txt`)
+/// to keep redirected output free of ANSI escapes.
+struct ThinkingSpinner {
+    role: String,
+    frame: usize,
+    is_painted: bool,
+    is_tty: bool,
+}
+
+impl ThinkingSpinner {
+    fn start(role: &str) -> Self {
+        let mut spinner = Self {
+            role: role.to_owned(),
+            frame: 0,
+            is_painted: false,
+            is_tty: std::io::stdout().is_terminal(),
+        };
+        spinner.repaint();
+        spinner
+    }
+
+    fn paint(&mut self) {
+        if !self.is_tty {
+            return;
+        }
+        let frame = SPINNER_FRAMES[self.frame % SPINNER_FRAMES.len()];
+        // \r returns cursor to col 0; \x1b[2K clears the whole line.
+        // The role color is dropped on intentionally so the line is
+        // unambiguously "status" and not confused with a RoleSpoke.
+        print!(
+            "\r\x1b[2K{}",
+            format!("  @{} thinking {}", self.role, frame).dim()
+        );
+        let _ = std::io::stdout().flush();
+        self.is_painted = true;
+    }
+
+    fn advance(&mut self) {
+        self.frame = (self.frame + 1) % SPINNER_FRAMES.len();
+        if self.is_painted {
+            self.paint();
+        }
+    }
+
+    fn repaint(&mut self) {
+        self.paint();
+    }
+
+    fn clear(&mut self) {
+        if !self.is_tty || !self.is_painted {
+            self.is_painted = false;
+            return;
+        }
+        print!("\r\x1b[2K");
+        let _ = std::io::stdout().flush();
+        self.is_painted = false;
+    }
+}
+
+impl Drop for ThinkingSpinner {
+    fn drop(&mut self) {
+        // Defensive: never leave a spinner painted on the screen if a
+        // panic or early return ate the explicit clear() call.
+        self.clear();
+    }
+}
+
 /// Final assistant-turn fields captured during a single role's drain.
 #[derive(Debug, Clone)]
 struct CapturedTurn {
@@ -404,36 +485,52 @@ async fn drain_one_turn(
     }
 
     let mut captured: Option<CapturedTurn> = None;
+    let mut spinner = ThinkingSpinner::start(role);
+    let mut ticker = tokio::time::interval(Duration::from_millis(SPINNER_TICK_MS));
+    // Skip the immediate fire so the spinner doesn't double-redraw on entry.
+    ticker.tick().await;
     loop {
-        match rx.recv().await {
-            Ok(event) => {
-                render_event(&event);
-                match &event {
-                    CrepEvent::RoleSpoke {
-                        role: spoken,
-                        text,
-                        mentions,
-                        ..
-                    } if spoken == role => {
-                        captured = Some(CapturedTurn {
-                            text: text.clone(),
-                            mentions: mentions.clone(),
-                        });
+        tokio::select! {
+            biased;
+            recv = rx.recv() => match recv {
+                Ok(event) => {
+                    spinner.clear();
+                    render_event(&event);
+                    let done = match &event {
+                        CrepEvent::RoleSpoke {
+                            role: spoken,
+                            text,
+                            mentions,
+                            ..
+                        } if spoken == role => {
+                            captured = Some(CapturedTurn {
+                                text: text.clone(),
+                                mentions: mentions.clone(),
+                            });
+                            true
+                        }
+                        CrepEvent::RoleStopped { role: stopped, .. } if stopped == role => true,
+                        _ => false,
+                    };
+                    if done {
                         break;
                     }
-                    CrepEvent::RoleStopped { role: stopped, .. } if stopped == role => break,
-                    _ => {}
+                    spinner.repaint();
                 }
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                println!(
-                    "{}",
-                    format!("[renderer fell behind, skipped {skipped} event(s)]").dim()
-                );
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    spinner.clear();
+                    println!(
+                        "{}",
+                        format!("[renderer fell behind, skipped {skipped} event(s)]").dim()
+                    );
+                    spinner.repaint();
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            },
+            _ = ticker.tick() => spinner.advance(),
         }
     }
+    spinner.clear();
     Ok(captured)
 }
 
@@ -936,6 +1033,61 @@ mod tests {
     #[test]
     fn parse_journal_without_role_shows_help() {
         assert_eq!(parse_line("/journal"), Command::Help);
+    }
+
+    #[test]
+    fn spinner_advances_through_all_frames() {
+        // Non-TTY mode prevents writes, so we can drive `advance()` purely
+        // for state-machine coverage without polluting test output.
+        let mut s = ThinkingSpinner {
+            role: "backend".into(),
+            frame: 0,
+            is_painted: false,
+            is_tty: false,
+        };
+        for expected in 1..=SPINNER_FRAMES.len() {
+            s.advance();
+            assert_eq!(s.frame, expected % SPINNER_FRAMES.len());
+        }
+    }
+
+    #[test]
+    fn spinner_clear_is_idempotent_and_marks_unpainted() {
+        let mut s = ThinkingSpinner {
+            role: "backend".into(),
+            frame: 0,
+            is_painted: true,
+            is_tty: false,
+        };
+        s.clear();
+        assert!(!s.is_painted);
+        // second clear is a no-op
+        s.clear();
+        assert!(!s.is_painted);
+    }
+
+    #[test]
+    fn spinner_skips_paint_when_non_tty() {
+        let mut s = ThinkingSpinner {
+            role: "backend".into(),
+            frame: 0,
+            is_painted: false,
+            is_tty: false,
+        };
+        s.repaint();
+        // Non-TTY: paint should NOT mark as painted (so clear() doesn't
+        // emit escape sequences into a redirected log either).
+        assert!(!s.is_painted);
+    }
+
+    #[test]
+    fn spinner_frames_are_all_single_glyphs() {
+        // Visual stability: every frame should be exactly one display
+        // column wide so the trailing `›` (or end-of-line) doesn't jump
+        // between frames.
+        for (i, f) in SPINNER_FRAMES.iter().enumerate() {
+            assert_eq!(f.chars().count(), 1, "frame {i} ({f:?}) is not 1 char");
+        }
     }
 
     #[test]
