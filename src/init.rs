@@ -33,10 +33,10 @@ pub fn run(project_root: &Path) -> Result<()> {
     std::fs::create_dir_all(&roles_dir)
         .with_context(|| format!("creating {}", roles_dir.display()))?;
 
-    write_file(coderoom_dir.join(CONFIG_FILE), DEFAULT_CONFIG_TOML)?;
-    write_file(coderoom_dir.join("shared.md"), DEFAULT_SHARED_PRIORS)?;
-    write_file(roles_dir.join("host.md"), DEFAULT_HOST_PRIORS)?;
-    write_file(coderoom_dir.join(".gitignore"), DEFAULT_GITIGNORE)?;
+    write_file(&coderoom_dir.join(CONFIG_FILE), DEFAULT_CONFIG_TOML)?;
+    write_file(&coderoom_dir.join("shared.md"), DEFAULT_SHARED_PRIORS)?;
+    write_file(&roles_dir.join("host.md"), DEFAULT_HOST_PRIORS)?;
+    write_file(&coderoom_dir.join(".gitignore"), DEFAULT_GITIGNORE)?;
 
     println!("Initialized {}", coderoom_dir.display());
     println!();
@@ -54,8 +54,8 @@ pub fn run(project_root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn write_file(path: std::path::PathBuf, content: &str) -> Result<()> {
-    std::fs::write(&path, content).with_context(|| format!("writing {}", path.display()))?;
+fn write_file(path: &Path, content: &str) -> Result<()> {
+    std::fs::write(path, content).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
