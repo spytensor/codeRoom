@@ -9,6 +9,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (nothing yet)
 
+## [0.1.3] - 2026-05-09
+
+UI redesign release. Closes 4 of the 5 issues opened after the
+multi-agent UX review (#30–#33). #34 (opt-in ratatui wizard) is
+deferred — the agent reviews themselves flagged it as low-value,
+and `cr init` after #33 already covers ~95% of its purpose.
+
+### Added
+
+- **Inline thinking indicator (#30):** `  @<role> thinking ⠋`
+  spinner repaints in place via carriage-return + ANSI clear-line
+  while waiting for events. The single highest-leverage UX bet per
+  three independent reviewers — finally answers "is anything
+  happening?" without the scrollback corruption a sticky bottom bar
+  would introduce in tmux/screen/Apple Terminal/ConPTY/mosh.
+- **First-run welcome (#31, Variant E):** one-time card explaining
+  the project, listing roles with token estimates, three-things-to-
+  know, real docs URL, contract line "won't show this again. type
+  /welcome to revisit." `.coderoom/.welcomed` marker disambiguates
+  first-run vs. return.
+- **Steady-state two-line summary (#31, Variant B):** every
+  subsequent launch — version + tagline, then `<project> · @roles
+  · 21.5k base tokens`. Total token count is the only "live"
+  signal that earns its pixels.
+- **`/welcome` REPL command:** re-show the welcome on demand.
+- **Project detection (#32):** `detect::scan` reads filenames at
+  the project root (plus `package.json`'s `dependencies` keys for
+  UI-framework discrimination), suggests roles deterministically.
+  Inputs are filenames-only by design — never source contents,
+  never `.git/`, never the network. The user-facing copy says
+  `(local, no network)` and we keep it true.
+- **`cr init` redesign (#33):**
+  - Scans the project, prints what it found.
+  - Probes `$PATH` for `claude` / `codex` / `gemini` and shows
+    install URLs for missing engines.
+  - Renders the file tree it's about to create *before* any disk
+    write, then asks `proceed? [Y/n]`.
+  - Suggests roles based on detected stack (Cargo.toml →
+    backend + security; package.json + react → frontend;
+    migrations/ → data; Dockerfile → devops; etc.). Each role
+    gets a templated priors file with `{ROLE}` substituted.
+  - Acknowledges existing `CLAUDE.md` with line count; doesn't
+    auto-split (deferred).
+  - `cr init -y` skips the prompt for dotfile / onboarding scripts.
+- **`cr start` auto-init now uses the same path** with
+  `InitOptions::auto()` (silent confirm, brief notice).
+
+### Changed
+
+- `cr init`'s default behaviour creates *all suggested roles*, not
+  just `host`. Multi-role projects no longer require a follow-up
+  `cr role add` per role.
+
+### Deferred
+
+- **Issue #34 (opt-in `cr init --advanced` wizard with ratatui).**
+  Per the agent reviews' own warnings about "performing
+  thoughtfulness" and the marginal value vs. the now-good
+  default `cr init`, this is paused. Re-scoping discussion in the
+  issue thread.
+
 ## [0.1.2] - 2026-05-09
 
 Distribution release. No behavioral changes.
@@ -160,7 +221,8 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.3
 [0.1.2]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.2
 [0.1.1]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.1
 [0.1.0]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.0
