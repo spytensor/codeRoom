@@ -148,8 +148,6 @@ fn run_role_cmd(cmd: RoleCmd) -> Result<()> {
             coderoom::role::add(&root, &name, engine, model.as_deref())
         }
         RoleCmd::List { project } => coderoom::role::list(&project_root_or_cwd(project)?),
-        RoleCmd::Rm { name, project } => {
-            coderoom::role::rm(&project_root_or_cwd(project)?, &name)
-        }
+        RoleCmd::Rm { name, project } => coderoom::role::rm(&project_root_or_cwd(project)?, &name),
     }
 }

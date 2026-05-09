@@ -28,10 +28,7 @@ pub fn add(
     validate_name(name)?;
     let coderoom_dir = project_root.join(CODEROOM_DIR);
     if !coderoom_dir.is_dir() {
-        bail!(
-            "{} not found — run `cr init` first",
-            coderoom_dir.display(),
-        );
+        bail!("{} not found — run `cr init` first", coderoom_dir.display(),);
     }
 
     let mut cfg = read_config(&coderoom_dir)?;
@@ -39,7 +36,10 @@ pub fn add(
         bail!("role `{name}` already exists in {CONFIG_FILE}");
     }
 
-    let entry = crate::config::RoleEntry { engine, model: model.map(ToOwned::to_owned) };
+    let entry = crate::config::RoleEntry {
+        engine,
+        model: model.map(ToOwned::to_owned),
+    };
     cfg.roles.insert(name.to_owned(), entry);
     write_config(&coderoom_dir, &cfg)?;
 
@@ -142,19 +142,17 @@ fn validate_name(name: &str) -> Result<()> {
 
 fn read_config(coderoom_dir: &Path) -> Result<Config> {
     let path = coderoom_dir.join(CONFIG_FILE);
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let cfg: Config = toml::from_str(&text)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let cfg: Config =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
     Ok(cfg)
 }
 
 fn write_config(coderoom_dir: &Path, cfg: &Config) -> Result<()> {
     let path = coderoom_dir.join(CONFIG_FILE);
-    let body = toml::to_string_pretty(cfg)
-        .map_err(|e| anyhow!("serializing config.toml: {e}"))?;
-    std::fs::write(&path, body)
-        .with_context(|| format!("writing {}", path.display()))?;
+    let body = toml::to_string_pretty(cfg).map_err(|e| anyhow!("serializing config.toml: {e}"))?;
+    std::fs::write(&path, body).with_context(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
