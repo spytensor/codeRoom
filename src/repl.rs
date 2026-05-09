@@ -63,6 +63,9 @@ pub enum Command {
     /// `.coderoom/journal/YYYY-MM-DD/<role>.md`; auto-loaded into the
     /// role's priors on next spawn.
     Journal(String),
+    /// `/welcome` — re-show the first-run welcome card on demand, even
+    /// after the `.welcomed` marker has been written.
+    Welcome,
     /// `/stop <role>` — terminate the named role's subprocess.
     Stop(String),
     /// `/help` — print the help banner.
@@ -112,6 +115,7 @@ pub fn parse_line(input: &str) -> Command {
                 }
             }
             "patch" => parse_patch_arg(arg).unwrap_or(Command::Help),
+            "welcome" => Command::Welcome,
             // /help, /h, and any unknown slash command all fall through here.
             _ => Command::Help,
         };
@@ -223,7 +227,12 @@ pub async fn run(project_root: &Path) -> Result<()> {
         roles.insert(name, running);
     }
 
-    print_banner(&cfg);
+    if is_first_run(&coderoom_dir) {
+        print_welcome(&cfg, &coderoom_dir, project_root);
+        mark_welcomed(&coderoom_dir);
+    } else {
+        print_steady_state(&cfg, &coderoom_dir, project_root);
+    }
 
     let mut renderer_rx = bus.subscribe();
     let mut stdin = BufReader::new(tokio::io::stdin()).lines();
@@ -257,6 +266,9 @@ pub async fn run(project_root: &Path) -> Result<()> {
             }
             Command::Journal(role) => {
                 write_journal(&roles, &mut renderer_rx, &coderoom_dir, &role).await;
+            }
+            Command::Welcome => {
+                print_welcome(&cfg, &coderoom_dir, project_root);
             }
             Command::Patch { role, text } => {
                 if !cfg.roles.contains_key(&role) {
@@ -309,20 +321,128 @@ async fn prompt(stdout: &mut tokio::io::Stdout) -> Result<()> {
     Ok(())
 }
 
-fn print_banner(cfg: &Config) {
-    let mut roles: Vec<&str> = cfg.role_names().collect();
-    roles.sort_unstable();
+/// Marker file inside `.coderoom/` that tracks whether the first-run
+/// welcome has been shown. Hidden (leading dot) so it never shows up
+/// in `ls`-without-`-a`.
+const WELCOMED_MARKER: &str = ".welcomed";
+
+/// Whether to use the heavyweight first-run welcome (E) or the light
+/// steady-state line (B) at REPL entry.
+fn is_first_run(coderoom_dir: &Path) -> bool {
+    !coderoom_dir.join(WELCOMED_MARKER).exists()
+}
+
+/// Drop a marker so future `cr start` runs use the steady-state line
+/// instead of the welcome card. Best-effort: a write failure here just
+/// means the user sees the welcome twice — not worth surfacing.
+fn mark_welcomed(coderoom_dir: &Path) {
+    let _ = std::fs::write(coderoom_dir.join(WELCOMED_MARKER), b"");
+}
+
+/// First-run welcome (Variant E from the design review). Shown exactly
+/// once per project unless the user types `/welcome` to re-show.
+fn print_welcome(cfg: &Config, coderoom_dir: &Path, project_root: &Path) {
+    let project_name = project_root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("(this project)");
+    let mut role_names: Vec<&str> = cfg.role_names().collect();
+    role_names.sort_unstable();
+
+    println!();
+    println!("{}", "welcome to coderoom".bold());
+    println!();
+    println!("  a single CLAUDE.md doesn't scale. coderoom runs separate");
+    println!("  Claude Code / Codex / Gemini sessions per role — backend, frontend,");
+    println!("  security, whoever — each carrying only its own organizational");
+    println!("  priors. you @-mention them like a group chat.");
+    println!();
+    println!(
+        "  i found {} role{} in {project_name}/.coderoom/roles/:",
+        role_names.len(),
+        if role_names.len() == 1 { "" } else { "s" },
+    );
+    println!();
+    let max_name = role_names.iter().map(|n| n.len()).max().unwrap_or(0);
+    for name in &role_names {
+        let tokens = priors::estimate_role_tokens(coderoom_dir, name);
+        let tokens_str = priors::format_token_count(tokens);
+        let host_tag = if cfg.is_host(name) { " (host)" } else { "" };
+        println!(
+            "    {:width$}  {} tokens{}",
+            format!("@{name}").with(role_color(name)).bold(),
+            tokens_str.dim(),
+            host_tag.dim(),
+            width = max_name + 1, // +1 for the leading '@'
+        );
+    }
+    println!();
+    println!("  three things to know:");
+    println!();
+    println!(
+        "    {}                e.g. @backend can we use the gateway?",
+        "@<role> <text>".bold()
+    );
+    println!(
+        "    {}      saves a correction; loads on next /refresh",
+        "/patch <role> <text>".bold()
+    );
+    println!(
+        "    {}                 re-spawn a role when its context drifts",
+        "/refresh <role>".bold()
+    );
+    println!();
+    println!(
+        "  docs:  {}",
+        "https://github.com/spytensor/codeRoom".underlined()
+    );
+    println!(
+        "  {}",
+        "won't show this again. type /welcome to revisit.".dim()
+    );
+    println!();
+}
+
+/// Steady-state two-line summary (Variant B from the design review).
+/// Total token count is the only "live" signal that earns its pixels.
+fn print_steady_state(cfg: &Config, coderoom_dir: &Path, project_root: &Path) {
+    let project_name = project_root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("(project)");
+    let mut role_names: Vec<&str> = cfg.role_names().collect();
+    role_names.sort_unstable();
+
+    let total_tokens: u64 = role_names
+        .iter()
+        .map(|n| priors::estimate_role_tokens(coderoom_dir, n))
+        .sum();
+
+    let role_list = role_names
+        .iter()
+        .map(|r| format!("@{r}").with(role_color(r)).to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    println!(
+        "{} {} {} role-scoped agent sessions",
+        "coderoom".bold(),
+        format!("v{}", env!("CARGO_PKG_VERSION")).dim(),
+        "·".dim(),
+    );
+    println!(
+        "{} {} {} {} {} base tokens",
+        project_name.dim(),
+        "·".dim(),
+        role_list,
+        "·".dim(),
+        priors::format_token_count(total_tokens).dim(),
+    );
     let host = &cfg.host_role;
     println!(
-        "cr {} — roles: {} (host: @{host})",
-        env!("CARGO_PKG_VERSION"),
-        roles
-            .iter()
-            .map(|r| format!("@{r}"))
-            .collect::<Vec<_>>()
-            .join(" "),
+        "{}",
+        format!("type @<role> <text>; bare text → @{host}; /help, /exit").dim()
     );
-    println!("type @<role> <message>; bare text routes to @{host}; /help, /exit");
 }
 
 fn print_help(cfg: &Config) {
@@ -333,6 +453,7 @@ fn print_help(cfg: &Config) {
     println!("  /refresh <role>     re-instantiate role with latest priors+patches");
     println!("  /transcript <role>  show that role's recent spoken turns");
     println!("  /journal <role>     ask role to write today's journal entry");
+    println!("  /welcome            re-show the first-run welcome card");
     println!("  /stop <role>        terminate a role's subprocess");
     println!("  /help               this help");
     println!("  /exit, /quit        leave the REPL");
@@ -1033,6 +1154,25 @@ mod tests {
     #[test]
     fn parse_journal_without_role_shows_help() {
         assert_eq!(parse_line("/journal"), Command::Help);
+    }
+
+    #[test]
+    fn parse_welcome() {
+        assert_eq!(parse_line("/welcome"), Command::Welcome);
+    }
+
+    #[test]
+    fn first_run_marker_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let coderoom = tmp.path().to_path_buf();
+        // No marker yet → first run
+        assert!(is_first_run(&coderoom));
+        mark_welcomed(&coderoom);
+        // Marker present → not first run
+        assert!(!is_first_run(&coderoom));
+        // Idempotent: second mark is a no-op (same path, same content)
+        mark_welcomed(&coderoom);
+        assert!(!is_first_run(&coderoom));
     }
 
     #[test]

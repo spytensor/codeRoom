@@ -338,6 +338,38 @@ fn ordered_patches(coderoom_dir: &Path, role_name: &str) -> Result<Vec<PathBuf>>
     Ok(entries.into_iter().map(|(_, p)| p).collect())
 }
 
+/// Cheap upper-bound estimate of how many tokens a role's composed
+/// priors will burn at spawn. Sums byte counts of the role's priors
+/// file plus `shared.md`, divides by 4 (rough chars-per-token for
+/// English markdown). Doesn't compose patches/journal — those are
+/// transient and small. Only used for splash display, so accuracy
+/// to within ±20% is fine.
+#[must_use]
+pub fn estimate_role_tokens(coderoom_dir: &Path, role_name: &str) -> u64 {
+    let role_path = coderoom_dir.join(ROLES_DIR).join(format!("{role_name}.md"));
+    let role_bytes = std::fs::metadata(&role_path).map(|m| m.len()).unwrap_or(0);
+    let shared_bytes = std::fs::metadata(coderoom_dir.join(SHARED_FILE))
+        .map(|m| m.len())
+        .unwrap_or(0);
+    (role_bytes + shared_bytes) / 4
+}
+
+/// Format a token count as `"3.2k"` for ≥1000, otherwise the bare
+/// number. Used by both the welcome splash and the steady-state
+/// single-line summary.
+#[must_use]
+pub fn format_token_count(n: u64) -> String {
+    if n >= 1_000 {
+        // Casting u64 → f64 cannot lose precision for any realistic
+        // priors size (well under 2^53).
+        #[allow(clippy::cast_precision_loss)]
+        let kilos = n as f64 / 1000.0;
+        format!("{kilos:.1}k")
+    } else {
+        n.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,6 +636,35 @@ mod tests {
         let coderoom = coderoom_of(&tmp);
         let entries = recent_journals(&coderoom, "backend", 7).unwrap();
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn format_token_count_uses_one_decimal_kilo_suffix() {
+        assert_eq!(format_token_count(0), "0");
+        assert_eq!(format_token_count(999), "999");
+        assert_eq!(format_token_count(1_000), "1.0k");
+        assert_eq!(format_token_count(3_240), "3.2k");
+        assert_eq!(format_token_count(21_500), "21.5k");
+    }
+
+    #[test]
+    fn estimate_role_tokens_reads_role_plus_shared() {
+        let tmp = fixture("backend", &"x".repeat(4_000));
+        let coderoom = coderoom_of(&tmp);
+        // No shared.md yet → ~4000 bytes / 4 = 1000 tokens
+        assert_eq!(estimate_role_tokens(&coderoom, "backend"), 1_000);
+
+        fs::write(coderoom.join(SHARED_FILE), "y".repeat(8_000)).unwrap();
+        // (4000 + 8000) / 4 = 3000
+        assert_eq!(estimate_role_tokens(&coderoom, "backend"), 3_000);
+    }
+
+    #[test]
+    fn estimate_role_tokens_returns_zero_for_unknown_role() {
+        let tmp = fixture("backend", "x");
+        let coderoom = coderoom_of(&tmp);
+        // unknown role → no role.md → contributes 0; shared.md missing too.
+        assert_eq!(estimate_role_tokens(&coderoom, "ghost"), 0);
     }
 
     #[test]
