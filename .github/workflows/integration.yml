@@ -1,0 +1,60 @@
+name: Integration
+
+# Manual / scheduled job — never runs automatically on push or PR
+# because each invocation hits real APIs and burns tokens.
+on:
+  workflow_dispatch:
+    inputs:
+      engines:
+        description: 'Engines to test (comma-separated: cc,codex,gemini)'
+        required: false
+        default: 'cc,codex,gemini'
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  integration:
+    name: real-engine smoke (${{ github.event.inputs.engines }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Activate pinned toolchain
+        run: cargo --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: integration
+
+      # Engine CLIs are installed only if requested. Each step is gated on
+      # the input string containing the engine name, so a single-engine
+      # invocation does not pay the install cost for the others.
+      - name: Install Claude Code
+        if: contains(github.event.inputs.engines, 'cc')
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Install Codex CLI
+        if: contains(github.event.inputs.engines, 'codex')
+        run: npm install -g @openai/codex
+      - name: Install Gemini CLI
+        if: contains(github.event.inputs.engines, 'gemini')
+        run: npm install -g @google/gemini-cli
+
+      - name: cc smoke
+        if: contains(github.event.inputs.engines, 'cc')
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: cargo test --test cc_adapter_smoke -- --ignored --nocapture
+
+      - name: codex smoke
+        if: contains(github.event.inputs.engines, 'codex')
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: cargo test --test codex_adapter_smoke -- --ignored --nocapture
+
+      - name: gemini smoke
+        if: contains(github.event.inputs.engines, 'gemini')
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: cargo test --test gemini_adapter_smoke -- --ignored --nocapture

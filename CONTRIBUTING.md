@@ -36,6 +36,22 @@ See [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) for engine-specific setup
 (Claude Code, Codex, Gemini CLIs) and how to run real-engine integration
 tests locally without burning unbounded API spend.
 
+### Real-engine integration tests in CI
+
+The `Integration` workflow (`.github/workflows/integration.yml`) is
+manual-only (`workflow_dispatch`); it never fires on push or PR. To run it:
+
+1. Add the relevant API keys as GitHub Actions secrets:
+   - `ANTHROPIC_API_KEY` for the `cc` smoke
+   - `OPENAI_API_KEY`     for the `codex` smoke
+   - `GEMINI_API_KEY`     for the `gemini` smoke
+2. Trigger it from the Actions tab → Integration → Run workflow. The
+   `engines` input filters which adapters to exercise (default: all
+   three).
+
+Each smoke spawns its engine, sends one prompt, asserts a
+`RoleStarted → RoleSpoke(HELLO) → RoleStopped` sequence. Cost: ~\$0.05–\$0.30 per engine.
+
 ## Branches
 
 - `main` — always green, always releasable. Direct push is allowed only
