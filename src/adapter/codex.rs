@@ -33,7 +33,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex, Notify};
+use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use crate::adapter::{
@@ -50,10 +51,16 @@ const CHANNEL_CAPACITY: usize = 32;
 /// MCP protocol version we initialize with. Confirmed in the L3 spike.
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
-// Keep this above the REPL's per-turn timeout so interactive sessions get one
-// user-visible timeout surface: the REPL interrupted WorkCard. The adapter
-// timeout is still useful for headless tests or future non-REPL consumers.
-const RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(6 * 60);
+// **Idle** timeout: how long we wait without seeing ANY codex/event for our
+// in-flight request before declaring the RPC stuck. Codex emits a steady
+// stream of notifications during a real turn (exec_command_begin/end,
+// agent_message_content_delta, token_count, …), so silence this long means
+// the server genuinely wedged. We deliberately do NOT cap total wall-clock
+// time — long security scans or refactors can run 10+ minutes legitimately,
+// and the REPL's per-turn timeout is the user-visible cap for interactive
+// sessions. This timer is the safety net for headless callers and for the
+// "codex froze mid-turn" case where REPL idle-cap should also kick in.
+const RPC_IDLE_TIMEOUT: Duration = Duration::from_secs(6 * 60);
 
 /// Adapter that drives Codex's `mcp-server` mode.
 #[derive(Debug, Clone)]
@@ -136,8 +143,7 @@ impl EngineAdapter for CodexAdapter {
         let (internal_stop_tx, internal_stop_rx) = mpsc::channel::<StopReason>(1);
         let stopping = Arc::new(AtomicBool::new(false));
 
-        let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending: Arc<Mutex<HashMap<u64, PendingEntry>>> = Arc::new(Mutex::new(HashMap::new()));
         let writer = Arc::new(Mutex::new(stdin));
 
         // Spawn the JSON-RPC reader: parses each line, dispatches
@@ -245,17 +251,27 @@ struct JsonRpcResponse {
     error: Option<Value>,
 }
 
+/// One outstanding JSON-RPC request. Holds the response oneshot and an
+/// activity Notify that the read loop pokes whenever it sees a
+/// `codex/event` notification carrying our `_meta.requestId`. The idle
+/// timer in `RpcClient::request` resets on each notify, so a healthy
+/// codex turn that streams events stays alive indefinitely.
+struct PendingEntry {
+    responder: oneshot::Sender<JsonRpcResponse>,
+    activity: Arc<Notify>,
+}
+
 #[derive(Clone)]
 struct RpcClient {
     writer: Arc<Mutex<ChildStdin>>,
-    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
+    pending: Arc<Mutex<HashMap<u64, PendingEntry>>>,
     next_id: Arc<Mutex<u64>>,
 }
 
 impl RpcClient {
     fn new(
         writer: Arc<Mutex<ChildStdin>>,
-        pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
+        pending: Arc<Mutex<HashMap<u64, PendingEntry>>>,
     ) -> Self {
         Self {
             writer,
@@ -272,6 +288,12 @@ impl RpcClient {
     }
 
     /// Send a JSON-RPC request and await the matching response.
+    ///
+    /// Uses an **idle** timeout (`RPC_IDLE_TIMEOUT`): the deadline resets
+    /// every time the read loop signals activity for our request id. A
+    /// codex turn that's actively streaming `codex/event` notifications
+    /// will never fire this; only a wedged server (no events at all for
+    /// six minutes) gets cut off.
     async fn request(&self, method: &str, params: Value) -> Result<Value, RpcError> {
         let id = self.alloc_id().await;
         let envelope = serde_json::json!({
@@ -281,7 +303,14 @@ impl RpcClient {
             "params": params,
         });
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, tx);
+        let activity = Arc::new(Notify::new());
+        self.pending.lock().await.insert(
+            id,
+            PendingEntry {
+                responder: tx,
+                activity: Arc::clone(&activity),
+            },
+        );
         let _guard = PendingRequestGuard {
             id,
             pending: Arc::clone(&self.pending),
@@ -296,10 +325,7 @@ impl RpcClient {
             }
         }
 
-        let response = tokio::time::timeout(RPC_REQUEST_TIMEOUT, rx)
-            .await
-            .map_err(|_| RpcError::Timeout)?
-            .map_err(|_| RpcError::Closed)?;
+        let response = wait_with_idle_timeout(rx, &activity, RPC_IDLE_TIMEOUT).await?;
         if let Some(err) = response.error {
             return Err(RpcError::Server(err.to_string()));
         }
@@ -349,7 +375,34 @@ impl RpcClient {
 
 struct PendingRequestGuard {
     id: u64,
-    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
+    pending: Arc<Mutex<HashMap<u64, PendingEntry>>>,
+}
+
+/// Wait for a JSON-RPC response, treating the deadline as an **idle**
+/// timeout rather than a total cap. Each `activity.notify_one()` from the
+/// read loop resets the deadline; only stretches of complete silence
+/// trigger `RpcError::Timeout`. The response oneshot still wins races
+/// against both activity and the deadline.
+async fn wait_with_idle_timeout(
+    mut rx: oneshot::Receiver<JsonRpcResponse>,
+    activity: &Notify,
+    idle: Duration,
+) -> Result<JsonRpcResponse, RpcError> {
+    let mut deadline = Instant::now() + idle;
+    loop {
+        tokio::select! {
+            biased;
+            response = &mut rx => {
+                return response.map_err(|_| RpcError::Closed);
+            }
+            () = activity.notified() => {
+                deadline = Instant::now() + idle;
+            }
+            () = tokio::time::sleep_until(deadline) => {
+                return Err(RpcError::Timeout);
+            }
+        }
+    }
 }
 
 impl Drop for PendingRequestGuard {
@@ -377,7 +430,7 @@ fn is_placeholder_model(model: &str) -> bool {
 
 async fn read_rpc_loop(
     stdout: ChildStdout,
-    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
+    pending: Arc<Mutex<HashMap<u64, PendingEntry>>>,
     writer: Arc<Mutex<tokio::process::ChildStdin>>,
     runtime: CodexRuntime,
     permission_socket: Option<PathBuf>,
@@ -441,13 +494,23 @@ async fn read_rpc_loop(
                     result: value.get("result").cloned(),
                     error: value.get("error").cloned(),
                 };
-                if let Some(tx) = pending.lock().await.remove(&id) {
-                    let _ = tx.send(response);
+                if let Some(entry) = pending.lock().await.remove(&id) {
+                    let _ = entry.responder.send(response);
                 }
             }
             (false, true) => {
                 if runtime.stopping.load(Ordering::SeqCst) {
                     continue;
+                }
+                // codex/event notifications carry _meta.requestId pointing
+                // at the in-flight tools/call. Poke the matching pending
+                // entry's activity Notify so the request's idle timer
+                // resets and a long, busy turn doesn't get cut off.
+                if let Some(req_id) = codex_event_request_id(&value) {
+                    let pending = pending.lock().await;
+                    if let Some(entry) = pending.get(&req_id) {
+                        entry.activity.notify_one();
+                    }
                 }
                 if let Some(event) = codex_notification_to_event(&runtime.role, &value) {
                     let _ = runtime.events.send(event).await;
@@ -461,8 +524,8 @@ async fn read_rpc_loop(
         }
     }
     let mut guard = pending.lock().await;
-    for (_, tx) in guard.drain() {
-        let _ = tx.send(JsonRpcResponse {
+    for (_, entry) in guard.drain() {
+        let _ = entry.responder.send(JsonRpcResponse {
             result: None,
             error: Some(json!({"code": -32000, "message": "codex rpc disconnected"})),
         });
@@ -753,54 +816,135 @@ fn approval_request_preview(method: &str, params: &Value) -> (String, Value) {
     ("Bash".to_owned(), summary)
 }
 
+/// Pull `params._meta.requestId` from a codex stdout JSON-RPC envelope.
+/// Returns `None` if the line isn't a `codex/event` notification or
+/// doesn't carry a numeric requestId we can match against `pending`.
+fn codex_event_request_id(value: &Value) -> Option<u64> {
+    let method = value.get("method").and_then(Value::as_str)?;
+    if method != "codex/event" {
+        return None;
+    }
+    value
+        .get("params")?
+        .get("_meta")?
+        .get("requestId")?
+        .as_u64()
+}
+
+/// Translate one JSON-RPC line from codex stdout into a CodeRoom CREP
+/// event. Codex 0.130+ wraps every lifecycle/tool/text update inside a
+/// single `codex/event` notification with the actual variant name in
+/// `params.msg.type`. Earlier guesses at `notifications/exec_command_*`
+/// never matched anything codex actually sent, which is why work-card
+/// steps stayed empty for codex roles before this.
+///
+/// We only translate the events the REPL renders today:
+///
+/// - `exec_command_begin` → [`CrepEvent::ToolCallProposed`] (Bash)
+/// - `exec_command_end`   → [`CrepEvent::ToolCallExecuted`]
+///
+/// Everything else (token_count, agent_message_content_delta,
+/// session_configured, …) is intentionally dropped — the activity-poke
+/// in `read_rpc_loop` still uses them to keep the idle timer fresh.
 fn codex_notification_to_event(role: &str, value: &Value) -> Option<CrepEvent> {
     let method = value.get("method").and_then(Value::as_str)?;
-    let params = value.get("params").unwrap_or(&Value::Null);
-    let tool_use_id = params
-        .get("id")
-        .or_else(|| params.get("call_id"))
-        .or_else(|| params.get("command_id"))
+    if method != "codex/event" {
+        return None;
+    }
+    let params = value.get("params")?;
+    let msg = params.get("msg")?;
+    let msg_type = msg.get("type").and_then(Value::as_str)?;
+    let call_id = msg
+        .get("call_id")
         .and_then(Value::as_str)
-        .unwrap_or(method)
+        .unwrap_or(msg_type)
         .to_owned();
-    match method {
-        "notifications/exec_command_started" | "exec_command_started" => {
-            let command = params
+    match msg_type {
+        "exec_command_begin" => {
+            let command_summary = msg
                 .get("command")
-                .or_else(|| params.get("cmd"))
-                .cloned()
-                .unwrap_or(Value::Null);
+                .map_or_else(|| Value::Null, codex_command_summary);
+            let cwd = msg.get("cwd").cloned();
+            let mut tool_input = serde_json::Map::new();
+            if !command_summary.is_null() {
+                tool_input.insert("command".to_owned(), command_summary);
+            }
+            if let Some(cwd) = cwd {
+                tool_input.insert("cwd".to_owned(), cwd);
+            }
             Some(CrepEvent::ToolCallProposed {
                 role: role.to_owned(),
                 tool_name: "Bash".to_owned(),
-                tool_input: if command.is_null() {
-                    params.clone()
-                } else {
-                    json!({ "command": command })
-                },
-                tool_use_id,
+                tool_input: Value::Object(tool_input),
+                tool_use_id: call_id,
             })
         }
-        "notifications/exec_command_completed" | "exec_command_completed" => {
-            let ok = params
-                .get("exit_code")
-                .and_then(Value::as_i64)
-                .is_none_or(|code| code == 0);
-            let summary = params
-                .get("summary")
-                .or_else(|| params.get("stderr"))
-                .or_else(|| params.get("stdout"))
-                .and_then(Value::as_str)
-                .unwrap_or("codex command completed");
+        "exec_command_end" => {
+            let exit_code = msg.get("exit_code").and_then(Value::as_i64);
+            let ok = exit_code.is_none_or(|code| code == 0);
+            // On failure, prefer stderr — that's where the actionable
+            // error lives. On success, prefer the unified output streams.
+            // Empty fields are skipped; the first non-empty candidate wins.
+            let candidates: &[&str] = if ok {
+                &["aggregated_output", "formatted_output", "stdout", "stderr"]
+            } else {
+                &["stderr", "aggregated_output", "formatted_output", "stdout"]
+            };
+            let summary = candidates
+                .iter()
+                .find_map(|key| {
+                    msg.get(*key)
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                })
+                .map_or_else(
+                    || {
+                        if ok {
+                            "ok".to_owned()
+                        } else {
+                            format!("exit {}", exit_code.unwrap_or_default())
+                        }
+                    },
+                    ToOwned::to_owned,
+                );
             Some(CrepEvent::ToolCallExecuted {
                 role: role.to_owned(),
-                tool_use_id,
+                tool_use_id: call_id,
                 ok,
                 output_summary: summary.chars().take(200).collect(),
             })
         }
         _ => None,
     }
+}
+
+/// Render codex's `command` array (e.g. `["/bin/bash", "-lc", "ls foo"]`)
+/// as a single human-readable string for tool-call summaries. The common
+/// `bash -c <script>` / `bash -lc <script>` shape collapses to just the
+/// inner script so the WorkCard step shows what the model actually ran,
+/// not the wrapper. Anything else is space-joined verbatim.
+fn codex_command_summary(value: &Value) -> Value {
+    if let Some(s) = value.as_str() {
+        return Value::String(s.to_owned());
+    }
+    let Some(parts) = value.as_array() else {
+        return value.clone();
+    };
+    let strs: Vec<&str> = parts.iter().filter_map(Value::as_str).collect();
+    if strs.len() != parts.len() {
+        return value.clone();
+    }
+    if strs.len() == 3 {
+        let shell = strs[0];
+        let flag = strs[1];
+        let is_shell =
+            shell.ends_with("/bash") || shell.ends_with("/sh") || shell == "bash" || shell == "sh";
+        if is_shell && (flag == "-c" || flag == "-lc") {
+            return Value::String(strs[2].to_owned());
+        }
+    }
+    Value::String(strs.join(" "))
 }
 
 async fn drain_stderr(role: String, stderr: ChildStderr) {
@@ -1265,33 +1409,63 @@ mod tests {
     }
 
     #[test]
-    fn exec_notifications_translate_to_tool_events() {
-        let started = serde_json::json!({
+    fn codex_event_translates_exec_command_begin_and_end() {
+        // Shape captured from real codex 0.130.0 mcp-server output. The
+        // wrapper used to listen for `notifications/exec_command_*` and
+        // never matched anything codex sent — work-card steps stayed
+        // empty for codex roles. Lock the new shape in.
+        let begin = serde_json::json!({
             "jsonrpc": "2.0",
-            "method": "notifications/exec_command_started",
-            "params": {"id": "cmd-1", "command": "cargo test"}
+            "method": "codex/event",
+            "params": {
+                "_meta": {"requestId": 2, "threadId": "t-1"},
+                "id": "",
+                "msg": {
+                    "type": "exec_command_begin",
+                    "call_id": "call_5TJJ",
+                    "command": ["/bin/bash", "-lc", "ls -la"],
+                    "cwd": "/home/me/repo",
+                    "turn_id": "2",
+                    "started_at_ms": 1_778_427_200_345_i64,
+                }
+            }
         });
-        let event = codex_notification_to_event("qa", &started).expect("started event");
+        let event = codex_notification_to_event("security", &begin).expect("begin event");
         match event {
             CrepEvent::ToolCallProposed {
                 role,
                 tool_name,
+                tool_input,
                 tool_use_id,
-                ..
             } => {
-                assert_eq!(role, "qa");
+                assert_eq!(role, "security");
                 assert_eq!(tool_name, "Bash");
-                assert_eq!(tool_use_id, "cmd-1");
+                assert_eq!(tool_use_id, "call_5TJJ");
+                // bash -lc <script> collapses to just the script.
+                assert_eq!(tool_input["command"], json!("ls -la"));
+                assert_eq!(tool_input["cwd"], "/home/me/repo");
             }
             other => panic!("unexpected event: {other:?}"),
         }
 
-        let completed = serde_json::json!({
+        let end = serde_json::json!({
             "jsonrpc": "2.0",
-            "method": "notifications/exec_command_completed",
-            "params": {"id": "cmd-1", "exit_code": 0, "summary": "ok"}
+            "method": "codex/event",
+            "params": {
+                "_meta": {"requestId": 2, "threadId": "t-1"},
+                "msg": {
+                    "type": "exec_command_end",
+                    "call_id": "call_5TJJ",
+                    "exit_code": 0,
+                    "stdout": "Cargo.toml\nsrc\n",
+                    "stderr": "",
+                    "aggregated_output": "Cargo.toml\nsrc\n",
+                    "duration": {"secs": 0, "nanos": 11546},
+                    "status": "completed",
+                }
+            }
         });
-        let event = codex_notification_to_event("qa", &completed).expect("completed event");
+        let event = codex_notification_to_event("security", &end).expect("end event");
         match event {
             CrepEvent::ToolCallExecuted {
                 role,
@@ -1299,12 +1473,164 @@ mod tests {
                 ok,
                 output_summary,
             } => {
-                assert_eq!(role, "qa");
-                assert_eq!(tool_use_id, "cmd-1");
+                assert_eq!(role, "security");
+                assert_eq!(tool_use_id, "call_5TJJ");
                 assert!(ok);
-                assert_eq!(output_summary, "ok");
+                // Newlines preserved; trimmed and capped at 200 chars.
+                assert!(output_summary.contains("Cargo.toml"));
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn exec_command_end_marks_failure_when_exit_nonzero() {
+        let end = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "codex/event",
+            "params": {
+                "_meta": {"requestId": 1},
+                "msg": {
+                    "type": "exec_command_end",
+                    "call_id": "c1",
+                    "exit_code": 2,
+                    "stderr": "oops",
+                    "stdout": "",
+                    "status": "failed",
+                }
+            }
+        });
+        let event = codex_notification_to_event("qa", &end).expect("end event");
+        match event {
+            CrepEvent::ToolCallExecuted {
+                ok, output_summary, ..
+            } => {
+                assert!(!ok);
+                assert_eq!(output_summary, "oops");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unrelated_codex_msg_types_are_ignored() {
+        // codex emits a flurry of types we don't surface yet (token_count,
+        // agent_message_content_delta, mcp_startup_update, …). They must
+        // not produce CrepEvents — the read loop only uses them as activity
+        // signals for the idle timer.
+        for msg_type in [
+            "task_started",
+            "token_count",
+            "agent_message_content_delta",
+            "session_configured",
+            "mcp_startup_update",
+        ] {
+            let value = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "codex/event",
+                "params": {"_meta": {"requestId": 1}, "msg": {"type": msg_type}}
+            });
+            assert!(
+                codex_notification_to_event("qa", &value).is_none(),
+                "{msg_type} should be ignored"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_event_request_id_extracted() {
+        let value = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "codex/event",
+            "params": {"_meta": {"requestId": 17, "threadId": "t"}, "msg": {"type": "task_started"}}
+        });
+        assert_eq!(codex_event_request_id(&value), Some(17));
+
+        // Non-codex/event lines (responses, server-initiated requests,
+        // legacy notifications) must not return an id — they aren't
+        // activity signals for our idle timer.
+        let response = serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {}});
+        assert_eq!(codex_event_request_id(&response), None);
+        let other = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/cancelled",
+            "params": {}
+        });
+        assert_eq!(codex_event_request_id(&other), None);
+    }
+
+    #[test]
+    fn command_summary_collapses_bash_wrapper() {
+        let v = json!(["/bin/bash", "-lc", "cargo test --workspace"]);
+        assert_eq!(codex_command_summary(&v), json!("cargo test --workspace"));
+
+        let v = json!(["bash", "-c", "ls"]);
+        assert_eq!(codex_command_summary(&v), json!("ls"));
+    }
+
+    #[test]
+    fn command_summary_joins_other_argv() {
+        let v = json!(["rg", "--json", "TODO"]);
+        assert_eq!(codex_command_summary(&v), json!("rg --json TODO"));
+    }
+
+    #[test]
+    fn command_summary_passes_strings_through() {
+        let v = json!("ls");
+        assert_eq!(codex_command_summary(&v), json!("ls"));
+    }
+
+    #[tokio::test]
+    async fn idle_wait_returns_response_when_received() {
+        let activity = Notify::new();
+        let (tx, rx) = oneshot::channel();
+        tx.send(JsonRpcResponse {
+            result: Some(json!("ok")),
+            error: None,
+        })
+        .unwrap();
+        let response = wait_with_idle_timeout(rx, &activity, Duration::from_secs(1))
+            .await
+            .expect("response");
+        assert_eq!(response.result, Some(json!("ok")));
+    }
+
+    #[tokio::test]
+    async fn idle_wait_resets_on_activity() {
+        // With a 200ms idle window, ten 50ms activity pokes should keep
+        // the wait alive for at least 500ms — much longer than a static
+        // timeout of the same window would have allowed.
+        let activity = Arc::new(Notify::new());
+        let activity_writer = Arc::clone(&activity);
+        let (_tx, rx) = oneshot::channel::<JsonRpcResponse>();
+        let pokes = tokio::spawn(async move {
+            for _ in 0..10 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                activity_writer.notify_one();
+            }
+        });
+        let started = Instant::now();
+        let err = wait_with_idle_timeout(rx, &activity, Duration::from_millis(200))
+            .await
+            .expect_err("rx never resolves");
+        pokes.await.unwrap();
+        let elapsed = started.elapsed();
+        assert!(matches!(err, RpcError::Timeout));
+        assert!(
+            elapsed >= Duration::from_millis(500),
+            "expected idle resets to extend the wait, got {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn idle_wait_times_out_on_silence() {
+        let activity = Notify::new();
+        let (_tx, rx) = oneshot::channel::<JsonRpcResponse>();
+        let started = Instant::now();
+        let err = wait_with_idle_timeout(rx, &activity, Duration::from_millis(80))
+            .await
+            .expect_err("nothing arrives");
+        assert!(matches!(err, RpcError::Timeout));
+        assert!(started.elapsed() >= Duration::from_millis(70));
     }
 }

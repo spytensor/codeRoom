@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex roles now stream WorkCard steps in real time. The adapter was listening
+  for `notifications/exec_command_*` methods, but codex 0.130+ wraps every
+  lifecycle update inside `codex/event` with the variant in `params.msg.type`.
+  Long-running codex turns no longer look frozen — `exec_command_begin/end`
+  fill in the same `ToolCallProposed/Executed` events that drive cc work cards.
+- The codex JSON-RPC request timeout is now an **idle** timeout: every
+  `codex/event` for the in-flight request resets the deadline. Long but
+  productive turns (security scans, deep refactors) are no longer killed at
+  the old six-minute hard cap; only a fully wedged server gets cut off.
+
 ## [0.1.18] - 2026-05-10
 
 ### Added
