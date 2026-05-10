@@ -82,13 +82,19 @@ impl EngineAdapter for CodexAdapter {
     }
 
     async fn start(&self, config: RoleConfig) -> AdapterResult<RoleHandle> {
-        if config.permission_mode != PermissionMode::Bypass {
+        // Non-bypass modes need a live permission bridge so codex's
+        // server-initiated approval requests can reach the user. With
+        // no bridge available we fail fast rather than hang the MCP
+        // call, mirroring the gemini contract.
+        if config.permission_mode != PermissionMode::Bypass
+            && config.permission_socket_path.is_none()
+        {
             return Err(AdapterError::Engine {
                 engine: Engine::Codex.as_str(),
                 message: format!(
-                    "Codex roles require permission_mode=\"bypass\"; \
-                     CodeRoom cannot yet answer Codex approval requests \
-                     in permission_mode=\"{}\"",
+                    "Codex permission_mode=\"{}\" needs a live CodeRoom REPL with \
+                     a permission bridge; none was supplied. Use permission_mode=\"bypass\" \
+                     for headless contexts (smoke tests, `cr show`).",
                     config.permission_mode.as_str()
                 ),
             });
@@ -125,12 +131,16 @@ impl EngineAdapter for CodexAdapter {
         let writer = Arc::new(Mutex::new(stdin));
 
         // Spawn the JSON-RPC reader: parses each line, dispatches
-        // responses by id to the matching pending request.
+        // responses by id to the matching pending request, and routes
+        // server-initiated approval requests through the permission
+        // bridge so the user actually gets prompted.
         tokio::spawn(read_rpc_loop(
             stdout,
             Arc::clone(&pending),
+            Arc::clone(&writer),
             config.name.clone(),
             tx_events.clone(),
+            config.permission_socket_path.clone(),
         ));
         tokio::spawn(drain_stderr(config.name.clone(), stderr));
 
@@ -331,8 +341,10 @@ fn is_placeholder_model(model: &str) -> bool {
 async fn read_rpc_loop(
     stdout: ChildStdout,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
+    writer: Arc<Mutex<tokio::process::ChildStdin>>,
     role: String,
     events: mpsc::Sender<CrepEvent>,
+    permission_socket: Option<PathBuf>,
 ) {
     let mut lines = BufReader::new(stdout).lines();
     while let Ok(Some(line)) = lines.next_line().await {
@@ -343,23 +355,41 @@ async fn read_rpc_loop(
                 continue;
             }
         };
-        // Responses carry a numeric id matched by request().
-        // Notifications have no id; map known exec lifecycle messages
-        // into CREP and ignore the rest.
-        let Some(id) = value.get("id").and_then(Value::as_u64) else {
-            if let Some(event) = codex_notification_to_event(&role, &value) {
-                let _ = events.send(event).await;
-            } else {
-                debug!(role, line = %line, "codex notification ignored");
+        // JSON-RPC dispatch: three message shapes.
+        //   id +  method  → server-initiated request (e.g. approval)
+        //   id  – method  → response to one of our pending requests
+        //  –id  + method  → notification (lifecycle, exec_command_*, …)
+        let id = value.get("id").and_then(Value::as_u64);
+        let has_method = value.get("method").is_some();
+        match (id, has_method) {
+            (Some(id), true) => {
+                let writer = Arc::clone(&writer);
+                let role_name = role.clone();
+                let socket = permission_socket.clone();
+                let request = value.clone();
+                tokio::spawn(async move {
+                    handle_server_request(role_name, id, request, socket, writer).await;
+                });
             }
-            continue;
-        };
-        let response = JsonRpcResponse {
-            result: value.get("result").cloned(),
-            error: value.get("error").cloned(),
-        };
-        if let Some(tx) = pending.lock().await.remove(&id) {
-            let _ = tx.send(response);
+            (Some(id), false) => {
+                let response = JsonRpcResponse {
+                    result: value.get("result").cloned(),
+                    error: value.get("error").cloned(),
+                };
+                if let Some(tx) = pending.lock().await.remove(&id) {
+                    let _ = tx.send(response);
+                }
+            }
+            (None, true) => {
+                if let Some(event) = codex_notification_to_event(&role, &value) {
+                    let _ = events.send(event).await;
+                } else {
+                    debug!(role, line = %line, "codex notification ignored");
+                }
+            }
+            (None, false) => {
+                debug!(role, line = %line, "malformed codex stdout line");
+            }
         }
     }
     let mut guard = pending.lock().await;
@@ -370,6 +400,144 @@ async fn read_rpc_loop(
         });
     }
     debug!(role, "codex rpc loop exiting");
+}
+
+/// Method names codex uses for "wrapper, please approve this tool"
+/// requests. Listed broadly because the codex CLI rev'd the namespace
+/// twice in v0.1xx. Anything matching here goes through the permission
+/// bridge; anything else gets a generic "method not supported" reply
+/// so codex doesn't hang waiting for a verdict it'll never get.
+const APPROVAL_METHODS: &[&str] = &[
+    "notifications/exec_approval_request",
+    "exec_approval_request",
+    "permission/request",
+    "permission_request",
+    "approval/request",
+];
+
+/// Handle one server-initiated JSON-RPC request: route approval
+/// requests through the permission bridge, return a JSON-RPC response.
+async fn handle_server_request(
+    role: String,
+    id: u64,
+    request: Value,
+    permission_socket: Option<PathBuf>,
+    writer: Arc<Mutex<tokio::process::ChildStdin>>,
+) {
+    use tokio::io::AsyncWriteExt;
+
+    let method = request
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let params = request.get("params").cloned().unwrap_or(Value::Null);
+
+    let response_value = if APPROVAL_METHODS.contains(&method.as_str()) {
+        match permission_socket {
+            None => {
+                // Defensive: should be unreachable thanks to the
+                // start-time check, but if a caller wires us without a
+                // socket we still must answer the RPC or codex hangs.
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {"approved": false, "reason": "no permission bridge available"},
+                })
+            }
+            Some(socket) => {
+                let summary = approval_request_summary(&params);
+                let tool = approval_request_tool(&params);
+                let reason = format!(
+                    "{tool} requires approval (codex {})",
+                    method.split('/').next_back().unwrap_or(&method),
+                );
+                match crate::permissions::bridge::request_decision_async(
+                    &socket, &role, &tool, &summary, &reason,
+                )
+                .await
+                {
+                    Ok(verdict) => {
+                        let approved = matches!(
+                            verdict.decision,
+                            crate::permissions::PermissionDecision::Allow
+                        );
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "approved": approved,
+                                "reason": verdict.reason,
+                            },
+                        })
+                    }
+                    Err(error) => {
+                        warn!(role, %error, "permission bridge failed for codex approval");
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {
+                                "approved": false,
+                                "reason": format!(
+                                    "CodeRoom permission bridge failed: {error}"
+                                ),
+                            },
+                        })
+                    }
+                }
+            }
+        }
+    } else {
+        // Codex shouldn't be sending us other server-initiated requests
+        // today, but if a future MCP rev does we must respond so the
+        // far end isn't left hanging on the id.
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32601,
+                "message": format!("method not supported by CodeRoom wrapper: {method}"),
+            },
+        })
+    };
+
+    let mut bytes = match serde_json::to_vec(&response_value) {
+        Ok(b) => b,
+        Err(error) => {
+            warn!(role, %error, "serializing codex response");
+            return;
+        }
+    };
+    bytes.push(b'\n');
+    let mut w = writer.lock().await;
+    if let Err(error) = w.write_all(&bytes).await {
+        warn!(role, %error, "writing codex approval response");
+        return;
+    }
+    if let Err(error) = w.flush().await {
+        warn!(role, %error, "flushing codex approval response");
+    }
+}
+
+fn approval_request_summary(params: &Value) -> Value {
+    // Best-effort: most codex MCP revs put a `command`/`tool_input`
+    // shape in here. Pass through whatever is there; the bridge prompt
+    // renders a concise preview from common keys.
+    if let Some(input) = params.get("input").cloned() {
+        return input;
+    }
+    if let Some(cmd) = params.get("command") {
+        return json!({"command": cmd});
+    }
+    params.clone()
+}
+
+fn approval_request_tool(params: &Value) -> String {
+    params
+        .get("tool")
+        .and_then(Value::as_str)
+        .or_else(|| params.get("tool_name").and_then(Value::as_str))
+        .map_or_else(|| "Bash".to_owned(), ToOwned::to_owned)
 }
 
 fn codex_notification_to_event(role: &str, value: &Value) -> Option<CrepEvent> {
