@@ -561,12 +561,29 @@ fn snapshot_render_event_lines() {
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(rendered, @r"
-[@backend ready · model=claude-opus-4-7]
-@backend Ready for @security.
-  ↳ @backend · Bash `cargo test --all-features`
-  ✓ @backend · tests passed
-  ⊘ @backend · Bash denied: destructive shell ops require review
-[@backend stopped: Refreshed]
+▎ @backend ready · model=claude-opus-4-7
+▎ @backend Ready for @security.
+▎ ↳ @backend · Bash `cargo test --all-features`
+▎ ✓ @backend · tests passed
+▎ ⊘ @backend · Bash denied: destructive shell ops require review
+▎ @backend stopped: Refreshed
+");
+}
+
+#[test]
+fn multi_line_role_spoke_keeps_gutter_on_each_line() {
+    let event = CrepEvent::RoleSpoke {
+        role: "backend".into(),
+        text: "First paragraph.\nSecond paragraph.\nThird paragraph.".into(),
+        cost_usd: 0.0,
+        cache_read: 0,
+        mentions: vec![],
+    };
+    let rendered = strip_ansi(&render_event_line(&event, "host"));
+    insta::assert_snapshot!(rendered, @r"
+▎ @backend First paragraph.
+▎ Second paragraph.
+▎ Third paragraph.
 ");
 }
 

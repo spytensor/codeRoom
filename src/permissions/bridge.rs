@@ -360,6 +360,15 @@ pub fn request_decision_blocking(
 mod tests {
     use super::*;
     use serde_json::json;
+    use tokio::sync::Mutex;
+
+    /// Both `client_returns_no_socket_when_env_var_missing` and
+    /// `end_to_end_round_trip_over_unix_socket` mutate the process-wide
+    /// `CODEROOM_PERMISSION_SOCKET`. cargo runs tests in parallel; this
+    /// mutex serializes them so one test's `remove_var` can't race with
+    /// the other's `set_var`. Tokio's async-aware `Mutex` is held across
+    /// the round-trip's `.await` calls without tripping clippy.
+    static ENV_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
     #[test]
     fn request_round_trips_through_json() {
@@ -411,8 +420,9 @@ mod tests {
         assert_eq!(response.decision, PermissionDecision::Deny);
     }
 
-    #[test]
-    fn client_returns_no_socket_when_env_var_missing() {
+    #[tokio::test]
+    async fn client_returns_no_socket_when_env_var_missing() {
+        let _guard = ENV_TEST_LOCK.lock().await;
         // SAFETY: this test mutates a process-global env var. In Rust 2024
         // edition this is `unsafe`; CodeRoom builds on edition 2021 today
         // so the call is safe but stays here as documentation.
@@ -423,6 +433,7 @@ mod tests {
 
     #[tokio::test]
     async fn end_to_end_round_trip_over_unix_socket() {
+        let _guard = ENV_TEST_LOCK.lock().await;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("permission.sock");
         let (handle, mut rx) = start(path.clone()).unwrap();

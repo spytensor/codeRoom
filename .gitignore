@@ -42,3 +42,4 @@
 
 # OS noise
 Thumbs.db
+**/*.pending-snap
