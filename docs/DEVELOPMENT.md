@@ -132,6 +132,17 @@ visible truncation:
 - [ ] **120 × 40** — modern desktop terminal
 - [ ] **60 × 20** — split pane / mobile SSH
 
+The two PNGs embedded in `README.md` are generated separately from the
+real-TUI verification screenshots. Refresh them with:
+
+```bash
+make readme-images
+```
+
+The command runs `scripts/render-readme-images.py`, a Pillow renderer that
+keeps the README hero images reproducible without depending on a live
+interactive session, VHS, freeze, silicon, or desktop screenshot state.
+
 For the role expansion picker specifically, run:
 
 ```bash

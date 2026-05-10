@@ -37,6 +37,10 @@
 # Test fixtures created at runtime
 /tests/.tmp/
 
+# Python helper artifacts
+__pycache__/
+*.pyc
+
 # Local Claude Code session settings (per-developer; never commit)
 .claude/settings.local.json
 
