@@ -165,6 +165,13 @@ Useful commands:
 - `@all <text>` broadcasts one prompt to every running role.
 - `/patch <role> <text>`, `/refresh <role>`, `/transcript <role>`, and
   `/journal <role>` are available inside the REPL.
+- `/halt` (no arg) interrupts every in-flight turn; `/halt @role`
+  targets one. Roles stay alive — only the current turn ends.
+- **Ctrl-C is two-press**: first press cancels in-flight turns (like
+  bare `/halt`); a second press within 2 seconds force-stops every
+  role and exits the REPL. Long-running scans no longer get killed
+  at any wall-clock — the wrapper trusts each engine to self-terminate
+  and the user to halt when something looks wrong.
 - `/allow <tool>` and `/deny <tool>` update the session permission policy
   used by Claude Code hooks. Examples: `/allow Read`, `/deny Bash`.
 - `cr show [--role backend] [--tail 20] [--since YYYY-MM-DD]`, `cr cost`,

@@ -1,7 +1,9 @@
 use std::io::{IsTerminal, Write as _};
+use std::time::{Duration, Instant};
 
 use crossterm::{style::Stylize, terminal};
 
+use crate::crep::CrepEvent;
 use crate::output;
 
 /// Frames of the standard braille spinner. ~10 frames at 100 ms gives
@@ -24,24 +26,67 @@ pub(super) struct StatusRegion {
     pub(super) is_tty: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(super) struct StatusSlot {
     pub(super) role: String,
     pub(super) frame: usize,
+    /// Wall-clock when the role's turn started — feeds the elapsed
+    /// readout in the status line.
+    pub(super) started_at: Instant,
+    /// Number of `ToolCallProposed` events observed for this turn.
+    /// Surfaces in the status line as `… · N tools …` so the user
+    /// has a sense of progress beyond just elapsed time.
+    pub(super) tools_seen: usize,
+    /// Best-effort label for what the role is doing right now.
+    /// `None` between events ⇒ rendered as "thinking".
+    pub(super) current_state: Option<String>,
 }
 
 impl StatusRegion {
     pub(super) fn start(role: &str) -> Self {
+        Self::start_at(role, Instant::now())
+    }
+
+    pub(super) fn start_at(role: &str, started_at: Instant) -> Self {
         let mut region = Self {
             slots: vec![StatusSlot {
                 role: role.to_owned(),
                 frame: 0,
+                started_at,
+                tools_seen: 0,
+                current_state: None,
             }],
             is_painted: false,
             is_tty: std::io::stdout().is_terminal(),
         };
         region.repaint();
         region
+    }
+
+    /// Update slot metadata from a CREP event so the status line can
+    /// render `… · 12 tools · running Bash` instead of a flat
+    /// "working" placeholder.
+    pub(super) fn update_from_event(&mut self, event: &CrepEvent) {
+        let Some(slot) = self.slots.first_mut() else {
+            return;
+        };
+        match event {
+            CrepEvent::ToolCallProposed {
+                role, tool_name, ..
+            } if role == &slot.role => {
+                slot.tools_seen = slot.tools_seen.saturating_add(1);
+                slot.current_state = Some(format!("running {tool_name}"));
+            }
+            CrepEvent::ToolCallExecuted { role, .. } if role == &slot.role => {
+                slot.current_state = Some("thinking".to_owned());
+            }
+            CrepEvent::PermissionDenied {
+                role, tool_name, ..
+            } if role == &slot.role => {
+                slot.current_state = Some(format!("denied {tool_name}"));
+            }
+            _ => {}
+        }
     }
 
     fn paint(&mut self) {
@@ -86,17 +131,47 @@ impl StatusRegion {
             .iter()
             .map(|slot| {
                 let frame = SPINNER_FRAMES[slot.frame % SPINNER_FRAMES.len()];
-                format!("@{} {frame}", slot.role)
+                let elapsed = format_short_duration(slot.started_at.elapsed());
+                let tools = match slot.tools_seen {
+                    0 => String::new(),
+                    1 => " · 1 tool".to_owned(),
+                    n => format!(" · {n} tools"),
+                };
+                let state = slot.current_state.as_deref().unwrap_or("thinking");
+                format!(
+                    "{frame} @{role} · {elapsed}{tools} · {state}",
+                    role = slot.role,
+                )
             })
             .collect::<Vec<_>>()
             .join("  ");
         let count = self.slots.len();
         let noun = if count == 1 { "role" } else { "roles" };
-        let line =
-            format!("│ {count} {noun} working · chat stream paused until they report · {slots}");
+        let line = format!("│ {count} {noun} working · {slots}");
         output::truncate_visible(&line, width)
             .with(output::DIM)
             .to_string()
+    }
+}
+
+/// Compact wall-clock readout for the status line.  `<60s` shows
+/// seconds; `<60m` shows whole minutes; otherwise hours-and-minutes.
+/// Stays consistent across screen redraws (no fractional seconds) so
+/// the spinner doesn't churn the line on every tick.
+fn format_short_duration(elapsed: Duration) -> String {
+    let total = elapsed.as_secs();
+    if total < 60 {
+        format!("{total}s")
+    } else if total < 3600 {
+        format!("{}m", total / 60)
+    } else {
+        let hours = total / 3600;
+        let mins = (total % 3600) / 60;
+        if mins == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h {mins}m")
+        }
     }
 }
 

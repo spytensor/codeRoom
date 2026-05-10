@@ -236,9 +236,9 @@ fn content_line(text: &str, width: usize, color: Color) -> String {
 
 fn format_step(step: &Step) -> String {
     let glyph = match step.kind {
-        StepKind::Done => "✓",
-        StepKind::Active => "◉",
-        StepKind::Planned => "○",
+        StepKind::Done => "●",    // filled circle — "this is done"
+        StepKind::Active => "○",  // open circle — "still working"
+        StepKind::Planned => "·", // small dot — "queued, not started"
     };
     match &step.time {
         Some(time) => format!("{glyph} [{time}] {}", step.text),
@@ -247,16 +247,76 @@ fn format_step(step: &Step) -> String {
 }
 
 fn style_content(text: &str) -> String {
-    if text.starts_with('✓') {
-        text.with(OK).to_string()
-    } else if text.starts_with('◉') {
-        text.with(EM).to_string()
+    let glyph_color = if text.starts_with('●') {
+        OK
     } else if text.starts_with('○') {
-        text.with(FADE).to_string()
+        EM
+    } else if text.starts_with('·') {
+        FADE
     } else if text.starts_with("interrupted") {
-        text.with(WARN).to_string()
+        WARN
     } else {
-        text.with(TEXT).to_string()
+        TEXT
+    };
+
+    // Two-axis colour coding: the glyph carries the step state
+    // (done/active/planned) in `glyph_color`; the first word after
+    // the glyph is the tool name, which gets a per-tool accent so
+    // a glance at the card sorts shell calls from file reads from
+    // edits at a glance. Existing role-color gutter (in repl/render.rs)
+    // is the third axis — orthogonal to both, so all three combine.
+    let mut chars = text.char_indices();
+    let glyph_end = chars
+        .by_ref()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(text.len(), |(i, _)| i);
+    if glyph_end == text.len() {
+        return text.with(glyph_color).to_string();
+    }
+    let glyph_part = &text[..glyph_end];
+    let tail = &text[glyph_end..];
+    let tail_trim_start = tail.len() - tail.trim_start().len();
+    let leading_ws = &tail[..tail_trim_start];
+    let after_ws = &tail[tail_trim_start..];
+
+    let (tool_name, rest) = match after_ws.find(char::is_whitespace) {
+        Some(idx) => (&after_ws[..idx], &after_ws[idx..]),
+        None => (after_ws, ""),
+    };
+    let accent = tool_accent_color(tool_name);
+    if rest.is_empty() {
+        format!(
+            "{}{}{}",
+            glyph_part.with(glyph_color),
+            leading_ws,
+            tool_name.with(accent),
+        )
+    } else {
+        format!(
+            "{}{}{}{}",
+            glyph_part.with(glyph_color),
+            leading_ws,
+            tool_name.with(accent),
+            rest.with(TEXT),
+        )
+    }
+}
+
+/// Per-tool accent used inside WorkCard steps. Reuses semantic
+/// palette entries (no new colours): green for "executes", blue for
+/// "reads", tan for "writes", amber for "delegates", muted-grey for
+/// "searches" — five distinct hues that combine cleanly with the
+/// per-role gutter colour without turning the card into a rainbow.
+fn tool_accent_color(tool: &str) -> Color {
+    use crate::output::{DIM, INFO, KEY, MUTE, SPLASH_ACCENT};
+    match tool {
+        "Bash" | "Run" | "Shell" => OK,
+        "Read" | "Glob" | "LS" | "List" => INFO,
+        "Edit" | "Write" | "MultiEdit" | "Append" => KEY,
+        "Grep" | "Search" => MUTE,
+        "Task" | "Agent" | "Subagent" | "delegate" => SPLASH_ACCENT,
+        "denied" => WARN,
+        _ => DIM,
     }
 }
 
@@ -382,9 +442,9 @@ mod tests {
         insta::assert_snapshot!(rendered, @r"
 ╭─ @security · Scan repository permissions and adapters ───────────────────────╮
 │ done in 12s · 3 steps                                                        │
-│ ✓ Read Cargo.toml                                                            │
-│ ✓ Run cargo test                                                             │
-│ ○ Follow up on Claude subagent hooks                                         │
+│ ● Read Cargo.toml                                                            │
+│ ● Run cargo test                                                             │
+│ · Follow up on Claude subagent hooks                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ");
     }
