@@ -99,6 +99,11 @@ pub struct RoleConfig {
     /// adapters. `None` means no session-level `/allow` or `/deny`
     /// overrides are available.
     pub permission_policy_path: Option<PathBuf>,
+    /// Optional Unix-domain-socket path the adapter should expose to
+    /// hook subprocesses via `CODEROOM_PERMISSION_SOCKET`. Set when the
+    /// REPL has a live permission bridge listening; `None` for headless
+    /// `cr show` / smoke tests where no user is available to prompt.
+    pub permission_socket_path: Option<PathBuf>,
 }
 
 /// A live handle to a running role: send the role new prompts, observe its

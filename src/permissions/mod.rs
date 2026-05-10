@@ -3,6 +3,13 @@
 //! CodeRoom keeps the runtime policy deliberately small at v0.2:
 //! `/allow TOOL` and `/deny TOOL` update a session JSON file, and
 //! hook-backed adapters read that file on every proposed tool call.
+//!
+//! When the live REPL is running, hook-backed adapters can additionally
+//! reach the user via the [`bridge`] module — a Unix-domain-socket
+//! request/response protocol that turns the engine's "ask the user"
+//! state into an actual prompt instead of a silent deny.
+
+pub mod bridge;
 
 use std::collections::BTreeSet;
 use std::io::{Read as _, Write as _};
@@ -14,6 +21,11 @@ use serde_json::Value;
 
 use crate::adapter::PermissionMode;
 use crate::config::CODEROOM_DIR;
+
+pub use bridge::{
+    BridgeError, BridgeHandle, BridgeRequest, BridgeRequestSink, BridgeResponse, DecisionScope,
+    PermissionDecision, BRIDGE_ENV_VAR,
+};
 
 /// Session-local permission overrides.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,17 +116,25 @@ pub fn update_policy(
 ///
 /// The hook reads Claude's PreToolUse JSON from stdin and writes the
 /// `hookSpecificOutput` JSON that Claude expects on stdout.
+///
+/// When the verdict is `ask` and the `CODEROOM_PERMISSION_SOCKET`
+/// environment variable points at a live REPL bridge socket, the hook
+/// promotes the verdict to a real user prompt over that socket. If the
+/// bridge is missing or fails, the hook degrades to deny — never
+/// allow — so a broken IPC path can never silently authorize a tool.
 pub fn run_claude_hook(mode: PermissionMode, policy_file: Option<&Path>) -> Result<()> {
     let mut input = String::new();
     std::io::stdin()
         .read_to_string(&mut input)
         .context("reading Claude hook stdin")?;
-    let output = claude_hook_output(mode, policy_file, &input).unwrap_or_else(|error| {
-        claude_hook_output_json(
-            "deny",
-            &format!("CodeRoom permission hook failed: {error:#}"),
-        )
-    });
+    let role = std::env::var(BRIDGE_ROLE_ENV).ok();
+    let output =
+        claude_hook_output(mode, policy_file, role.as_deref(), &input).unwrap_or_else(|error| {
+            claude_hook_output_json(
+                "deny",
+                &format!("CodeRoom permission hook failed: {error:#}"),
+            )
+        });
     std::io::stdout()
         .write_all(output.as_bytes())
         .context("writing Claude hook decision")?;
@@ -124,9 +144,15 @@ pub fn run_claude_hook(mode: PermissionMode, policy_file: Option<&Path>) -> Resu
     Ok(())
 }
 
+/// Environment variable carrying the role name into the hook subprocess.
+/// Set per-role by the cc adapter so the bridge prompt can attribute the
+/// request to the right role color.
+pub const BRIDGE_ROLE_ENV: &str = "CODEROOM_PERMISSION_ROLE";
+
 fn claude_hook_output(
     mode: PermissionMode,
     policy_file: Option<&Path>,
+    role: Option<&str>,
     input: &str,
 ) -> Result<String> {
     let hook_input: Value = serde_json::from_str(input).context("parsing Claude hook stdin")?;
@@ -135,7 +161,58 @@ fn claude_hook_output(
         None => PermissionPolicy::default(),
     };
     let request = ToolRequest::from_hook_input(&hook_input);
-    let verdict = decide_tool(mode, &policy, &request);
+    let mut verdict = decide_tool(mode, &policy, &request);
+
+    if verdict.claude_decision == "ask" {
+        match bridge::request_decision_blocking(
+            role.unwrap_or("?"),
+            &request.name,
+            &request.input,
+            &verdict.reason,
+        ) {
+            Ok(response) => {
+                if matches!(response.scope, DecisionScope::Session) {
+                    if let Some(path) = policy_file {
+                        let _ = update_policy(path, |p| match response.decision {
+                            PermissionDecision::Allow => p.allow_tool(&request.name),
+                            PermissionDecision::Deny => p.deny_tool(&request.name),
+                        });
+                    }
+                }
+                verdict = match response.decision {
+                    PermissionDecision::Allow => allow(format!(
+                        "{} approved by user{}",
+                        request.name,
+                        match response.scope {
+                            DecisionScope::Once => "",
+                            DecisionScope::Session => " (session)",
+                        }
+                    )),
+                    PermissionDecision::Deny => deny(format!(
+                        "{} denied by user{}",
+                        request.name,
+                        match response.scope {
+                            DecisionScope::Once => "",
+                            DecisionScope::Session => " (session)",
+                        }
+                    )),
+                };
+            }
+            Err(BridgeError::NoSocket) => {
+                verdict = deny(format!(
+                    "{} requires user approval but no live CodeRoom session is available",
+                    request.name
+                ));
+            }
+            Err(other) => {
+                verdict = deny(format!(
+                    "{} denied — CodeRoom permission bridge failed: {other}",
+                    request.name
+                ));
+            }
+        }
+    }
+
     Ok(claude_hook_output_json(
         verdict.claude_decision,
         &verdict.reason,
@@ -365,7 +442,7 @@ mod tests {
             "tool_name": "Read",
             "tool_input": {"file_path": "README.md"}
         });
-        let out = claude_hook_output(PermissionMode::Auto, None, &input.to_string()).unwrap();
+        let out = claude_hook_output(PermissionMode::Auto, None, None, &input.to_string()).unwrap();
         let parsed: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed["hookSpecificOutput"]["hookEventName"], "PreToolUse");
         assert_eq!(parsed["hookSpecificOutput"]["permissionDecision"], "allow");
@@ -373,7 +450,7 @@ mod tests {
 
     #[test]
     fn invalid_hook_input_defaults_to_deny() {
-        let out = claude_hook_output(PermissionMode::Auto, None, "not-json").unwrap_err();
+        let out = claude_hook_output(PermissionMode::Auto, None, None, "not-json").unwrap_err();
         assert!(out.to_string().contains("parsing Claude hook stdin"));
 
         let fallback =

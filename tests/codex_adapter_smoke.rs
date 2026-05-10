@@ -38,6 +38,7 @@ async fn codex_smoke_says_hello() {
         budget_usd: 0.50,
         permission_mode: PermissionMode::Bypass,
         permission_policy_path: None,
+        permission_socket_path: None,
     };
 
     let mut handle = adapter.start(config).await.expect("start");
