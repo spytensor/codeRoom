@@ -14,7 +14,8 @@
 
 use std::path::Path;
 
-use tokio::fs::{File, OpenOptions};
+use fs2::FileExt;
+use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{broadcast, Mutex};
 
@@ -35,6 +36,51 @@ pub struct MessageBus {
     tx: broadcast::Sender<CrepEvent>,
 }
 
+/// Result of replaying an on-disk JSONL log.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Replay {
+    /// Parsed CREP events, in file order.
+    pub events: Vec<CrepEvent>,
+    /// Number of non-empty lines that failed to parse as CREP.
+    pub skipped_malformed: usize,
+    /// 1-based line number of the first malformed line, if any.
+    pub first_malformed_line: Option<usize>,
+}
+
+impl Replay {
+    /// Whether replay yielded no valid events.
+    ///
+    /// Kept as a small compatibility affordance for call sites that used
+    /// the old `Vec<CrepEvent>` return type directly.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    /// Iterate over parsed events.
+    pub fn iter(&self) -> std::slice::Iter<'_, CrepEvent> {
+        self.events.iter()
+    }
+}
+
+impl IntoIterator for Replay {
+    type Item = CrepEvent;
+    type IntoIter = std::vec::IntoIter<CrepEvent>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.events.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Replay {
+    type Item = &'a CrepEvent;
+    type IntoIter = std::slice::Iter<'a, CrepEvent>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.events.iter()
+    }
+}
+
 impl std::fmt::Debug for MessageBus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MessageBus")
@@ -47,12 +93,20 @@ impl MessageBus {
     /// Open (or create) the log at `path` and return a fresh bus.
     ///
     /// Existing log content is preserved; new events append after it.
+    #[allow(clippy::unused_async)]
     pub async fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let file = OpenOptions::new()
+        let std_file = std::fs::OpenOptions::new()
             .append(true)
             .create(true)
-            .open(path.as_ref())
-            .await?;
+            .open(path.as_ref())?;
+        std_file.lock_exclusive().map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                "another `cr` process is already attached to .coderoom/messages.jsonl in this \
+                 project; close the other session before starting a new one",
+            )
+        })?;
+        let file = File::from_std(std_file);
         let (tx, _initial) = broadcast::channel(SUBSCRIBER_CAPACITY);
         Ok(Self {
             file: Mutex::new(file),
@@ -67,10 +121,11 @@ impl MessageBus {
     /// landed on disk, so the on-disk log and the broadcast stream agree.
     pub async fn publish(&self, event: CrepEvent) -> std::io::Result<()> {
         let serialized = serde_json::to_string(&event).map_err(std::io::Error::other)?;
+        let mut line = serialized.into_bytes();
+        line.push(b'\n');
         {
             let mut file = self.file.lock().await;
-            file.write_all(serialized.as_bytes()).await?;
-            file.write_all(b"\n").await?;
+            file.write_all(&line).await?;
             file.flush().await?;
         }
         // Sending to a broadcast channel with no live receivers returns
@@ -86,23 +141,36 @@ impl MessageBus {
     }
 
     /// Stream every event currently on disk at `path`, in order, decoding
-    /// each line as a [`CrepEvent`]. Lines that fail to parse are skipped
-    /// (and a tracing warning is emitted) so a single corrupt line does
-    /// not poison the whole replay.
-    pub async fn replay(path: impl AsRef<Path>) -> std::io::Result<Vec<CrepEvent>> {
+    /// each line as a [`CrepEvent`]. Malformed lines are counted and the
+    /// first line number is returned to callers so `cr show` / `cr cost`
+    /// can make corruption visible instead of silently producing an
+    /// incomplete view.
+    pub async fn replay(path: impl AsRef<Path>) -> std::io::Result<Replay> {
         let file = File::open(path.as_ref()).await?;
         let mut lines = BufReader::new(file).lines();
         let mut out = Vec::new();
+        let mut skipped_malformed = 0usize;
+        let mut first_malformed_line = None;
+        let mut line_no = 0usize;
         while let Some(line) = lines.next_line().await? {
+            line_no += 1;
             if line.trim().is_empty() {
                 continue;
             }
             match serde_json::from_str::<CrepEvent>(&line) {
                 Ok(event) => out.push(event),
-                Err(error) => tracing::warn!(%error, "skipping malformed JSONL line on replay"),
+                Err(error) => {
+                    skipped_malformed += 1;
+                    first_malformed_line.get_or_insert(line_no);
+                    tracing::warn!(%error, line = line_no, "skipping malformed JSONL line on replay");
+                }
             }
         }
-        Ok(out)
+        Ok(Replay {
+            events: out,
+            skipped_malformed,
+            first_malformed_line,
+        })
     }
 
     /// Number of currently-active subscribers. Useful for diagnostics.
@@ -183,8 +251,9 @@ mod tests {
         }
 
         let replayed = MessageBus::replay(&log).await.unwrap();
-        assert_eq!(replayed.len(), 2);
-        match (&replayed[0], &replayed[1]) {
+        assert_eq!(replayed.skipped_malformed, 0);
+        assert_eq!(replayed.events.len(), 2);
+        match (&replayed.events[0], &replayed.events[1]) {
             (CrepEvent::RoleStarted { role: r0, .. }, CrepEvent::RoleStarted { role: r1, .. }) => {
                 assert_eq!(r0, "first");
                 assert_eq!(r1, "second");
@@ -209,7 +278,9 @@ mod tests {
         tokio::fs::write(&log, mixed).await.unwrap();
 
         let replayed = MessageBus::replay(&log).await.unwrap();
-        assert_eq!(replayed.len(), 2);
+        assert_eq!(replayed.events.len(), 2);
+        assert_eq!(replayed.skipped_malformed, 1);
+        assert_eq!(replayed.first_malformed_line, Some(2));
     }
 
     #[tokio::test]
