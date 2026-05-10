@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-05-10
+
+### Changed
+
+- Split the oversized REPL and init modules into focused submodules for
+  command parsing, input, rendering, splash/status UI, log replay, turn
+  draining, init labels, init rendering, init writes, and tests. This keeps
+  the user-facing behavior unchanged while making the codebase safer to patch.
+
+### Fixed
+
+- Interactive REPL input now uses a terminal raw-mode line editor on TTYs, so
+  deleting CJK / wide characters no longer leaves stale glyphs behind.
+- Ctrl-C at the REPL prompt is handled immediately by the input layer and no
+  longer requires pressing Enter before CodeRoom interrupts and shuts roles
+  down.
+
 ## [0.1.14] - 2026-05-10
 
 ### Fixed
@@ -472,7 +489,8 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.14...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.15...HEAD
+[0.1.15]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.15
 [0.1.14]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.14
 [0.1.13]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.13
 [0.1.12]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.12
