@@ -11,8 +11,16 @@
 [tips]
 items = [
   "type @role to send a task to a specific role",
-  "/patch <role> persists a correction across refreshes",
+  "/halt @role interrupts a turn; Ctrl-C twice exits the REPL",
   "/journal <role> captures today's lessons-learned",
+]
+
+[[whats_new]]
+version = "0.2.0"
+items = [
+  "no wall-clock kill on long turns — trust the model",
+  "/halt and two-press Ctrl-C cancel turns without exiting",
+  "WorkCard render polish: ●/○/· glyphs + per-tool colors",
 ]
 
 [[whats_new]]

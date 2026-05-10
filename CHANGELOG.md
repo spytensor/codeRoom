@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-10
+
+**v0.2 trinity — phase 1.** Trust the model (no wall-clock kill),
+interrupt cleanly (Ctrl-C two-press + `/halt`), and a render polish
+that makes long-running role turns legible. Concurrent typing during
+a turn and multi-role parallel dispatch are scoped to v0.2.x or v0.3
+— see `docs/v0.2-trust-and-interrupt.md` § I "PR c2."
+
+CREP wire format gains `turn_id` / `thread_id` on every turn-scoped
+event plus two new variants (`TurnDispatched`, `TurnInterrupted`)
+and a session-kind capability flag on adapters. All additive and
+backward-compat (`#[serde(default)]` on every new field); v0.1.x
+logs replay unchanged.
+
 ### Changed (v0.2 PR c1 — render polish)
 
 - **WorkCard step icons refreshed**: filled `●` for done, open `○` for
