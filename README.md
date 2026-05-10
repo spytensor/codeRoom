@@ -43,9 +43,9 @@ reply.
 - **Patches.** `/patch <role> "..."` saves a session-time correction; the
   role picks it up on next refresh. v0.2 promotes high-signal patches into
   base priors.
-- **Permission gate.** `--dangerously-skip-permissions` + a `PreToolUse`
-  hook handed to each engine; the wrapper is the sole arbiter, with a
-  `--max-budget-usd` ceiling as backstop.
+- **Explicit engine capabilities.** Claude Code currently has the richest
+  wrapper-visible event stream. Codex and Gemini run, but unsupported cost,
+  permission, and tool-trace fields are shown as `—` instead of fake zeroes.
 
 ## Status / Roadmap
 
@@ -139,12 +139,29 @@ Useful commands:
 - `cr init` runs setup explicitly when you want to prepare the project without
   entering the REPL.
 - `cr role add <name> --engine codex` adds or pins a specialist role.
+- `cr role host <name>` persists a new host role; `/host <role>` swaps host
+  for the current REPL session only.
+- `@all <text>` broadcasts one prompt to every running role.
 - `/patch <role> <text>`, `/refresh <role>`, `/transcript <role>`, and
   `/journal <role>` are available inside the REPL.
 - `cr show`, `cr cost`, `cr config`, and `cr update` handle inspection,
   spend tracking, layered config, and package upgrades.
 - Live turns fold internal tool traces into one activity summary; `cr show`
   replays the full event log when you need to audit what happened.
+
+## Engine Capability Matrix
+
+| Capability | Claude Code (`cc`) | Codex | Gemini |
+| ---------- | ------------------ | ----- | ------ |
+| Prompt isolation | system-prompt file | MCP base instructions | requires `--system-instruction-file` |
+| Tool trace events | proposed + executed | exec notifications when emitted | not reliable yet |
+| Cost reporting | per turn | — | — |
+| Budget enforcement | native cap | — | — |
+| Permission gating | hook target | — | bypass-only until hook bridge |
+
+`cr cost` excludes unsupported engines from the numeric total and marks them
+with `—`. This is deliberate: older builds displayed `$0.00` for engines
+that did not report reliable cost.
 
 ## Contributing
 
