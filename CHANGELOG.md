@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-05-10
+
 ### Fixed
 
 - Codex `permission_mode="bypass"` now disables Codex's own command sandbox
@@ -512,7 +514,8 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.16...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.17...HEAD
+[0.1.17]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.17
 [0.1.16]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.16
 [0.1.15]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.15
 [0.1.14]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.14

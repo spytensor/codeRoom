@@ -93,12 +93,22 @@ fn render_config(roles: &[RolePlan]) -> String {
         if role.engine != DEFAULT_ENGINE {
             let _ = writeln!(out, "engine = \"{}\"", role.engine.as_str());
         }
-        if matches!(role.engine, Engine::Codex | Engine::Gemini) {
-            let _ = writeln!(
-                out,
-                "# This engine is bypass-only until its approval bridge is supervised."
-            );
-            let _ = writeln!(out, "permission_mode = \"bypass\"");
+        match role.engine {
+            Engine::Codex => {
+                let _ = writeln!(
+                    out,
+                    "# Codex can use ask/auto only in a live REPL; generated roles default to bypass."
+                );
+                let _ = writeln!(out, "permission_mode = \"bypass\"");
+            }
+            Engine::Gemini => {
+                let _ = writeln!(
+                    out,
+                    "# Gemini is bypass-only until its approval bridge is supervised."
+                );
+                let _ = writeln!(out, "permission_mode = \"bypass\"");
+            }
+            Engine::Cc => {}
         }
         let _ = writeln!(out);
     }

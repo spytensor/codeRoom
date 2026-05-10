@@ -403,7 +403,7 @@ fn splash_pair_rows_align_at_every_width() {
         ("", ""),
         ("welcome back, charlie", "tips for getting started"),
         ("● @host  cc · 1M", "• send a task to @host"),
-        ("[ 1.0k ] base tokens", "what's new in 0.1.16"),
+        ("[ 1.0k ] base tokens", "what's new in 0.1.17"),
     ];
     for width in [60usize, 70, 80] {
         let (left_w, right_w) = splash_columns(width, 28);
@@ -428,7 +428,7 @@ fn snapshot_splash_frame_shape_at_80() {
     let title = join_cells(&[
         styled_cell("codeRoom", "codeRoom".with(output::SPLASH_FRAME).bold()),
         plain_cell(" "),
-        styled_cell("v0.1.16", "v0.1.16".with(output::SPLASH_VERSION)),
+        styled_cell("v0.1.17", "v0.1.17".with(output::SPLASH_VERSION)),
     ]);
     let rendered = [
         strip_ansi(&splash_top(80, &title)),
@@ -442,7 +442,7 @@ fn snapshot_splash_frame_shape_at_80() {
     ]
     .join("\n");
     insta::assert_snapshot!(rendered, @r"
-┌─ codeRoom v0.1.16 ───────────────────────────────────────────────────────────┐
+┌─ codeRoom v0.1.17 ───────────────────────────────────────────────────────────┐
 │ welcome back, chao             tips for getting started                      │
 └──────────────────────────────────────────────────────────────────────────────┘");
 }
@@ -498,17 +498,17 @@ fn snapshot_boot_dashboard_at_80() {
     .trim_start_matches('\n')
     .to_owned();
     insta::assert_snapshot!(rendered, @r"
-┌─ codeRoom v0.1.16 ───────────────────────────────────────────────────────────┐
+┌─ codeRoom v0.1.17 ───────────────────────────────────────────────────────────┐
 │                                                                              │
 │ welcome back, Ada              tips for getting started                      │
 │                                • type @role to send a task to a specific ro… │
 │ ● @backend   cc     · 1M       • /patch <role> persists a correction across… │
 │ ● @host      cc     · 1M       • /journal <role> captures today's lessons-l… │
 │ ● @security  codex  · default                                                │
-│                                what's new in 0.1.16                          │
-│  0  base tokens loaded         • Codex approval prompts remember allow-sess… │
-│ /repo/codeRoom                 • Codex tool denials now trip the grounding … │
-│                                • permission prompts cancel cleanly when a r… │
+│                                what's new in 0.1.17                          │
+│  0  base tokens loaded         • Codex bypass disables both approvals and t… │
+│ /repo/codeRoom                 • Codex timeouts clean up the spawned vendor… │
+│                                • README screenshot now shows the multi-engi… │
 │                                                                              │
 │                                /release-notes for more                       │
 │                                                                              │

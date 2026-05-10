@@ -223,11 +223,10 @@ impl Config {
         let entry = self.roles.get(name)?;
         let engine = entry.engine.unwrap_or(self.default_engine);
         let permission_mode = entry.permission_mode.unwrap_or(match engine {
-            // Codex/Gemini approval responders are not wired yet. Existing
-            // projects created before per-role permission modes may have
-            // `engine = "codex"` with no explicit override; keep those roles
-            // startable while explicit ask/auto settings still fail in the
-            // adapters.
+            // Existing projects created before per-role permission modes may
+            // have Codex/Gemini roles with no explicit override. Keep those
+            // roles startable as bypass; explicit ask/auto settings are
+            // still validated by each adapter's current capability surface.
             Engine::Codex | Engine::Gemini => PermissionMode::Bypass,
             Engine::Cc => self.permission_mode,
         });

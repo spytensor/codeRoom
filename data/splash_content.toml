@@ -16,6 +16,14 @@ items = [
 ]
 
 [[whats_new]]
+version = "0.1.17"
+items = [
+  "Codex bypass disables both approvals and the command sandbox",
+  "Codex timeouts clean up the spawned vendor process group",
+  "README screenshot now shows the multi-engine approval workflow",
+]
+
+[[whats_new]]
 version = "0.1.16"
 items = [
   "Codex approval prompts remember allow-session and deny-session choices",
