@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -194,6 +195,7 @@ pub(super) async fn drain_one_turn(
     role: &str,
     text: &str,
     host_role: &str,
+    work: Arc<Mutex<TurnWork>>,
 ) -> Result<Option<CapturedTurn>> {
     if let Err(error) = tx_user.send(UserMessage::Prompt(text.to_owned())).await {
         warn!(role, %error, "user-message channel for role closed");
@@ -202,7 +204,6 @@ pub(super) async fn drain_one_turn(
 
     let mut captured: Option<CapturedTurn> = None;
     let mut activity = TurnActivity::default();
-    let mut work = TurnWork::new(role, host_role, text);
     let turn_started = Instant::now();
     let mut status = StatusRegion::start(role);
     let mut ticker = tokio::time::interval(Duration::from_millis(SPINNER_TICK_MS));
@@ -226,11 +227,15 @@ pub(super) async fn drain_one_turn(
                 Ok(event) => {
                     if matches!(&event, CrepEvent::WorkTitle { role: titled, .. } if titled == role)
                     {
-                        work.apply_event(&event);
+                        work.lock()
+                            .expect("turn work mutex poisoned")
+                            .apply_event(&event);
                         continue;
                     }
                     if let Some(hidden) = TurnActivity::from_foldable_event(&event, role) {
-                        work.apply_event(&event);
+                        work.lock()
+                            .expect("turn work mutex poisoned")
+                            .apply_event(&event);
                         hidden.merge_into(&mut activity);
                         continue;
                     }
@@ -244,13 +249,17 @@ pub(super) async fn drain_one_turn(
                             cache_read,
                             mentions: _,
                         } if spoken == role => {
-                            let cleaned = work.clean_role_text(text);
+                            let (cleaned, card) = {
+                                let mut work = work.lock().expect("turn work mutex poisoned");
+                                let cleaned = work.clean_role_text(text);
+                                let card = work.done_card(turn_started.elapsed());
+                                (cleaned, card)
+                            };
                             captured = Some(CapturedTurn {
                                 text: cleaned.text.clone(),
                                 mentions: cleaned.mentions.clone(),
                                 activity: activity.clone(),
                             });
-                            let card = work.done_card(turn_started.elapsed());
                             work::render_card(&card);
                             if !cleaned.text.trim().is_empty() {
                                 let rendered = CrepEvent::RoleSpoke {
@@ -266,7 +275,10 @@ pub(super) async fn drain_one_turn(
                         }
                         CrepEvent::RoleStopped { role: stopped, .. } if stopped == role => {
                             if captured.is_none() {
-                                let card = work.interrupted_card("role stopped before replying");
+                                let card = work
+                                    .lock()
+                                    .expect("turn work mutex poisoned")
+                                    .interrupted_card("role stopped before replying");
                                 work::render_card(&card);
                             }
                             render_event(&event, host_role);

@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -132,6 +133,8 @@ impl EngineAdapter for CodexAdapter {
         let (tx_user, rx_user) = mpsc::channel::<UserMessage>(CHANNEL_CAPACITY);
         let (tx_events, rx_events) = mpsc::channel::<CrepEvent>(CHANNEL_CAPACITY);
         let (stop_tx, stop_rx) = oneshot::channel::<StopReason>();
+        let (internal_stop_tx, internal_stop_rx) = mpsc::channel::<StopReason>(1);
+        let stopping = Arc::new(AtomicBool::new(false));
 
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -141,12 +144,16 @@ impl EngineAdapter for CodexAdapter {
         // responses by id to the matching pending request, and routes
         // server-initiated approval requests through the permission
         // bridge so the user actually gets prompted.
+        let runtime = CodexRuntime {
+            role: config.name.clone(),
+            events: tx_events.clone(),
+            stopping: Arc::clone(&stopping),
+        };
         tokio::spawn(read_rpc_loop(
             stdout,
             Arc::clone(&pending),
             Arc::clone(&writer),
-            config.name.clone(),
-            tx_events.clone(),
+            runtime.clone(),
             config.permission_socket_path.clone(),
             config.permission_policy_path.clone(),
         ));
@@ -178,16 +185,25 @@ impl EngineAdapter for CodexAdapter {
         }
 
         tokio::spawn(write_loop(
-            config.name.clone(),
             priors_text,
             config.budget_usd,
             config.permission_mode,
             rx_user,
             client,
-            tx_events.clone(),
+            CodexWriteRuntime {
+                base: runtime,
+                internal_stop: internal_stop_tx,
+            },
         ));
 
-        tokio::spawn(wait_child(config.name.clone(), child, tx_events, stop_rx));
+        tokio::spawn(wait_child(
+            config.name.clone(),
+            child,
+            tx_events,
+            stop_rx,
+            internal_stop_rx,
+            stopping,
+        ));
 
         Ok(RoleHandle::new(
             config.name,
@@ -197,6 +213,18 @@ impl EngineAdapter for CodexAdapter {
             stop_tx,
         ))
     }
+}
+
+#[derive(Clone)]
+struct CodexRuntime {
+    role: String,
+    events: mpsc::Sender<CrepEvent>,
+    stopping: Arc<AtomicBool>,
+}
+
+struct CodexWriteRuntime {
+    base: CodexRuntime,
+    internal_stop: mpsc::Sender<StopReason>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -351,8 +379,7 @@ async fn read_rpc_loop(
     stdout: ChildStdout,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
     writer: Arc<Mutex<tokio::process::ChildStdin>>,
-    role: String,
-    events: mpsc::Sender<CrepEvent>,
+    runtime: CodexRuntime,
     permission_socket: Option<PathBuf>,
     permission_policy_path: Option<PathBuf>,
 ) {
@@ -361,7 +388,7 @@ async fn read_rpc_loop(
         let value: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(error) => {
-                warn!(role, %error, line = %line, "non-JSON line on codex stdout");
+                warn!(role = %runtime.role, %error, line = %line, "non-JSON line on codex stdout");
                 continue;
             }
         };
@@ -379,11 +406,14 @@ async fn read_rpc_loop(
 
         match (id_present, has_method) {
             (true, true) => {
+                if runtime.stopping.load(Ordering::SeqCst) {
+                    continue;
+                }
                 let writer = Arc::clone(&writer);
-                let role_name = role.clone();
+                let role_name = runtime.role.clone();
                 let socket = permission_socket.clone();
                 let policy_path = permission_policy_path.clone();
-                let events = events.clone();
+                let events = runtime.events.clone();
                 let request = value.clone();
                 let id = RpcId(id_value.unwrap_or(Value::Null));
                 tokio::spawn(async move {
@@ -404,7 +434,7 @@ async fn read_rpc_loop(
                 // path; if codex echoes back a non-numeric id here it
                 // doesn't match any of our pending senders so drop it.
                 let Some(id) = id_value.as_ref().and_then(Value::as_u64) else {
-                    debug!(role, line = %line, "non-numeric response id, dropping");
+                    debug!(role = %runtime.role, line = %line, "non-numeric response id, dropping");
                     continue;
                 };
                 let response = JsonRpcResponse {
@@ -416,14 +446,17 @@ async fn read_rpc_loop(
                 }
             }
             (false, true) => {
-                if let Some(event) = codex_notification_to_event(&role, &value) {
-                    let _ = events.send(event).await;
+                if runtime.stopping.load(Ordering::SeqCst) {
+                    continue;
+                }
+                if let Some(event) = codex_notification_to_event(&runtime.role, &value) {
+                    let _ = runtime.events.send(event).await;
                 } else {
-                    debug!(role, line = %line, "codex notification ignored");
+                    debug!(role = %runtime.role, line = %line, "codex notification ignored");
                 }
             }
             (false, false) => {
-                debug!(role, line = %line, "malformed codex stdout line");
+                debug!(role = %runtime.role, line = %line, "malformed codex stdout line");
             }
         }
     }
@@ -434,7 +467,7 @@ async fn read_rpc_loop(
             error: Some(json!({"code": -32000, "message": "codex rpc disconnected"})),
         });
     }
-    debug!(role, "codex rpc loop exiting");
+    debug!(role = %runtime.role, "codex rpc loop exiting");
 }
 
 /// Map CodeRoom's permission_mode to codex's `approval-policy`.
@@ -786,17 +819,19 @@ async fn drain_stderr(role: String, stderr: ChildStderr) {
 }
 
 async fn write_loop(
-    role: String,
     priors_text: String,
     budget_usd: f64,
     permission_mode: PermissionMode,
     mut rx: mpsc::Receiver<UserMessage>,
     client: RpcClient,
-    events: mpsc::Sender<CrepEvent>,
+    runtime: CodexWriteRuntime,
 ) {
     let approval_policy = codex_approval_policy(permission_mode);
     let sandbox = codex_sandbox(permission_mode);
     while let Some(msg) = rx.recv().await {
+        if runtime.base.stopping.load(Ordering::SeqCst) {
+            break;
+        }
         let UserMessage::Prompt(prompt) = msg else {
             continue;
         };
@@ -818,23 +853,32 @@ async fn write_loop(
 
         match client.request("tools/call", params).await {
             Ok(result) => {
+                if runtime.base.stopping.load(Ordering::SeqCst) {
+                    break;
+                }
                 let text = extract_text_from_tool_result(&result);
-                for event in crate::adapter::role_spoke_events_from_text(&role, &text, 0.0, 0) {
-                    let _ = events.send(event).await;
+                for event in
+                    crate::adapter::role_spoke_events_from_text(&runtime.base.role, &text, 0.0, 0)
+                {
+                    let _ = runtime.base.events.send(event).await;
                 }
             }
             Err(error) => {
-                warn!(role, %error, "codex tools/call failed");
-                let text = match error {
-                    RpcError::Timeout => format!(
-                        "[codex timeout: tools/call did not respond after {}s]",
-                        RPC_REQUEST_TIMEOUT.as_secs()
-                    ),
-                    other => format!("[codex error: {other}]"),
-                };
-                let _ = events
+                warn!(role = %runtime.base.role, %error, "codex tools/call failed");
+                if runtime.base.stopping.load(Ordering::SeqCst) {
+                    break;
+                }
+                if matches!(&error, RpcError::Timeout) {
+                    runtime.base.stopping.store(true, Ordering::SeqCst);
+                    let _ = runtime.internal_stop.try_send(StopReason::TimedOut);
+                    break;
+                }
+                let text = format!("[codex error: {error}]");
+                let _ = runtime
+                    .base
+                    .events
                     .send(CrepEvent::RoleSpoke {
-                        role: role.clone(),
+                        role: runtime.base.role.clone(),
                         text,
                         mentions: Vec::new(),
                         cost_usd: 0.0,
@@ -844,7 +888,7 @@ async fn write_loop(
             }
         }
     }
-    debug!(role, "codex write loop exiting");
+    debug!(role = %runtime.base.role, "codex write loop exiting");
 }
 
 fn extract_text_from_tool_result(result: &Value) -> String {
@@ -866,6 +910,8 @@ async fn wait_child(
     mut child: Child,
     events: mpsc::Sender<CrepEvent>,
     stop_rx: oneshot::Receiver<StopReason>,
+    mut internal_stop_rx: mpsc::Receiver<StopReason>,
+    stopping: Arc<AtomicBool>,
 ) {
     let reason = tokio::select! {
         status = child.wait() => match status {
@@ -878,10 +924,18 @@ async fn wait_child(
         },
         requested = stop_rx => {
             let reason = requested.unwrap_or(StopReason::Crashed);
+            stopping.store(true, Ordering::SeqCst);
+            terminate_child(&role, &mut child).await;
+            reason
+        },
+        requested = internal_stop_rx.recv() => {
+            let reason = requested.unwrap_or(StopReason::Crashed);
+            stopping.store(true, Ordering::SeqCst);
             terminate_child(&role, &mut child).await;
             reason
         }
     };
+    stopping.store(true, Ordering::SeqCst);
     let _ = events.send(CrepEvent::RoleStopped { role, reason }).await;
 }
 

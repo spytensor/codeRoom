@@ -495,7 +495,7 @@ pub(super) fn render_home_at_width(
         }
     }
     right.push(empty_cell());
-    let footer_str = "/release-notes for more";
+    let footer_str = "/help for commands";
     right.push(fit_cell(
         styled_cell(footer_str, footer_str.with(output::DIM).italic()),
         footer_str,

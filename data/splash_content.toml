@@ -16,6 +16,14 @@ items = [
 ]
 
 [[whats_new]]
+version = "0.1.18"
+items = [
+  "role work renders as compact WorkCards",
+  "cr-task titles keep role chat separate",
+  "Codex/Gemini stop cleanly on timeout",
+]
+
+[[whats_new]]
 version = "0.1.17"
 items = [
   "Codex bypass disables both approvals and the command sandbox",

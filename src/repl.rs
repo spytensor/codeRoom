@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write as _};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -586,26 +586,41 @@ async fn drain_one_turn_with_timeout(
         output::bad(format!("no such role: @{role}"));
         return Ok(None);
     };
+    let work_state = Arc::new(Mutex::new(TurnWork::new(role, host_role, text)));
 
     let result = tokio::select! {
         biased;
         signal = tokio::signal::ctrl_c() => {
             signal.context("installing Ctrl-C handler")?;
+            let card = work_state
+                .lock()
+                .expect("turn work mutex poisoned")
+                .interrupted_card("interrupted by Ctrl-C");
+            render_card(&card);
             output::system("interrupt received; stopping roles...");
             shutdown_all_roles(roles, StopReason::Crashed);
             anyhow::bail!("interrupted");
         }
         result = tokio::time::timeout(
         PER_TURN_TIMEOUT,
-            drain_one_turn(tx_user, rx, bridge_rx, role, text, host_role),
+            drain_one_turn(
+                tx_user,
+                rx,
+                bridge_rx,
+                role,
+                text,
+                host_role,
+                Arc::clone(&work_state),
+            ),
         ) => result,
     };
     if let Ok(result) = result {
         result
     } else {
-        let work = TurnWork::new(role, host_role, text);
-        let card =
-            work.interrupted_card(format!("timed out after {}s", PER_TURN_TIMEOUT.as_secs()));
+        let card = work_state
+            .lock()
+            .expect("turn work mutex poisoned")
+            .interrupted_card(format!("timed out after {}s", PER_TURN_TIMEOUT.as_secs()));
         render_card(&card);
         output::bad(format!(
             "@{role} timed out after {}s; stopping role",

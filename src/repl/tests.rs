@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::render::{render_event_line, started_model_label, summarize_tool_input};
-use super::show::filter_show_events;
+use super::show::{filter_show_events, normalize_show_event};
 use super::splash::{
     join_cells, load_splash_content, pick_release, plain_cell, render_home_at_width, splash_bottom,
     splash_columns, splash_pair, splash_top, styled_cell,
@@ -94,6 +94,30 @@ fn show_filter_tail_zero_renders_no_events() {
     };
 
     assert!(filter_show_events(&events, &options).is_empty());
+}
+
+#[test]
+fn show_normalizes_legacy_cr_task_role_spoke() {
+    let event = CrepEvent::RoleSpoke {
+        role: "security".into(),
+        text: "```cr-task\nReview permissions\n```\n\nFindings for @backend.".into(),
+        mentions: vec!["backend".into()],
+        cost_usd: 0.0,
+        cache_read: 0,
+    };
+
+    let normalized = normalize_show_event(&event);
+
+    assert_eq!(normalized.len(), 2);
+    assert!(matches!(
+        &normalized[0],
+        CrepEvent::WorkTitle { role, title }
+            if role == "security" && title == "Review permissions"
+    ));
+    assert!(matches!(
+        &normalized[1],
+        CrepEvent::RoleSpoke { text, .. } if text == "Findings for @backend."
+    ));
 }
 
 #[test]
@@ -510,7 +534,7 @@ fn snapshot_boot_dashboard_at_80() {
 │ /repo/codeRoom                 • Codex timeouts clean up the spawned vendor… │
 │                                • README screenshot now shows the multi-engi… │
 │                                                                              │
-│                                /release-notes for more                       │
+│                                /help for commands                            │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
   type a task · @role · /help · /exit

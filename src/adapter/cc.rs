@@ -269,12 +269,28 @@ pub(crate) fn parse_mentions(text: &str) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for cap in re.captures_iter(text) {
+        let Some(full) = cap.get(0) else {
+            continue;
+        };
+        if !is_mention_boundary(text, full.start()) {
+            continue;
+        }
         let name = cap[1].to_string();
         if seen.insert(name.clone()) {
             out.push(name);
         }
     }
     out
+}
+
+fn is_mention_boundary(text: &str, at_idx: usize) -> bool {
+    if at_idx == 0 {
+        return true;
+    }
+    let Some(prev) = text[..at_idx].chars().next_back() else {
+        return true;
+    };
+    !(prev.is_ascii_alphanumeric() || matches!(prev, '_' | '-' | '.'))
 }
 
 /// Translate one parsed stream-JSON line into zero or more CREP events.
@@ -473,6 +489,7 @@ async fn read_stdout(
     turn_done: mpsc::Sender<()>,
 ) {
     let mut lines = BufReader::new(stdout).lines();
+    let mut emitted_work_title_this_turn = false;
     loop {
         match lines.next_line().await {
             Ok(Some(line)) => {
@@ -484,6 +501,11 @@ async fn read_stdout(
                     }
                 };
                 for event in translate(&role, &priors_hash, &value) {
+                    let Some(event) =
+                        dedupe_work_title_for_turn(event, &mut emitted_work_title_this_turn)
+                    else {
+                        continue;
+                    };
                     let is_turn_boundary = matches!(
                         event,
                         CrepEvent::RoleSpoke { .. } | CrepEvent::RoleStopped { .. }
@@ -493,6 +515,7 @@ async fn read_stdout(
                         return;
                     }
                     if is_turn_boundary {
+                        emitted_work_title_this_turn = false;
                         let _ = turn_done.send(()).await;
                     }
                 }
@@ -507,6 +530,19 @@ async fn read_stdout(
             }
         }
     }
+}
+
+fn dedupe_work_title_for_turn(
+    event: CrepEvent,
+    emitted_work_title_this_turn: &mut bool,
+) -> Option<CrepEvent> {
+    if matches!(event, CrepEvent::WorkTitle { .. }) {
+        if *emitted_work_title_this_turn {
+            return None;
+        }
+        *emitted_work_title_this_turn = true;
+    }
+    Some(event)
 }
 
 async fn drain_stderr(role: String, stderr: ChildStderr) {

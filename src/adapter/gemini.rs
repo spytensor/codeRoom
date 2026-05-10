@@ -26,7 +26,12 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
-use tokio::process::Command;
+#[cfg(unix)]
+use nix::sys::signal::{kill, Signal};
+#[cfg(unix)]
+use nix::unistd::Pid;
+use tokio::io::AsyncReadExt;
+use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
@@ -156,7 +161,8 @@ async fn probe_gemini(gemini_path: &PathBuf) -> Result<GeminiPromptMode, String>
     cmd.arg("--help")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
     let output = tokio::time::timeout(GEMINI_PROBE_TIMEOUT, cmd.output())
         .await
         .map_err(|_| "gemini --help timed out".to_owned())?
@@ -220,18 +226,22 @@ impl GeminiLoop {
             let UserMessage::Prompt(prompt) = msg else {
                 continue;
             };
-            match run_one_turn(
-                &self.gemini_path,
-                self.model.as_deref(),
-                &self.priors_path,
-                &self.priors_text,
-                self.prompt_mode,
-                &prompt,
-                &self.role,
+            let outcome = run_one_turn_or_stop(
+                GeminiTurnRequest {
+                    gemini_path: &self.gemini_path,
+                    model: self.model.as_deref(),
+                    priors_path: &self.priors_path,
+                    priors_text: &self.priors_text,
+                    prompt_mode: self.prompt_mode,
+                    user_prompt: &prompt,
+                    role: &self.role,
+                },
+                &mut self.stop_rx,
             )
-            .await
-            {
-                Ok(turn) => {
+            .await;
+            match outcome {
+                GeminiTurnOutcome::Stopped(reason) => break reason,
+                GeminiTurnOutcome::Completed(Ok(turn)) => {
                     for event in turn.events {
                         let _ = self.events.send(event).await;
                     }
@@ -241,7 +251,7 @@ impl GeminiLoop {
                         let _ = self.events.send(event).await;
                     }
                 }
-                Err(error) => {
+                GeminiTurnOutcome::Completed(Err(error)) => {
                     warn!(role = %self.role, %error, "gemini turn failed");
                     let _ = self
                         .events
@@ -267,28 +277,38 @@ impl GeminiLoop {
     }
 }
 
+enum GeminiTurnOutcome {
+    Completed(std::io::Result<GeminiTurn>),
+    Stopped(StopReason),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct GeminiTurn {
     text: String,
     events: Vec<CrepEvent>,
 }
 
-/// Run a single `gemini -p` invocation and translate its stream-json stdout.
-async fn run_one_turn(
-    gemini_path: &PathBuf,
-    model: Option<&str>,
-    priors_path: &PathBuf,
-    priors_text: &str,
+struct GeminiTurnRequest<'a> {
+    gemini_path: &'a PathBuf,
+    model: Option<&'a str>,
+    priors_path: &'a PathBuf,
+    priors_text: &'a str,
     prompt_mode: GeminiPromptMode,
-    user_prompt: &str,
-    role: &str,
-) -> std::io::Result<GeminiTurn> {
-    let mut cmd = Command::new(gemini_path);
+    user_prompt: &'a str,
+    role: &'a str,
+}
+
+/// Run a single `gemini -p` invocation and translate its stream-json stdout.
+async fn run_one_turn_or_stop(
+    request: GeminiTurnRequest<'_>,
+    stop_rx: &mut oneshot::Receiver<StopReason>,
+) -> GeminiTurnOutcome {
+    let mut cmd = Command::new(request.gemini_path);
     cmd.arg("-p")
-        .arg(match prompt_mode {
-            GeminiPromptMode::SystemInstructionFile => user_prompt.to_owned(),
+        .arg(match request.prompt_mode {
+            GeminiPromptMode::SystemInstructionFile => request.user_prompt.to_owned(),
             GeminiPromptMode::InlineUntrusted => {
-                format!("{priors_text}\n\n---\n\n{user_prompt}")
+                format!("{}\n\n---\n\n{}", request.priors_text, request.user_prompt)
             }
         })
         .arg("--output-format")
@@ -296,26 +316,136 @@ async fn run_one_turn(
         .arg("-y")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if prompt_mode == GeminiPromptMode::SystemInstructionFile {
-        cmd.arg("--system-instruction-file").arg(priors_path);
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    isolate_process_group(&mut cmd);
+    if request.prompt_mode == GeminiPromptMode::SystemInstructionFile {
+        cmd.arg("--system-instruction-file")
+            .arg(request.priors_path);
     }
-    if let Some(model) = model {
+    if let Some(model) = request.model {
         cmd.arg("--model").arg(model);
     }
 
-    let output = cmd.output().await?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(std::io::Error::other(format!(
-            "gemini exited with {}: {stderr}",
-            output.status
-        )));
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(error) => return GeminiTurnOutcome::Completed(Err(error)),
+    };
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let stdout_task = tokio::spawn(read_pipe(stdout));
+    let stderr_task = tokio::spawn(read_pipe(stderr));
+
+    let status = tokio::select! {
+        biased;
+        requested = stop_rx => {
+            let reason = requested.unwrap_or(StopReason::Crashed);
+            terminate_child(request.role, &mut child).await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return GeminiTurnOutcome::Stopped(reason);
+        }
+        status = child.wait() => status,
+    };
+    let status = match status {
+        Ok(status) => status,
+        Err(error) => return GeminiTurnOutcome::Completed(Err(error)),
+    };
+    let stdout = stdout_task
+        .await
+        .map_err(|error| std::io::Error::other(format!("joining stdout reader: {error}")))
+        .and_then(|result| result);
+    let stderr = stderr_task
+        .await
+        .map_err(|error| std::io::Error::other(format!("joining stderr reader: {error}")))
+        .and_then(|result| result);
+    let (stdout, stderr) = match (stdout, stderr) {
+        (Ok(stdout), Ok(stderr)) => (stdout, stderr),
+        (Err(error), _) | (_, Err(error)) => return GeminiTurnOutcome::Completed(Err(error)),
+    };
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
+        return GeminiTurnOutcome::Completed(Err(std::io::Error::other(format!(
+            "gemini exited with {status}: {stderr}",
+        ))));
     }
-    Ok(parse_stream_json_turn(
-        role,
-        &String::from_utf8_lossy(&output.stdout),
-    ))
+    GeminiTurnOutcome::Completed(Ok(parse_stream_json_turn(
+        request.role,
+        &String::from_utf8_lossy(&stdout),
+    )))
+}
+
+async fn read_pipe(mut pipe: impl tokio::io::AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    pipe.read_to_end(&mut bytes).await?;
+    Ok(bytes)
+}
+
+#[cfg(unix)]
+fn isolate_process_group(cmd: &mut Command) {
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn isolate_process_group(_cmd: &mut Command) {}
+
+async fn terminate_child(role: &str, child: &mut Child) {
+    if !signal_process_group(role, child, SignalKind::Terminate) {
+        if let Err(error) = child.start_kill() {
+            warn!(role, %error, "failed to start gemini subprocess kill");
+            return;
+        }
+    }
+    match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => warn!(role, %error, "error waiting after gemini subprocess kill"),
+        Err(_) => {
+            warn!(
+                role,
+                "gemini subprocess did not exit promptly after kill signal"
+            );
+            signal_process_group(role, child, SignalKind::Kill);
+            let _ = child.kill().await;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SignalKind {
+    Terminate,
+    Kill,
+}
+
+#[cfg(unix)]
+fn signal_process_group(role: &str, child: &Child, signal: SignalKind) -> bool {
+    let Some(pid) = child.id() else {
+        return false;
+    };
+    let Ok(pid) = i32::try_from(pid) else {
+        warn!(role, pid, "gemini subprocess pid does not fit i32");
+        return false;
+    };
+    let signal = match signal {
+        SignalKind::Terminate => Signal::SIGTERM,
+        SignalKind::Kill => Signal::SIGKILL,
+    };
+    match kill(Pid::from_raw(-pid), signal) {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(
+                role,
+                %error,
+                ?signal,
+                "failed to signal gemini subprocess group"
+            );
+            false
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn signal_process_group(_role: &str, _child: &Child, _signal: SignalKind) -> bool {
+    false
 }
 
 fn parse_stream_json_turn(role: &str, stdout: &str) -> GeminiTurn {

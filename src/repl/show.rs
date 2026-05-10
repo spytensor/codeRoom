@@ -6,6 +6,7 @@ use crate::bus::MessageBus;
 use crate::config::{Config, CODEROOM_DIR};
 use crate::crep::CrepEvent;
 use crate::output;
+use crate::work;
 
 use super::render::render_event;
 
@@ -65,7 +66,7 @@ pub async fn show_log(project_root: &Path, options: &ShowOptions) -> Result<()> 
         return Ok(());
     }
     for event in events {
-        render_event(event, &host_role);
+        render_show_event(event, &host_role);
     }
     Ok(())
 }
@@ -100,4 +101,43 @@ fn event_role(event: &CrepEvent) -> &str {
         | CrepEvent::PermissionDenied { role, .. }
         | CrepEvent::RoleStopped { role, .. } => role,
     }
+}
+
+fn render_show_event(event: &CrepEvent, host_role: &str) {
+    for event in normalize_show_event(event) {
+        render_event(&event, host_role);
+    }
+}
+
+pub(super) fn normalize_show_event(event: &CrepEvent) -> Vec<CrepEvent> {
+    let CrepEvent::RoleSpoke {
+        role,
+        text,
+        mentions,
+        cost_usd,
+        cache_read,
+    } = event
+    else {
+        return vec![event.clone()];
+    };
+
+    let extracted = work::extract_cr_task(text);
+    let mut events = Vec::new();
+    if let Some(title) = extracted.title {
+        events.push(CrepEvent::WorkTitle {
+            role: role.clone(),
+            title,
+        });
+    }
+    let body = extracted.body.trim().to_owned();
+    if !body.is_empty() {
+        events.push(CrepEvent::RoleSpoke {
+            role: role.clone(),
+            text: body,
+            mentions: mentions.clone(),
+            cost_usd: *cost_usd,
+            cache_read: *cache_read,
+        });
+    }
+    events
 }

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Role work now renders through WorkCards with engine-neutral `cr-task` titles
+  and clean separation between role work metadata and role chat text.
+- Claude Code, Codex, and Gemini adapters now share the same work-title parsing
+  path, with Codex/Gemini marked as partial trace sources where appropriate.
+
+### Fixed
+
+- Timed-out Codex and Gemini turns now terminate the active engine process
+  instead of allowing stale tool output or replies after the REPL has returned.
+- `cr show` normalizes legacy replies that embedded `cr-task` blocks, and
+  mention parsing no longer treats email addresses as role mentions.
+
 ## [0.1.17] - 2026-05-10
 
 ### Fixed
