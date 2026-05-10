@@ -182,3 +182,32 @@ impl Drop for StatusRegion {
         self.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_duration_under_a_minute_shows_seconds() {
+        assert_eq!(format_short_duration(Duration::from_secs(0)), "0s");
+        assert_eq!(format_short_duration(Duration::from_secs(12)), "12s");
+        assert_eq!(format_short_duration(Duration::from_secs(59)), "59s");
+    }
+
+    #[test]
+    fn short_duration_under_an_hour_shows_whole_minutes() {
+        assert_eq!(format_short_duration(Duration::from_secs(60)), "1m");
+        assert_eq!(format_short_duration(Duration::from_secs(120)), "2m");
+        assert_eq!(format_short_duration(Duration::from_secs(3_599)), "59m");
+    }
+
+    #[test]
+    fn short_duration_over_an_hour_shows_hours_and_minutes() {
+        assert_eq!(format_short_duration(Duration::from_secs(3_600)), "1h");
+        assert_eq!(format_short_duration(Duration::from_secs(3_660)), "1h 1m");
+        assert_eq!(format_short_duration(Duration::from_secs(7_320)), "2h 2m");
+        // 26h is plausible for a long-running automation; the format
+        // doesn't degrade.
+        assert_eq!(format_short_duration(Duration::from_secs(93_600)), "26h");
+    }
+}
