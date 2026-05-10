@@ -531,17 +531,17 @@ fn snapshot_boot_dashboard_at_80() {
     .trim_start_matches('\n')
     .to_owned();
     insta::assert_snapshot!(rendered, @r"
-┌─ codeRoom v0.1.18 ───────────────────────────────────────────────────────────┐
+┌─ codeRoom v0.2.0 ────────────────────────────────────────────────────────────┐
 │                                                                              │
 │ welcome back, Ada              tips for getting started                      │
 │                                • type @role to send a task to a specific ro… │
-│ ● @backend   cc     · 1M       • /patch <role> persists a correction across… │
+│ ● @backend   cc     · 1M       • /halt @role interrupts a turn; Ctrl-C twic… │
 │ ● @host      cc     · 1M       • /journal <role> captures today's lessons-l… │
 │ ● @security  codex  · default                                                │
-│                                what's new in 0.1.18                          │
-│  0  base tokens loaded         • role work renders as compact WorkCards      │
-│ /repo/codeRoom                 • cr-task titles keep role chat separate      │
-│                                • Codex/Gemini stop cleanly on timeout        │
+│                                what's new in 0.2.0                           │
+│  0  base tokens loaded         • no wall-clock kill on long turns — trust t… │
+│ /repo/codeRoom                 • /halt and two-press Ctrl-C cancel turns wi… │
+│                                • WorkCard render polish: ●/○/· glyphs + per… │
 │                                                                              │
 │                                /help for commands                            │
 │                                                                              │
