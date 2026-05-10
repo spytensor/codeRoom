@@ -129,7 +129,9 @@ Each is a one-liner with rationale. Detailed sections follow.
 5. **Permission modes are explicit.** `permission_mode = "ask" | "auto" |
    "bypass"` is resolved per role. Claude Code uses a settings-injected
    PreToolUse hook. Codex and Gemini are bypass-only until CodeRoom can
-   supervise their approvals.
+   supervise their approvals. For compatibility with older generated
+   configs, Codex/Gemini roles that omit a per-role permission mode resolve
+   to bypass; explicit ask/auto still fail fast.
 6. **Trust-the-model routing.** Each role's system prompt includes a team
    roster. When a role writes `@x` in its reply, the wrapper routes a
    focused brief to `x`'s session. No syntactic protocol.
@@ -209,9 +211,9 @@ PermissionDenied, RoleStopped).
 - Two tools available: `codex` (start session) and `codex-reply` (continue).
 - Permission: CodeRoom currently starts Codex only when
   `permission_mode="bypass"` and sends `approval-policy="never"` in the
-  `tools/call` payload. `ask` and `auto` fail fast until CodeRoom can answer
-  Codex approval requests over MCP; CodeRoom does not silently downgrade
-  restricted modes to bypass.
+  `tools/call` payload. Missing per-role permission modes on Codex roles
+  resolve to bypass for older generated configs; explicit `ask` and `auto`
+  fail fast until CodeRoom can answer Codex approval requests over MCP.
 
 ### Gemini adapter
 

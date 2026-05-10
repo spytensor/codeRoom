@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-05-10
+
+### Fixed
+
+- Existing Codex and Gemini roles created before per-role permission modes
+  now start with `permission_mode="bypass"` when they omit a role-level
+  override, instead of inheriting project-wide `ask` and aborting `cr start`.
+  Explicit `ask` or `auto` on those engines still fails fast until their
+  approval bridges exist.
+- The boot dashboard no longer displays the literal `model` placeholder for
+  Codex or Gemini roles without a configured model.
+- Startup no longer prints terminal truecolor diagnostics by default; use
+  `CODEROOM_TERMINAL_PROBE=1 cr` when collecting color-rendering reports.
+
 ## [0.1.12] - 2026-05-10
 
 ### Added
@@ -448,7 +462,8 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.12...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.13...HEAD
+[0.1.13]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.13
 [0.1.12]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.12
 [0.1.11]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.11
 [0.1.10]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.10
