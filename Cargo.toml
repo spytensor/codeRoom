@@ -61,10 +61,14 @@ regex = "1.10"
 # pulled in by tests (a regular dep is visible there too).
 tempfile = "3.10"
 
+# Cross-process advisory file locks for `.coderoom/messages.jsonl`.
+fs2 = "0.4"
+
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
 pretty_assertions = "1.4"
+insta = "1"
 
 [profile.release]
 opt-level = 3
