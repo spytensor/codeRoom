@@ -53,7 +53,9 @@ impl Engine {
     pub const fn work_trace(self) -> WorkTraceCapability {
         match self {
             Self::Cc => WorkTraceCapability::from_bits(
-                WorkTraceCapability::CR_TASK_TITLES | WorkTraceCapability::LIVE_TOOL_STEPS,
+                WorkTraceCapability::CR_TASK_TITLES
+                    | WorkTraceCapability::EARLY_WORK_TITLES
+                    | WorkTraceCapability::LIVE_TOOL_STEPS,
             ),
             Self::Codex => WorkTraceCapability::from_bits(
                 WorkTraceCapability::CR_TASK_TITLES
@@ -78,6 +80,7 @@ impl WorkTraceCapability {
     const LIVE_TOOL_STEPS: u8 = 1 << 1;
     const NATIVE_DELEGATES: u8 = 1 << 2;
     const PARTIAL_TRACE: u8 = 1 << 3;
+    const EARLY_WORK_TITLES: u8 = 1 << 4;
 
     const fn from_bits(bits: u8) -> Self {
         Self { bits }
@@ -87,6 +90,12 @@ impl WorkTraceCapability {
     #[must_use]
     pub const fn cr_task_titles(self) -> bool {
         self.bits & Self::CR_TASK_TITLES != 0
+    }
+
+    /// Whether work titles can arrive before live tool-step events.
+    #[must_use]
+    pub const fn early_work_titles(self) -> bool {
+        self.bits & Self::EARLY_WORK_TITLES != 0
     }
 
     /// Whether tool steps can arrive while the role is still running.
@@ -404,11 +413,17 @@ mod tests {
     fn work_trace_capabilities_reflect_adapter_modes() {
         let cc = Engine::Cc.work_trace();
         assert!(cc.cr_task_titles());
+        assert!(cc.early_work_titles());
         assert!(cc.live_tool_steps());
         assert!(!cc.native_delegates());
         assert!(!cc.partial_trace());
 
+        let codex = Engine::Codex.work_trace();
+        assert!(codex.cr_task_titles());
+        assert!(!codex.early_work_titles());
+        assert!(codex.live_tool_steps());
         assert!(Engine::Codex.work_trace().partial_trace());
+        assert!(!Engine::Gemini.work_trace().early_work_titles());
         assert!(!Engine::Gemini.work_trace().live_tool_steps());
     }
 
