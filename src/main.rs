@@ -10,11 +10,12 @@
 //! - `cr show [--role ROLE] [--since YYYY-MM-DD] [--tail N]` — replay events
 //! - `cr cost [--since YYYY-MM-DD]` — summarize reported engine spend
 
+use std::io::{IsTerminal, Write as _};
 use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use coderoom::adapter::Engine;
+use coderoom::adapter::{Engine, PermissionMode};
 use coderoom::config_cmd::LayerTarget;
 
 #[derive(Debug, Parser)]
@@ -54,6 +55,9 @@ enum Cmd {
         /// working directory.
         #[arg(long)]
         project: Option<PathBuf>,
+        /// Run this session with permission_mode=bypass for every role.
+        #[arg(long)]
+        yolo: bool,
     },
     /// Replay `.coderoom/messages.jsonl` through the live renderer.
     Show {
@@ -105,6 +109,16 @@ enum Cmd {
     /// auto-upgradable; other paths print instructions). Verifies
     /// the binary on disk actually changed before claiming success.
     Upgrade,
+    /// Internal Claude Code hook entry point.
+    #[command(name = "__coderoom-hook-decision", hide = true)]
+    HookDecision {
+        /// Permission mode to apply to this hook decision.
+        #[arg(long, value_parser = parse_permission_mode)]
+        mode: PermissionMode,
+        /// Session policy file populated by `/allow` and `/deny`.
+        #[arg(long)]
+        policy_file: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -232,6 +246,17 @@ fn parse_engine(s: &str) -> Result<Engine, String> {
     }
 }
 
+fn parse_permission_mode(s: &str) -> Result<PermissionMode, String> {
+    match s {
+        "ask" => Ok(PermissionMode::Ask),
+        "auto" => Ok(PermissionMode::Auto),
+        "bypass" => Ok(PermissionMode::Bypass),
+        other => Err(format!(
+            "unknown permission mode `{other}` — valid: ask, auto, bypass"
+        )),
+    }
+}
+
 fn parse_date(s: &str) -> std::result::Result<chrono::NaiveDate, String> {
     chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|e| format!("must be YYYY-MM-DD: {e}"))
 }
@@ -245,6 +270,10 @@ fn project_root_or_cwd(arg: Option<PathBuf>) -> std::io::Result<PathBuf> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    if let Some(Cmd::HookDecision { mode, policy_file }) = &cli.command {
+        return coderoom::permissions::run_claude_hook(*mode, policy_file.as_deref());
+    }
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -261,14 +290,14 @@ fn main() -> Result<()> {
     // requires at least one of claude / codex / gemini on $PATH.
     let needs_engine = !matches!(
         cli.command,
-        Some(Cmd::Config { .. } | Cmd::Update | Cmd::Upgrade)
+        Some(Cmd::Config { .. } | Cmd::Update | Cmd::Upgrade | Cmd::HookDecision { .. })
     );
     if needs_engine && coderoom::engines::require_any_installed().is_err() {
         std::process::exit(1);
     }
 
     match cli.command {
-        None => run_start(None),
+        None => run_start(None, false),
         Some(Cmd::Init { project, yes }) => {
             let opts = if yes {
                 coderoom::init::InitOptions::accepted_defaults()
@@ -278,7 +307,7 @@ fn main() -> Result<()> {
             coderoom::init::run(&project_root_or_cwd(project)?, opts)
         }
         Some(Cmd::Role { command }) => run_role_cmd(command),
-        Some(Cmd::Start { project }) => run_start(project),
+        Some(Cmd::Start { project, yolo }) => run_start(project, yolo),
         Some(Cmd::Show {
             project,
             role,
@@ -301,6 +330,7 @@ fn main() -> Result<()> {
         Some(Cmd::Config { command }) => run_config_cmd(command),
         Some(Cmd::Update) => coderoom::update::check(),
         Some(Cmd::Upgrade) => coderoom::update::upgrade(),
+        Some(Cmd::HookDecision { .. }) => unreachable!("handled before terminal setup"),
         Some(Cmd::Compact { role, project }) => {
             let root = project_root_or_cwd(project)?;
             let role = role.strip_prefix('@').unwrap_or(&role);
@@ -321,14 +351,31 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_start(project: Option<PathBuf>) -> Result<()> {
+fn run_start(project: Option<PathBuf>, yolo: bool) -> Result<()> {
+    if yolo && !confirm_yolo()? {
+        return Ok(());
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async move {
         let project_root = project_root_or_cwd(project)?;
-        coderoom::repl::run(&project_root).await
+        let options = coderoom::repl::RunOptions {
+            permission_mode_override: yolo.then_some(PermissionMode::Bypass),
+        };
+        coderoom::repl::run_with_options(&project_root, options).await
     })
+}
+
+fn confirm_yolo() -> Result<bool> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Ok(true);
+    }
+    print!("Run this CodeRoom session with permission_mode=bypass for every role? [y/N] ");
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
 fn run_config_cmd(cmd: ConfigCmd) -> Result<()> {

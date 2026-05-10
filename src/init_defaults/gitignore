@@ -1,5 +1,6 @@
 # Runtime artifacts — never committed.
 messages.jsonl
+permission_policy.json
 sessions/
 transcripts/
 

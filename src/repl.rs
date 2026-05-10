@@ -25,7 +25,7 @@ use tracing::{debug, warn};
 use crate::adapter::cc::CcAdapter;
 use crate::adapter::codex::CodexAdapter;
 use crate::adapter::gemini::GeminiAdapter;
-use crate::adapter::{Engine, EngineAdapter, RoleHandle, UserMessage};
+use crate::adapter::{Engine, EngineAdapter, PermissionMode, RoleHandle, UserMessage};
 use crate::bus::MessageBus;
 use crate::config::{Config, CODEROOM_DIR};
 use crate::crep::{CrepEvent, StopReason};
@@ -70,6 +70,10 @@ pub enum Command {
     /// `/welcome` — re-show the first-run welcome card on demand, even
     /// after the `.welcomed` marker has been written.
     Welcome,
+    /// `/allow <tool>` — allow a tool in the session permission policy.
+    Allow(String),
+    /// `/deny <tool>` — deny a tool in the session permission policy.
+    Deny(String),
     /// `/stop <role>` — terminate the named role's subprocess.
     Stop(String),
     /// `/host <role>` — session-only host role swap.
@@ -127,6 +131,8 @@ pub fn parse_line(input: &str) -> Command {
             }
             "patch" => parse_patch_arg(arg).unwrap_or(Command::Help),
             "welcome" => Command::Welcome,
+            "allow" if !arg.is_empty() => Command::Allow(arg.to_owned()),
+            "deny" if !arg.is_empty() => Command::Deny(arg.to_owned()),
             // /help, /h, and any unknown slash command all fall through here.
             _ => Command::Help,
         };
@@ -204,6 +210,23 @@ struct RunningRole {
     priors_temp: NamedTempFile,
 }
 
+struct SpawnContext<'a> {
+    cfg: &'a Config,
+    adapters: &'a Adapters,
+    coderoom_dir: &'a Path,
+    permission_policy_path: &'a Path,
+    permission_mode_override: Option<PermissionMode>,
+    bus: &'a Arc<MessageBus>,
+}
+
+/// Runtime options for `cr start`.
+#[derive(Debug, Clone, Default)]
+pub struct RunOptions {
+    /// Session-wide permission mode override. `cr start --yolo` sets this
+    /// to `Some(PermissionMode::Bypass)`.
+    pub permission_mode_override: Option<PermissionMode>,
+}
+
 /// REPL entry point. Loads config, spawns every declared role, forwards
 /// each role's events into the bus, then enters the line-mode loop.
 ///
@@ -214,6 +237,12 @@ struct RunningRole {
 /// the default host role works out of the box for first-run dogfooding.
 #[allow(clippy::too_many_lines)]
 pub async fn run(project_root: &Path) -> Result<()> {
+    run_with_options(project_root, RunOptions::default()).await
+}
+
+/// REPL entry point with explicit runtime options.
+#[allow(clippy::too_many_lines)]
+pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Result<()> {
     let coderoom_dir = project_root.join(CODEROOM_DIR);
     if !coderoom_dir.exists() {
         let opts = if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
@@ -248,13 +277,27 @@ pub async fn run(project_root: &Path) -> Result<()> {
 
     let adapters = Adapters::new();
 
+    let permission_policy_path = crate::permissions::policy_path_for_coderoom(&coderoom_dir);
+    ensure_permission_policy(&permission_policy_path)?;
+    if options.permission_mode_override == Some(PermissionMode::Bypass) {
+        output::warn("permission_mode=bypass is active for this session");
+    }
+
     let mut roles: HashMap<String, RunningRole> = HashMap::new();
     for name in cfg
         .role_names()
         .map(ToOwned::to_owned)
         .collect::<Vec<String>>()
     {
-        let running = spawn_role(&cfg, &adapters, &coderoom_dir, &name, &bus).await?;
+        let spawn_context = SpawnContext {
+            cfg: &cfg,
+            adapters: &adapters,
+            coderoom_dir: &coderoom_dir,
+            permission_policy_path: &permission_policy_path,
+            permission_mode_override: options.permission_mode_override,
+            bus: &bus,
+        };
+        let running = spawn_role(&spawn_context, &name).await?;
         roles.insert(name, running);
     }
 
@@ -300,7 +343,15 @@ pub async fn run(project_root: &Path) -> Result<()> {
                 }
             }
             Command::Refresh(role) => {
-                refresh_role(&cfg, &adapters, &coderoom_dir, &bus, &mut roles, &role).await;
+                let spawn_context = SpawnContext {
+                    cfg: &cfg,
+                    adapters: &adapters,
+                    coderoom_dir: &coderoom_dir,
+                    permission_policy_path: &permission_policy_path,
+                    permission_mode_override: options.permission_mode_override,
+                    bus: &bus,
+                };
+                refresh_role(&spawn_context, &mut roles, &role).await;
             }
             Command::Transcript(role) => {
                 show_transcript(&coderoom_dir, &role, &cfg.host_role).await;
@@ -317,6 +368,12 @@ pub async fn run(project_root: &Path) -> Result<()> {
             }
             Command::Welcome => {
                 print_home(&cfg, &coderoom_dir, project_root, false);
+            }
+            Command::Allow(tool) => {
+                update_permission_policy(&permission_policy_path, &tool, true);
+            }
+            Command::Deny(tool) => {
+                update_permission_policy(&permission_policy_path, &tool, false);
             }
             Command::Host(role) => {
                 if cfg.roles.contains_key(&role) {
@@ -408,6 +465,52 @@ fn shutdown_all_roles(roles: &mut HashMap<String, RunningRole>, reason: StopReas
         if let Some(running) = roles.remove(&name) {
             stop_running_role(&name, running, reason);
         }
+    }
+}
+
+fn ensure_permission_policy(path: &Path) -> Result<()> {
+    if !path.exists() {
+        crate::permissions::PermissionPolicy::default().save(path)?;
+    }
+    ensure_permission_policy_gitignored(path)
+}
+
+fn ensure_permission_policy_gitignored(path: &Path) -> Result<()> {
+    let Some(coderoom_dir) = path.parent() else {
+        return Ok(());
+    };
+    let ignore_path = coderoom_dir.join(".gitignore");
+    let existing = std::fs::read_to_string(&ignore_path).unwrap_or_default();
+    if existing
+        .lines()
+        .any(|line| line.trim() == "permission_policy.json")
+    {
+        return Ok(());
+    }
+    let mut updated = existing;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    if updated.is_empty() {
+        updated.push_str("# Runtime artifacts — never committed.\n");
+    }
+    updated.push_str("permission_policy.json\n");
+    std::fs::write(&ignore_path, updated)
+        .with_context(|| format!("writing {}", ignore_path.display()))
+}
+
+fn update_permission_policy(path: &Path, tool: &str, allow: bool) {
+    let result = crate::permissions::update_policy(path, |policy| {
+        if allow {
+            policy.allow_tool(tool);
+        } else {
+            policy.deny_tool(tool);
+        }
+    });
+    match result {
+        Ok(_) if allow => output::ok(format!("{tool} allowed for this session")),
+        Ok(_) => output::ok(format!("{tool} denied for this session")),
+        Err(error) => output::bad(format!("updating permission policy failed: {error:#}")),
     }
 }
 
@@ -978,6 +1081,8 @@ fn print_help(cfg: &Config) {
     println!("  /transcript <role>  show that role's recent spoken turns");
     println!("  /journal <role>     ask role to write today's journal entry");
     println!("  /welcome            re-show the first-run welcome card");
+    println!("  /allow <tool>       allow a tool for this session");
+    println!("  /deny <tool>        deny a tool for this session");
     println!("  /stop <role>        terminate a role's subprocess");
     println!("  /help               this help");
     println!("  /exit, /quit        leave the REPL");
@@ -1662,14 +1767,11 @@ fn truncate_inline(s: &str, max_chars: usize) -> String {
 /// status to stdout via the same coloured channel as the rest of the
 /// REPL.
 async fn refresh_role(
-    cfg: &Config,
-    adapters: &Adapters,
-    coderoom_dir: &Path,
-    bus: &Arc<MessageBus>,
+    context: &SpawnContext<'_>,
     roles: &mut HashMap<String, RunningRole>,
     role: &str,
 ) {
-    if !cfg.roles.contains_key(role) {
+    if !context.cfg.roles.contains_key(role) {
         output::bad(format!("no such role: @{role}"));
         return;
     }
@@ -1683,7 +1785,7 @@ async fn refresh_role(
             format!("refreshing @{role}...").with(output::TEXT),
         );
     }
-    match spawn_role(cfg, adapters, coderoom_dir, role, bus).await {
+    match spawn_role(context, role).await {
         Ok(running) => {
             roles.insert(role.to_owned(), running);
             output::ok(format!("@{role} refreshed"));
@@ -1698,13 +1800,9 @@ async fn refresh_role(
 /// subprocess via the configured engine adapter, and wire its event
 /// stream into `bus`. Returns the [`RunningRole`] the REPL should
 /// keep alive.
-async fn spawn_role(
-    cfg: &Config,
-    adapters: &Adapters,
-    coderoom_dir: &Path,
-    name: &str,
-    bus: &Arc<MessageBus>,
-) -> Result<RunningRole> {
+async fn spawn_role(context: &SpawnContext<'_>, name: &str) -> Result<RunningRole> {
+    let cfg = context.cfg;
+    let coderoom_dir = context.coderoom_dir;
     let compose_dir = coderoom_dir.to_path_buf();
     let compose_role = name.to_owned();
     let composed =
@@ -1719,19 +1817,26 @@ async fn spawn_role(
         .role_config(name, coderoom_dir)
         .with_context(|| format!("role `{name}` is declared but has invalid config"))?;
     priors_temp.path().clone_into(&mut role_cfg.priors_path);
+    role_cfg.permission_policy_path = Some(context.permission_policy_path.to_path_buf());
+    if let Some(mode) = context.permission_mode_override {
+        role_cfg.permission_mode = mode;
+    }
 
     let handle = match role_cfg.engine {
-        Engine::Cc => adapters
+        Engine::Cc => context
+            .adapters
             .cc
             .start(role_cfg)
             .await
             .with_context(|| format!("spawning role `{name}`"))?,
-        Engine::Codex => adapters
+        Engine::Codex => context
+            .adapters
             .codex
             .start(role_cfg)
             .await
             .with_context(|| format!("spawning role `{name}` (codex)"))?,
-        Engine::Gemini => adapters
+        Engine::Gemini => context
+            .adapters
             .gemini
             .start(role_cfg)
             .await
@@ -1744,8 +1849,9 @@ async fn spawn_role(
         tx_user,
         rx_events,
         stop_tx,
+        ..
     } = handle;
-    spawn_event_forwarder(rname, rx_events, Arc::clone(bus));
+    spawn_event_forwarder(rname, rx_events, Arc::clone(context.bus));
     Ok(RunningRole {
         tx_user,
         stop_tx: Some(stop_tx),
@@ -2019,6 +2125,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_allow_and_deny() {
+        assert_eq!(parse_line("/allow Read"), Command::Allow("Read".into()));
+        assert_eq!(parse_line("/deny Bash"), Command::Deny("Bash".into()));
+        assert_eq!(parse_line("/allow"), Command::Help);
+        assert_eq!(parse_line("/deny"), Command::Help);
+    }
+
+    #[test]
     fn started_model_label_hides_literal_model_placeholder() {
         assert_eq!(started_model_label("codex", "model"), "Codex default");
         assert_eq!(
@@ -2039,6 +2153,29 @@ mod tests {
         // Idempotent: second mark is a no-op (same path, same content)
         mark_welcomed(&coderoom).await;
         assert!(!is_first_run(&coderoom));
+    }
+
+    #[test]
+    fn ensure_permission_policy_creates_file_and_gitignore_rule() {
+        let tmp = tempfile::tempdir().unwrap();
+        let coderoom = tmp.path().join(CODEROOM_DIR);
+        std::fs::create_dir_all(&coderoom).unwrap();
+        std::fs::write(coderoom.join(".gitignore"), "messages.jsonl\n").unwrap();
+        let policy_path = coderoom.join("permission_policy.json");
+
+        ensure_permission_policy(&policy_path).unwrap();
+        ensure_permission_policy(&policy_path).unwrap();
+
+        assert!(policy_path.is_file());
+        let ignore = std::fs::read_to_string(coderoom.join(".gitignore")).unwrap();
+        assert!(ignore.contains("messages.jsonl"));
+        assert_eq!(
+            ignore
+                .lines()
+                .filter(|line| line.trim() == "permission_policy.json")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -2195,6 +2332,7 @@ mod tests {
         Config {
             default_engine: Engine::Cc,
             default_model: None,
+            permission_mode: PermissionMode::Ask,
             budget_per_role_usd: 1.0,
             host_role: "host".into(),
             roles: HashMap::from([
@@ -2203,6 +2341,7 @@ mod tests {
                     crate::config::RoleEntry {
                         engine: Some(Engine::Cc),
                         model: Some("opus".into()),
+                        permission_mode: None,
                     },
                 ),
                 (
@@ -2210,6 +2349,7 @@ mod tests {
                     crate::config::RoleEntry {
                         engine: Some(Engine::Cc),
                         model: None,
+                        permission_mode: None,
                     },
                 ),
                 (
@@ -2217,6 +2357,7 @@ mod tests {
                     crate::config::RoleEntry {
                         engine: Some(Engine::Codex),
                         model: None,
+                        permission_mode: Some(PermissionMode::Bypass),
                     },
                 ),
             ]),
