@@ -50,12 +50,18 @@ require a network connection.
 cargo test -- --ignored
 
 # Run a specific real-engine test
-cargo test -- --ignored adapter::cc::smoke
+cargo test --test cc_adapter_smoke -- --ignored
 ```
 
 Budget guard: every real-engine test must pass `--max-budget-usd` to its
 spawned subprocess (CC) or its config equivalent (codex/gemini). A single
 test should cost at most a few cents.
+
+Permission guard: default tests cover the policy classifier and the CC
+stdin pacing regression. Before changing hook behavior, run the ignored
+Claude smoke manually with a low-value prompt and inspect
+`.coderoom/messages.jsonl` for `tool_call_proposed`,
+`permission_denied`, and `tool_call_executed` events.
 
 ## Spike harness
 

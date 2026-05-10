@@ -126,10 +126,10 @@ Each is a one-liner with rationale. Detailed sections follow.
 4. **Live-session pacing.** One long-lived subprocess per role, fed via
    stream-json over stdin. Wrapper waits for each `result` event before
    writing the next user message. Verified in spike L2.
-5. **Hook-deny under skip-permissions.** Engine launched with
-   `--dangerously-skip-permissions` (CC) / `--dangerously-bypass-…` (codex) /
-   `--yolo` (gemini); a PreToolUse hook is the wrapper's sole permission
-   gate. Verified in spike L1.
+5. **Permission modes are explicit.** `permission_mode = "ask" | "auto" |
+   "bypass"` is resolved per role. Claude Code uses a settings-injected
+   PreToolUse hook. Codex and Gemini are bypass-only until CodeRoom can
+   supervise their approvals.
 6. **Trust-the-model routing.** Each role's system prompt includes a team
    roster. When a role writes `@x` in its reply, the wrapper routes a
    focused brief to `x`'s session. No syntactic protocol.
@@ -185,17 +185,20 @@ PermissionDenied, RoleStopped).
 
 - Spawn: `claude --print --input-format=stream-json --output-format=stream-json
   --verbose --dangerously-skip-permissions --append-system-prompt-file <priors>
-  --settings <hooks-config> --max-budget-usd <cap>`
+  --settings <hooks-config> --max-budget-usd <cap>` when permission mode is
+  `ask` or `auto`; `bypass` omits the hook settings.
 - Input: stream-json messages on stdin. `content` must be array of blocks
   (`[{"type":"text","text":"…"}]`), not bare string.
 - Output: stream-json on stdout (`system`, `assistant`, `result`,
   `rate_limit_event`).
 - Pacing: write next user message only after reading the `result` event for
   the previous turn.
-- Permission: settings-injected PreToolUse hook script writes JSON
+- Permission: settings-injected PreToolUse hook command writes JSON
   `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny|allow|ask","permissionDecisionReason":"…"}}`
-  to stdout. Hook input arrives on stdin as JSON. Hook script always falls
-  back to `deny` on any exception.
+  to stdout. Hook input arrives on stdin as JSON. `/allow <tool>` and
+  `/deny <tool>` update the session policy file read by that hook. In
+  Claude Code's non-interactive stream mode, `ask` is represented as a
+  safe denial in `permission_denials`; the user can `/allow` and retry.
 - Session ID: extracted from `system.subtype="init"` event at start.
 - Cost: per-turn `result.total_cost_usd`. Wrapper aggregates per role per day.
 
@@ -204,12 +207,11 @@ PermissionDenied, RoleStopped).
 - Spawn: `codex mcp-server` over stdio.
 - Wrapper acts as MCP client. Initialize → tools/list → tools/call.
 - Two tools available: `codex` (start session) and `codex-reply` (continue).
-- Permission: codex sandbox modes (`-s`) + approval policies (`-a`) are set
-  in the initial `codex` call's input args. PreToolUse-equivalent hooking
-  for v0.1 uses Codex's `--ask-for-approval=never` plus our own MCP
-  proxy that intercepts `tools/call` to other tools. Detailed protocol TBD
-  in v0.1 implementation; if proxy is too complex, ship Codex with
-  approval-policy=on-request (CLI prompts) and skip our wrapper gate for v0.1.
+- Permission: CodeRoom currently starts Codex only when
+  `permission_mode="bypass"` and sends `approval-policy="never"` in the
+  `tools/call` payload. `ask` and `auto` fail fast until CodeRoom can answer
+  Codex approval requests over MCP; CodeRoom does not silently downgrade
+  restricted modes to bypass.
 
 ### Gemini adapter
 
@@ -220,7 +222,8 @@ PermissionDenied, RoleStopped).
 - Output: `message` events become `RoleSpoke`; `tool_use` and `tool_result`
   become CREP `ToolCallProposed` / `ToolCallExecuted`.
 - Permission: Gemini remains bypass-only in CodeRoom until a hook or approval
-  protocol can be supervised by the wrapper.
+  protocol can be supervised by the wrapper. Starting a Gemini role in `ask`
+  or `auto` fails fast with a configuration error.
 
 ### Adapter contract
 

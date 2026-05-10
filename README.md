@@ -14,9 +14,9 @@
 > Codex, and Gemini adapters are wired up; bare `cr` opens CodeRoom
 > directly, guides setup when `.coderoom/` is missing, and shows the
 > effective role / engine / model configuration on entry. Runtime
-> lifecycle, replay, cost, and adapter capability gaps are now surfaced
-> explicitly instead of failing silently. Per semver, 0.x.y means the
-> public API is not yet stable.
+> lifecycle, replay, cost, permission modes, and adapter capability gaps
+> are now surfaced explicitly instead of failing silently. Per semver,
+> 0.x.y means the public API is not yet stable.
 
 ## Why
 
@@ -48,6 +48,10 @@ reply.
   wrapper-visible event stream. Codex and Gemini expose tool traces where
   their CLIs emit them, and unsupported cost / permission fields are shown
   as `—` instead of fake zeroes.
+- **Permission modes.** Projects can choose `ask`, `auto`, or `bypass`.
+  Claude Code is gated by a CodeRoom-injected PreToolUse hook; Codex and
+  Gemini are intentionally bypass-only until their approval bridges can be
+  supervised.
 
 ## Status / Roadmap
 
@@ -146,6 +150,8 @@ Useful commands:
 
 - `cr` and `cr start` both enter the room; if `.coderoom/` is missing, an
   interactive terminal gets the guided setup first.
+- `cr start --yolo` runs the current session with `permission_mode=bypass`
+  for every role after an interactive confirmation.
 - Existing projects with only the default `@host` role get a local-scan
   role suggestion picker on entry, so users can add specialists without
   hand-editing config.
@@ -157,6 +163,8 @@ Useful commands:
 - `@all <text>` broadcasts one prompt to every running role.
 - `/patch <role> <text>`, `/refresh <role>`, `/transcript <role>`, and
   `/journal <role>` are available inside the REPL.
+- `/allow <tool>` and `/deny <tool>` update the session permission policy
+  used by Claude Code hooks. Examples: `/allow Read`, `/deny Bash`.
 - `cr show [--role backend] [--tail 20] [--since YYYY-MM-DD]`, `cr cost`,
   `cr compact <role>`, `cr config get/set`, and `cr update` handle
   inspection, spend tracking, priors compaction, layered config, and package
@@ -172,11 +180,35 @@ Useful commands:
 | Tool trace events | proposed + executed | exec notifications when emitted | stream-json tool_use/tool_result |
 | Cost reporting | per turn | — | — |
 | Budget enforcement | native cap | — | — |
-| Permission gating | hook target | — | bypass-only until hook bridge |
+| Permission gating | `ask` / `auto` / `bypass` via PreToolUse hook | explicit `bypass` only | explicit `bypass` only |
 
 `cr cost` excludes unsupported engines from the numeric total and marks them
 with `—`. This is deliberate: older builds displayed `$0.00` for engines
 that did not report reliable cost.
+
+## Permission Modes
+
+`permission_mode` can be set project-wide or per role:
+
+```toml
+permission_mode = "ask" # ask | auto | bypass
+
+[roles.security]
+engine = "codex"
+permission_mode = "bypass"
+
+[roles.research]
+engine = "gemini"
+permission_mode = "bypass"
+```
+
+- `ask` requests approval before tools that are not explicitly allowed. In
+  Claude Code's non-interactive stream mode this surfaces as a safe denial;
+  use `/allow <tool>` and retry when you trust the call.
+- `auto` allows low-risk read-only tools and asks for risky or unknown tools.
+- `bypass` is explicit yolo mode. It is not required for Claude Code, but it
+  is currently required for Codex and Gemini because CodeRoom cannot yet
+  supervise their approval requests.
 
 ## Contributing
 
