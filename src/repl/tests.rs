@@ -531,17 +531,17 @@ fn snapshot_boot_dashboard_at_80() {
     .trim_start_matches('\n')
     .to_owned();
     insta::assert_snapshot!(rendered, @r"
-┌─ codeRoom v0.1.18 ───────────────────────────────────────────────────────────┐
+┌─ codeRoom v0.2.0 ────────────────────────────────────────────────────────────┐
 │                                                                              │
 │ welcome back, Ada              tips for getting started                      │
 │                                • type @role to send a task to a specific ro… │
-│ ● @backend   cc     · 1M       • /patch <role> persists a correction across… │
+│ ● @backend   cc     · 1M       • /halt @role interrupts a turn; Ctrl-C twic… │
 │ ● @host      cc     · 1M       • /journal <role> captures today's lessons-l… │
 │ ● @security  codex  · default                                                │
-│                                what's new in 0.1.18                          │
-│  0  base tokens loaded         • role work renders as compact WorkCards      │
-│ /repo/codeRoom                 • cr-task titles keep role chat separate      │
-│                                • Codex/Gemini stop cleanly on timeout        │
+│                                what's new in 0.2.0                           │
+│  0  base tokens loaded         • no wall-clock kill on long turns — trust t… │
+│ /repo/codeRoom                 • /halt and two-press Ctrl-C cancel turns wi… │
+│                                • WorkCard render polish: ●/○/· glyphs + per… │
 │                                                                              │
 │                                /help for commands                            │
 │                                                                              │
@@ -806,10 +806,7 @@ fn status_region_advances_through_all_frames() {
     // Non-TTY mode prevents writes, so we can drive `advance()` purely
     // for state-machine coverage without polluting test output.
     let mut s = StatusRegion {
-        slots: vec![StatusSlot {
-            role: "backend".into(),
-            frame: 0,
-        }],
+        slots: vec![fixed_slot("backend")],
         is_painted: false,
         is_tty: false,
     };
@@ -819,13 +816,24 @@ fn status_region_advances_through_all_frames() {
     }
 }
 
+fn fixed_slot(role: &str) -> StatusSlot {
+    // Pin started_at to "now" minus a known offset so the rendered
+    // elapsed string is stable across test runs.
+    StatusSlot {
+        role: role.to_owned(),
+        frame: 0,
+        started_at: std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(12))
+            .unwrap_or_else(std::time::Instant::now),
+        tools_seen: 0,
+        current_state: None,
+    }
+}
+
 #[test]
 fn status_region_clear_is_idempotent_and_marks_unpainted() {
     let mut s = StatusRegion {
-        slots: vec![StatusSlot {
-            role: "backend".into(),
-            frame: 0,
-        }],
+        slots: vec![fixed_slot("backend")],
         is_painted: true,
         is_tty: false,
     };
@@ -839,10 +847,7 @@ fn status_region_clear_is_idempotent_and_marks_unpainted() {
 #[test]
 fn status_region_skips_paint_when_non_tty() {
     let mut s = StatusRegion {
-        slots: vec![StatusSlot {
-            role: "backend".into(),
-            frame: 0,
-        }],
+        slots: vec![fixed_slot("backend")],
         is_painted: false,
         is_tty: false,
     };
@@ -853,20 +858,66 @@ fn status_region_skips_paint_when_non_tty() {
 }
 
 #[test]
-fn status_region_reports_paused_chat_stream() {
+fn status_region_renders_role_with_elapsed_and_state() {
     let s = StatusRegion {
-        slots: vec![StatusSlot {
-            role: "security".into(),
-            frame: 0,
-        }],
+        slots: vec![fixed_slot("security")],
         is_painted: false,
         is_tty: false,
     };
     let rendered = strip_ansi(&s.render_line_at_width(80));
-    assert_eq!(
-        rendered,
-        "│ 1 role working · chat stream paused until they report · @security ⠋"
+    // 1 role · braille spinner frame · @security · elapsed (~12s,
+    // give a tiny window for clock skew during the test) · default
+    // "thinking" state since no events have arrived.
+    assert!(
+        rendered.starts_with("│ 1 role working · ⠋ @security · "),
+        "unexpected status header: {rendered}"
     );
+    assert!(rendered.contains("thinking"), "rendered: {rendered}");
+}
+
+#[test]
+fn status_region_tracks_tool_count_and_state_from_events() {
+    let mut s = StatusRegion {
+        slots: vec![fixed_slot("security")],
+        is_painted: false,
+        is_tty: false,
+    };
+    s.update_from_event(&CrepEvent::ToolCallProposed {
+        role: "security".into(),
+        tool_name: "Bash".into(),
+        tool_input: serde_json::json!({"command": "ls"}),
+        tool_use_id: "t-1".into(),
+        turn_id: String::new(),
+        thread_id: String::new(),
+    });
+    s.update_from_event(&CrepEvent::ToolCallProposed {
+        role: "security".into(),
+        tool_name: "Read".into(),
+        tool_input: serde_json::json!({"file_path": "Cargo.toml"}),
+        tool_use_id: "t-2".into(),
+        turn_id: String::new(),
+        thread_id: String::new(),
+    });
+    let rendered = strip_ansi(&s.render_line_at_width(80));
+    assert!(
+        rendered.contains("· 2 tools · "),
+        "expected tool count, got: {rendered}"
+    );
+    assert!(
+        rendered.contains("running Read"),
+        "latest tool should drive state: {rendered}"
+    );
+    // Events for a different role must not move the slot.
+    s.update_from_event(&CrepEvent::ToolCallProposed {
+        role: "other".into(),
+        tool_name: "Edit".into(),
+        tool_input: serde_json::json!({}),
+        tool_use_id: "t-3".into(),
+        turn_id: String::new(),
+        thread_id: String::new(),
+    });
+    let rendered = strip_ansi(&s.render_line_at_width(80));
+    assert!(rendered.contains("· 2 tools · "), "rendered: {rendered}");
 }
 
 #[test]

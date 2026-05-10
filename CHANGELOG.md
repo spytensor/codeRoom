@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-10
+
+**v0.2 trinity — phase 1.** Trust the model (no wall-clock kill),
+interrupt cleanly (Ctrl-C two-press + `/halt`), and a render polish
+that makes long-running role turns legible. Concurrent typing during
+a turn and multi-role parallel dispatch are scoped to v0.2.x or v0.3
+— see `docs/v0.2-trust-and-interrupt.md` § I "PR c2."
+
+CREP wire format gains `turn_id` / `thread_id` on every turn-scoped
+event plus two new variants (`TurnDispatched`, `TurnInterrupted`)
+and a session-kind capability flag on adapters. All additive and
+backward-compat (`#[serde(default)]` on every new field); v0.1.x
+logs replay unchanged.
+
+### Changed (v0.2 PR c1 — render polish)
+
+- **WorkCard step icons refreshed**: filled `●` for done, open `○` for
+  active, small `·` for queued/planned (previously `✓`, `◉`, `○`). The
+  iconography matches the Claude Code visual the user pointed at —
+  the same "default-collapsed, expand-on-demand" feel but rendered
+  append-only so it stays ssh-friendly.
+- **Per-tool accent colours on step text**: shell calls (Bash / Run /
+  Shell) are green, file reads (Read / Glob / LS) are blue, edits
+  (Edit / Write / MultiEdit) are tan, searches (Grep) are muted grey,
+  delegations (Task / Agent / Subagent) are amber, denials are warn.
+  The role-color gutter (existing) and the step glyph (also existing)
+  are unchanged, so the WorkCard now carries three orthogonal axes of
+  meaning without turning into a rainbow.
+- **Status line richer**: was `⠁ @security working`, now
+  `⠁ @security · 4m · 12 tools · running Bash` — elapsed time, tool
+  count for the in-flight turn, and the most recent observable state.
+  The bus consumer pushes every `ToolCallProposed` / `Executed` /
+  `PermissionDenied` event through `StatusRegion::update_from_event`
+  so the line stays current without a parallel render pipeline. Still
+  one slot per turn in c1; multi-slot when c2 lands parallel dispatch.
+- **README updated** with `/halt`, Ctrl-C two-press, and the trust
+  reframing ("no wall-clock kill").
+
 ### Changed (v0.2 PR b — trust + interrupt)
 
 - **Deleted `PER_TURN_TIMEOUT`.** The REPL no longer kills a role's

@@ -237,6 +237,12 @@ pub(super) async fn drain_one_turn(
                             .expect("turn work mutex poisoned")
                             .apply_event(&event);
                         hidden.merge_into(&mut activity);
+                        // Bubble the same event into the status line
+                        // so its tool count + state stay current
+                        // even though we're hiding the verbose
+                        // per-tool render from the terminal.
+                        status.update_from_event(&event);
+                        status.repaint();
                         continue;
                     }
 

@@ -12,12 +12,14 @@
 
 ![CodeRoom role work cards](docs/images/work-cards.png)
 
-> **Status: v0.1.18 — user-runnable, still pre-1.0.** Claude Code,
+> **Status: v0.2.0 — user-runnable, still pre-1.0.** Claude Code,
 > Codex, and Gemini adapters are wired up; bare `cr` opens CodeRoom
 > directly, guides setup when `.coderoom/` is missing, and shows the
-> effective role / engine / model configuration on entry. Runtime
-> lifecycle, replay, cost, permission modes, and adapter capability gaps
-> are now surfaced explicitly instead of failing silently. Per semver,
+> effective role / engine / model configuration on entry. **v0.2**
+> drops the 5-minute wall-clock kill on long turns (the wrapper
+> trusts each engine to self-terminate), adds `/halt` and two-press
+> Ctrl-C for clean cancellation, and refreshes WorkCard rendering
+> with filled/open step glyphs + per-tool accent colors. Per semver,
 > 0.x.y means the public API is not yet stable.
 
 ## Why
@@ -61,12 +63,15 @@ reply.
 | --------- | ----- |
 | v0.1 | Multi-engine REPL, role priors, `@` routing, patch / refresh / journal / show / cost, npm install |
 | v0.1.x | First-run UI polish, config layering, updater, release hardening |
-| v0.2 | `cr review` (patch clustering), `cr verify` (journal fact-check) |
+| **v0.2** (shipped) | Trust + interrupt: deleted wall-clock per-turn kill; `/halt` + Ctrl-C two-press; codex stdio idle watchdog; WorkCard polish (filled/open glyphs + per-tool accent colors); richer status line |
+| v0.2.x | Concurrent typing during a turn + multi-role parallel dispatch + multi-slot status region (PR c2) |
+| v0.3 | `cr review` (patch clustering), `cr verify` (journal fact-check) |
 | v0.x | Team mode (per-role human owners), auto-router (opt-in), replay viewer |
 
-See [docs/architecture.md](docs/architecture.md) for the v0.1 constitution
-and [docs/spike-2026-05-09.md](docs/spike-2026-05-09.md) for the feasibility
-spike that grounds it.
+See [docs/architecture.md](docs/architecture.md) for the v0.1 constitution,
+[docs/v0.2-trust-and-interrupt.md](docs/v0.2-trust-and-interrupt.md) for
+the v0.2 amendment, and [docs/spike-2026-05-09.md](docs/spike-2026-05-09.md)
+for the feasibility spike that grounds the whole project.
 
 ## Install
 
@@ -103,7 +108,7 @@ Disable that with `CODEROOM_NO_UPDATE_CHECK=1` or
 <summary>Don't have npm? Direct binary install.</summary>
 
 ```bash
-TAG=v0.1.18
+TAG=v0.2.0
 ARCH=$(uname -m); case "$ARCH" in arm64|aarch64) ARCH=aarch64 ;; *) ARCH=x86_64 ;; esac
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 curl -fsSL "https://github.com/spytensor/codeRoom/releases/download/${TAG}/cr-${TAG}-${OS}-${ARCH}.tar.gz" \
@@ -165,6 +170,13 @@ Useful commands:
 - `@all <text>` broadcasts one prompt to every running role.
 - `/patch <role> <text>`, `/refresh <role>`, `/transcript <role>`, and
   `/journal <role>` are available inside the REPL.
+- `/halt` (no arg) interrupts every in-flight turn; `/halt @role`
+  targets one. Roles stay alive — only the current turn ends.
+- **Ctrl-C is two-press**: first press cancels in-flight turns (like
+  bare `/halt`); a second press within 2 seconds force-stops every
+  role and exits the REPL. Long-running scans no longer get killed
+  at any wall-clock — the wrapper trusts each engine to self-terminate
+  and the user to halt when something looks wrong.
 - `/allow <tool>` and `/deny <tool>` update the session permission policy
   used by Claude Code hooks. Examples: `/allow Read`, `/deny Bash`.
 - `cr show [--role backend] [--tail 20] [--since YYYY-MM-DD]`, `cr cost`,

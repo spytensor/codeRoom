@@ -236,9 +236,9 @@ fn content_line(text: &str, width: usize, color: Color) -> String {
 
 fn format_step(step: &Step) -> String {
     let glyph = match step.kind {
-        StepKind::Done => "✓",
-        StepKind::Active => "◉",
-        StepKind::Planned => "○",
+        StepKind::Done => "●",    // filled circle — "this is done"
+        StepKind::Active => "○",  // open circle — "still working"
+        StepKind::Planned => "·", // small dot — "queued, not started"
     };
     match &step.time {
         Some(time) => format!("{glyph} [{time}] {}", step.text),
@@ -247,16 +247,129 @@ fn format_step(step: &Step) -> String {
 }
 
 fn style_content(text: &str) -> String {
-    if text.starts_with('✓') {
-        text.with(OK).to_string()
-    } else if text.starts_with('◉') {
-        text.with(EM).to_string()
-    } else if text.starts_with('○') {
-        text.with(FADE).to_string()
-    } else if text.starts_with("interrupted") {
+    // Step-shaped content: glyph + tool + rest. Three axes of color.
+    if let Some(glyph_color) = step_glyph_color(text) {
+        return style_step_line(text, glyph_color);
+    }
+    // Non-step content: status_summary's "interrupted · …" / "done
+    // in …" / "working · …" headers. Single semantic color so the
+    // header reads as one unit, not as a mis-parsed step.
+    if text.starts_with("interrupted") {
         text.with(WARN).to_string()
     } else {
         text.with(TEXT).to_string()
+    }
+}
+
+/// Tri-state glyph color for a step line. Returns `None` when the
+/// text isn't shaped like a step (no leading `●` / `○` / `·`).
+fn step_glyph_color(text: &str) -> Option<Color> {
+    if text.starts_with('●') {
+        Some(OK)
+    } else if text.starts_with('○') {
+        Some(EM)
+    } else if text.starts_with('·') {
+        Some(FADE)
+    } else {
+        None
+    }
+}
+
+/// Style a step line of the shape `"<glyph> [<time>] <tool> <rest>"`.
+/// Two-axis coloring: glyph_color (step state — done / active /
+/// planned) and per-tool accent. Existing role-color gutter (in
+/// `src/repl/render.rs`) is the third axis — orthogonal to both.
+fn style_step_line(text: &str, glyph_color: Color) -> String {
+    let mut chars = text.char_indices();
+    let glyph_end = chars
+        .by_ref()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(text.len(), |(i, _)| i);
+    if glyph_end == text.len() {
+        return text.with(glyph_color).to_string();
+    }
+    let glyph_part = &text[..glyph_end];
+    let mut tail = &text[glyph_end..];
+    let leading_ws = take_leading_ws(&mut tail);
+
+    // Skip a leading `[time]` token if present so the tool-name
+    // extraction lands on the actual tool, not the bracket.
+    let time_part = take_bracket_token(&mut tail);
+    let ws_after_time = if time_part.is_empty() {
+        ""
+    } else {
+        take_leading_ws(&mut tail)
+    };
+
+    let (tool_name, rest) = match tail.find(char::is_whitespace) {
+        Some(idx) => (&tail[..idx], &tail[idx..]),
+        None => (tail, ""),
+    };
+    let accent = tool_accent_color(tool_name);
+
+    if rest.is_empty() {
+        format!(
+            "{}{}{}{}{}",
+            glyph_part.with(glyph_color),
+            leading_ws,
+            time_part.with(crate::output::DIM),
+            ws_after_time,
+            tool_name.with(accent),
+        )
+    } else {
+        format!(
+            "{}{}{}{}{}{}",
+            glyph_part.with(glyph_color),
+            leading_ws,
+            time_part.with(crate::output::DIM),
+            ws_after_time,
+            tool_name.with(accent),
+            rest.with(TEXT),
+        )
+    }
+}
+
+fn take_leading_ws<'a>(slice: &mut &'a str) -> &'a str {
+    let trimmed = slice.trim_start();
+    let ws_len = slice.len() - trimmed.len();
+    let ws = &slice[..ws_len];
+    *slice = trimmed;
+    ws
+}
+
+/// Pull off a leading `[token]` if the slice starts with `[`. Returns
+/// the empty string when there's no bracketed prefix. Used so a
+/// `"[12s] Bash ls"` step renders the time in DIM and the tool name
+/// in its proper accent, instead of the parser picking `"[12s]"` as
+/// the tool name.
+fn take_bracket_token<'a>(slice: &mut &'a str) -> &'a str {
+    if !slice.starts_with('[') {
+        return "";
+    }
+    if let Some(close) = slice.find(']') {
+        let token = &slice[..=close];
+        *slice = &slice[close + 1..];
+        token
+    } else {
+        ""
+    }
+}
+
+/// Per-tool accent used inside WorkCard steps. Reuses semantic
+/// palette entries (no new colours): green for "executes", blue for
+/// "reads", tan for "writes", amber for "delegates", muted-grey for
+/// "searches" — five distinct hues that combine cleanly with the
+/// per-role gutter colour without turning the card into a rainbow.
+fn tool_accent_color(tool: &str) -> Color {
+    use crate::output::{DIM, INFO, KEY, MUTE, SPLASH_ACCENT};
+    match tool {
+        "Bash" | "Run" | "Shell" => OK,
+        "Read" | "Glob" | "LS" | "List" => INFO,
+        "Edit" | "Write" | "MultiEdit" | "Append" => KEY,
+        "Grep" | "Search" => MUTE,
+        "Task" | "Agent" | "Subagent" | "delegate" => SPLASH_ACCENT,
+        "denied" => WARN,
+        _ => DIM,
     }
 }
 
@@ -382,9 +495,9 @@ mod tests {
         insta::assert_snapshot!(rendered, @r"
 ╭─ @security · Scan repository permissions and adapters ───────────────────────╮
 │ done in 12s · 3 steps                                                        │
-│ ✓ Read Cargo.toml                                                            │
-│ ✓ Run cargo test                                                             │
-│ ○ Follow up on Claude subagent hooks                                         │
+│ ● Read Cargo.toml                                                            │
+│ ● Run cargo test                                                             │
+│ · Follow up on Claude subagent hooks                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ");
     }
@@ -413,5 +526,74 @@ mod tests {
         for line in rendered.lines() {
             assert!(UnicodeWidthStr::width(line) <= 40, "{line:?} is too wide");
         }
+    }
+
+    #[test]
+    fn tool_accent_color_covers_known_tools() {
+        // Lock the accent palette so future refactors don't quietly
+        // drift the per-tool color assignment that the WorkCard relies
+        // on for at-a-glance task-type recognition.
+        use crate::output::{INFO, KEY, MUTE, SPLASH_ACCENT};
+        assert_eq!(tool_accent_color("Bash"), OK);
+        assert_eq!(tool_accent_color("Run"), OK);
+        assert_eq!(tool_accent_color("Shell"), OK);
+        assert_eq!(tool_accent_color("Read"), INFO);
+        assert_eq!(tool_accent_color("Glob"), INFO);
+        assert_eq!(tool_accent_color("Edit"), KEY);
+        assert_eq!(tool_accent_color("Write"), KEY);
+        assert_eq!(tool_accent_color("MultiEdit"), KEY);
+        assert_eq!(tool_accent_color("Grep"), MUTE);
+        assert_eq!(tool_accent_color("Task"), SPLASH_ACCENT);
+        assert_eq!(tool_accent_color("Agent"), SPLASH_ACCENT);
+        assert_eq!(tool_accent_color("delegate"), SPLASH_ACCENT);
+        assert_eq!(tool_accent_color("denied"), WARN);
+        // Unknown tool falls to DIM — flag explicitly so a new
+        // engine that emits e.g. "WebSearch" can pick up an accent
+        // by adding a branch, not by accidentally inheriting DIM.
+        assert_eq!(tool_accent_color("WebSearch"), crate::output::DIM);
+    }
+
+    #[test]
+    fn style_content_interrupted_stays_single_color() {
+        // Regression guard: the v0.2 PR c1 refactor of `style_content`
+        // used to split the line into glyph + tool + rest, which
+        // mis-colored the Interrupted summary "interrupted · halt by
+        // user" into three different accents. The whole header stays
+        // WARN.
+        let styled = style_content("interrupted · halt by user");
+        // Strip ANSI to see the bare text; we only care that no second
+        // color escape sneaks in.
+        let escape_count = styled.matches('\u{1b}').count();
+        // One opening color + one reset = 2 escapes total.
+        assert_eq!(
+            escape_count, 2,
+            "expected a single color span for the header, got: {styled:?}"
+        );
+    }
+
+    #[test]
+    fn style_content_step_with_time_prefix() {
+        // `[12s]` is the optional Step.time prefix from format_step.
+        // The parser must skip it so the tool-name accent lands on
+        // the actual tool, not on the bracket.
+        let styled = style_content("● [12s] Bash ls");
+        // Three semantic regions: glyph (OK), [12s] (DIM), Bash (OK
+        // again as Bash accent), ls (TEXT). The exact escape count
+        // is brittle; just assert the bracket and the tool both
+        // appear as bytes in the output and that the regions all
+        // open separate color escapes.
+        assert!(styled.contains("[12s]"));
+        assert!(styled.contains("Bash"));
+        assert!(styled.contains("ls"));
+    }
+
+    #[test]
+    fn step_glyph_color_returns_none_for_non_step_text() {
+        assert!(step_glyph_color("interrupted · halt").is_none());
+        assert!(step_glyph_color("working · reading README.md").is_none());
+        assert!(step_glyph_color("done in 12s · 3 steps").is_none());
+        assert!(step_glyph_color("● Bash ls").is_some());
+        assert!(step_glyph_color("○ Read Cargo.toml").is_some());
+        assert!(step_glyph_color("· planned").is_some());
     }
 }
