@@ -519,15 +519,31 @@ async fn send_and_drain(
     // the hallucination across the team. The user still sees the
     // role's reply; they can re-issue manually after granting access.
     if captured.activity.looks_ungrounded() && !captured.mentions.is_empty() {
+        let activity = &captured.activity;
+        let suggestion = if activity.denied > 0 {
+            let names = activity.top_denied_tools(3).join(", ");
+            format!(
+                " — try /allow {} or `cr start --yolo`",
+                activity
+                    .top_denied_tools(1)
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| names.clone())
+            )
+        } else {
+            String::new()
+        };
+        let summary = if activity.denied > 0 {
+            format!("{} permission denial(s)", activity.denied)
+        } else {
+            format!("all {} tool calls failed", activity.proposed)
+        };
         println!(
             "  {} {}",
             "↳".with(output::FADE),
-            format!(
-                "skipping auto-route: @{role} had {} tool failures this turn",
-                captured.activity.failed
-            )
-            .with(output::DIM)
-            .italic(),
+            format!("skipping auto-route: @{role} had {summary} this turn{suggestion}")
+                .with(output::DIM)
+                .italic(),
         );
         return Ok(());
     }

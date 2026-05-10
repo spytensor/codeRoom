@@ -35,7 +35,16 @@ pub(super) struct TurnActivity {
     pub(super) proposed: usize,
     pub(super) completed: usize,
     pub(super) failed: usize,
+    /// Subset of `failed`: tool calls rejected by CodeRoom's permission
+    /// hook (cc) or refused by the codex/gemini bridge. Tracked
+    /// separately so the grounding gate can distinguish "all tools
+    /// denied → role hallucinated a reply" from "tests failed but role
+    /// has grounded info to share."
+    pub(super) denied: usize,
     pub(super) tools: BTreeMap<String, usize>,
+    /// Tool names that hit a permission denial this turn — surfaced in
+    /// the suppression message so the user knows what to `/allow`.
+    pub(super) denied_tools: BTreeMap<String, usize>,
 }
 
 impl TurnActivity {
@@ -57,6 +66,23 @@ impl TurnActivity {
                 failed: usize::from(!ok),
                 ..Self::default()
             }),
+            // Engine-agnostic denial signal. cc emits PermissionDenied
+            // alongside its tool_use+tool_result(is_error=true) pair;
+            // codex (per the new MCP responder) emits PermissionDenied
+            // only — no exec_command_started/completed when the user
+            // says deny — so this arm is what makes the grounding gate
+            // fire on codex hosts too.
+            CrepEvent::PermissionDenied {
+                role, tool_name, ..
+            } if role == active_role => {
+                let mut denied_tools = BTreeMap::new();
+                denied_tools.insert(tool_name.clone(), 1);
+                Some(Self {
+                    denied: 1,
+                    denied_tools,
+                    ..Self::default()
+                })
+            }
             _ => None,
         }
     }
@@ -65,8 +91,12 @@ impl TurnActivity {
         other.proposed += self.proposed;
         other.completed += self.completed;
         other.failed += self.failed;
+        other.denied += self.denied;
         for (tool, count) in self.tools {
             *other.tools.entry(tool).or_default() += count;
+        }
+        for (tool, count) in self.denied_tools {
+            *other.denied_tools.entry(tool).or_default() += count;
         }
     }
 
@@ -114,18 +144,44 @@ impl TurnActivity {
         }
     }
 
-    /// Whether the role's turn looks ungrounded — every tool call
-    /// failed, or three-or-more failures piled up. The threshold
-    /// matches the screenshot's "host gets 4 denials, then hallucinates
-    /// a roster" failure mode: at that point any `@<peer>` mention in
-    /// the reply is more likely a guess than a routing decision.
+    /// Whether the role's turn looks ungrounded enough that its
+    /// `@<peer>` mentions should NOT trigger fresh auto-routes.
+    ///
+    /// The signal we trust most is permission denials: if cc's hook
+    /// rejected (or the codex bridge user said no) on three or more
+    /// tools, the role almost certainly fell back to memory and the
+    /// "team plan" it just wrote is a guess. A successful tool call
+    /// in the same turn means the role had at least some grounded
+    /// info to share — don't gate.
+    ///
+    /// Plain `failed` (test failures, `rg` no-matches, command exit 1)
+    /// is grounded information by definition — those tools ran and
+    /// produced output. We do NOT treat them as ungrounded.
     pub(super) fn looks_ungrounded(&self) -> bool {
-        if self.failed >= 3 {
+        if self.successful_calls() > 0 {
+            return false;
+        }
+        // No successful calls. Ungrounded only when permission denials
+        // — not plain failures — pile up. A failed `cargo test` IS
+        // grounded info (the role can reason about which tests broke);
+        // a denied `Read` is NOT (the role didn't see the file).
+        if self.denied >= 3 {
             return true;
         }
-        // proposed > 0 and zero successful executions = the role tried
-        // to use tools and was rejected on all of them.
-        self.proposed > 0 && self.completed.saturating_sub(self.failed) == 0
+        self.proposed > 0 && self.denied == self.proposed
+    }
+
+    /// Tool calls that completed successfully (executed AND ok).
+    pub(super) fn successful_calls(&self) -> usize {
+        self.completed.saturating_sub(self.failed)
+    }
+
+    /// Top-N denied tool names ordered by frequency, for the
+    /// suppression hint message.
+    pub(super) fn top_denied_tools(&self, n: usize) -> Vec<String> {
+        let mut items: Vec<(&String, &usize)> = self.denied_tools.iter().collect();
+        items.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        items.into_iter().take(n).map(|(k, _)| k.clone()).collect()
     }
 }
 

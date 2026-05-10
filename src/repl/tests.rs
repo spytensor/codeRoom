@@ -642,25 +642,44 @@ fn turn_activity_ignores_other_roles() {
 }
 
 #[test]
-fn turn_activity_grounding_gate_fires_on_three_failures() {
-    let mut activity = TurnActivity {
-        proposed: 5,
-        completed: 5,
-        failed: 3,
+fn turn_activity_grounding_gate_fires_on_three_permission_denials() {
+    let activity = TurnActivity {
+        proposed: 3,
+        completed: 0,
+        failed: 0,
+        denied: 3,
         tools: BTreeMap::new(),
+        denied_tools: BTreeMap::from([("Read".to_string(), 2), ("Bash".to_string(), 1)]),
     };
     assert!(activity.looks_ungrounded());
-    activity.failed = 2;
+}
+
+#[test]
+fn turn_activity_grounding_gate_quiet_on_legitimate_failures() {
+    // Failing tests / rg with no matches / command exit-1 are NOT
+    // ungrounded — those tools ran and produced output the role can
+    // reason about. Only permission denials trip the gate.
+    let activity = TurnActivity {
+        proposed: 3,
+        completed: 3,
+        failed: 3,
+        denied: 0,
+        tools: BTreeMap::from([("Bash".to_string(), 3)]),
+        denied_tools: BTreeMap::new(),
+    };
     assert!(!activity.looks_ungrounded());
 }
 
 #[test]
-fn turn_activity_grounding_gate_fires_when_all_proposed_tools_failed() {
+fn turn_activity_grounding_gate_fires_when_all_proposed_were_blocked() {
+    // 2 proposed, 2 denied → no successful execution → gate fires.
     let activity = TurnActivity {
         proposed: 2,
-        completed: 2,
-        failed: 2,
+        completed: 0,
+        failed: 0,
+        denied: 2,
         tools: BTreeMap::new(),
+        denied_tools: BTreeMap::from([("Read".to_string(), 2)]),
     };
     assert!(activity.looks_ungrounded());
 }
@@ -669,26 +688,54 @@ fn turn_activity_grounding_gate_fires_when_all_proposed_tools_failed() {
 fn turn_activity_grounding_gate_quiet_when_no_tools_proposed() {
     // Pure prose reply with no tool calls is valid grounding (the role
     // already had context from priors); never gate it.
+    let activity = TurnActivity::default();
+    assert!(!activity.looks_ungrounded());
+}
+
+#[test]
+fn turn_activity_grounding_gate_quiet_on_partial_success_with_denials() {
+    // 1 tool succeeded, 2 denied — the role had at least some grounded
+    // information. The auto-route may still be valuable; don't gate.
     let activity = TurnActivity {
-        proposed: 0,
-        completed: 0,
+        proposed: 3,
+        completed: 1,
         failed: 0,
+        denied: 2,
         tools: BTreeMap::new(),
+        denied_tools: BTreeMap::from([("Bash".to_string(), 2)]),
     };
     assert!(!activity.looks_ungrounded());
 }
 
 #[test]
-fn turn_activity_grounding_gate_quiet_on_partial_success() {
-    // 1 tool succeeded, 1 failed — the role had at least some grounded
-    // information. The auto-route may still be valuable; don't gate.
+fn turn_activity_top_denied_tools_orders_by_frequency() {
     let activity = TurnActivity {
-        proposed: 2,
-        completed: 2,
-        failed: 1,
+        proposed: 5,
+        completed: 0,
+        failed: 0,
+        denied: 5,
         tools: BTreeMap::new(),
+        denied_tools: BTreeMap::from([
+            ("Read".to_string(), 3),
+            ("Bash".to_string(), 1),
+            ("Glob".to_string(), 1),
+        ]),
     };
-    assert!(!activity.looks_ungrounded());
+    let top = activity.top_denied_tools(2);
+    assert_eq!(top, vec!["Read", "Bash"]); // alphabetical tiebreak
+}
+
+#[test]
+fn turn_activity_permission_denied_event_folds_into_denied_count() {
+    let event = CrepEvent::PermissionDenied {
+        role: "host".into(),
+        tool_name: "Read".into(),
+        tool_input: serde_json::json!({"file_path": "src/main.rs"}),
+        reason: "denied by CodeRoom".into(),
+    };
+    let folded = TurnActivity::from_foldable_event(&event, "host").expect("foldable");
+    assert_eq!(folded.denied, 1);
+    assert_eq!(folded.denied_tools.get("Read"), Some(&1));
 }
 
 #[test]
