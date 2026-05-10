@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-05-10
+
+### Fixed
+
+- Claude Code hook settings tempfiles now stay alive for the full role
+  lifetime, so `cr start` no longer leaks `Settings file not found` warnings
+  after the boot dashboard.
+- Claude Code stderr lines are now hidden from the default REPL output and
+  remain available through debug logging when diagnosing adapter issues.
+
 ## [0.1.13] - 2026-05-10
 
 ### Fixed
@@ -462,7 +472,8 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.13...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.14...HEAD
+[0.1.14]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.14
 [0.1.13]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.13
 [0.1.12]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.12
 [0.1.11]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.11

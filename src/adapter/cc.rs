@@ -499,7 +499,7 @@ async fn drain_stderr(role: String, stderr: ChildStderr) {
     loop {
         match lines.next_line().await {
             Ok(Some(line)) if line.trim().is_empty() => {}
-            Ok(Some(line)) => warn!(role, line = %line, "claude stderr"),
+            Ok(Some(line)) => debug!(role, line = %line, "claude stderr"),
             Ok(None) => return,
             Err(error) => {
                 warn!(role, %error, "error reading claude stderr");
