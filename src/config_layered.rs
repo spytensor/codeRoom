@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::adapter::Engine;
+use crate::adapter::{Engine, PermissionMode};
 use crate::config::{Config, ConfigError, ConfigResult, RoleEntry, CODEROOM_DIR, CONFIG_FILE};
 
 /// File name of the project-local override file inside `.coderoom/`.
@@ -118,6 +118,9 @@ pub struct UserDefaults {
     /// declares a higher value.
     #[serde(default)]
     pub budget_per_role_usd: Option<f64>,
+    /// Default wrapper permission mode when a project doesn't pin one.
+    #[serde(default)]
+    pub permission_mode: Option<PermissionMode>,
 }
 
 /// Per-engine entry in user config.
@@ -192,6 +195,9 @@ pub struct ProjectConfigRaw {
     /// Project-pinned default model. Falls through to user when absent.
     #[serde(default)]
     pub default_model: Option<String>,
+    /// Project-pinned default permission mode.
+    #[serde(default)]
+    pub permission_mode: Option<PermissionMode>,
     /// Project-side spend cap. Merged via `min()` with user's value.
     #[serde(default)]
     pub budget_per_role_usd: Option<f64>,
@@ -441,6 +447,14 @@ fn merge(
             .and_then(|e| e.model.clone())
     });
 
+    let permission_mode = project
+        .permission_mode
+        .or_else(|| {
+            user.and_then(|u| u.defaults.as_ref())
+                .and_then(|d| d.permission_mode)
+        })
+        .unwrap_or(PermissionMode::Ask);
+
     let mut budgets: Vec<f64> = Vec::new();
     if let Some(b) = project.budget_per_role_usd {
         budgets.push(b);
@@ -462,6 +476,7 @@ fn merge(
     Ok(Config {
         default_engine,
         default_model,
+        permission_mode,
         budget_per_role_usd,
         host_role: project.host_role.clone(),
         roles: project.roles.clone(),
@@ -541,8 +556,39 @@ host_role = "host"
         write_minimal_project(&coderoom, "");
         let cfg = load(tmp.path(), None).expect("load");
         assert_eq!(cfg.default_engine, Engine::Cc);
+        assert_eq!(cfg.permission_mode, PermissionMode::Ask);
         assert!((cfg.budget_per_role_usd - 0.50).abs() < 1e-9);
         assert_eq!(cfg.host_role, "host");
+    }
+
+    #[test]
+    fn project_permission_mode_overrides_user_default() {
+        let tmp = TempDir::new().unwrap();
+        let user_path = tmp.path().join("user-config.toml");
+        write_user(
+            &user_path,
+            r#"
+[defaults]
+permission_mode = "auto"
+"#,
+        );
+        let coderoom = tmp.path().join(CODEROOM_DIR);
+        std::fs::create_dir_all(coderoom.join(ROLES_DIR)).unwrap();
+        std::fs::write(
+            coderoom.join(CONFIG_FILE),
+            r#"
+default_engine = "cc"
+permission_mode = "bypass"
+budget_per_role_usd = 0.50
+host_role = "host"
+
+[roles.host]
+"#,
+        )
+        .unwrap();
+        std::fs::write(coderoom.join(ROLES_DIR).join("host.md"), "host\n").unwrap();
+        let cfg = load(tmp.path(), Some(&user_path)).expect("load");
+        assert_eq!(cfg.permission_mode, PermissionMode::Bypass);
     }
 
     #[test]
@@ -769,6 +815,7 @@ host_role = "host"
             schema_version: None,
             default_engine: Some(Engine::Cc),
             default_model: None,
+            permission_mode: None,
             budget_per_role_usd: Some(0.5),
             host_role: "host".into(),
             roles: HashMap::new(),
