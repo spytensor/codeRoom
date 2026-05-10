@@ -16,6 +16,14 @@ items = [
 ]
 
 [[whats_new]]
+version = "0.1.14"
+items = [
+  "Claude hook settings stay alive for the full role lifetime",
+  "Claude stderr is hidden from the REPL unless debug logging is enabled",
+  "startup stays quiet after roles initialize",
+]
+
+[[whats_new]]
 version = "0.1.13"
 items = [
   "existing Codex and Gemini roles without explicit permission_mode start safely",

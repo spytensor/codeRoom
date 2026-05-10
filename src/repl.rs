@@ -25,7 +25,7 @@ use tracing::{debug, warn};
 use crate::adapter::cc::CcAdapter;
 use crate::adapter::codex::CodexAdapter;
 use crate::adapter::gemini::GeminiAdapter;
-use crate::adapter::{Engine, EngineAdapter, PermissionMode, RoleHandle, UserMessage};
+use crate::adapter::{Engine, EngineAdapter, PermissionMode, UserMessage};
 use crate::bus::MessageBus;
 use crate::config::{Config, CODEROOM_DIR};
 use crate::crep::{CrepEvent, StopReason};
@@ -208,6 +208,11 @@ struct RunningRole {
         reason = "kept alive only for its Drop side-effect (tempfile cleanup)"
     )]
     priors_temp: NamedTempFile,
+    #[allow(
+        dead_code,
+        reason = "kept alive only for Drop side-effects such as hook settings cleanup"
+    )]
+    adapter_tempfiles: Vec<NamedTempFile>,
 }
 
 struct SpawnContext<'a> {
@@ -1843,19 +1848,21 @@ async fn spawn_role(context: &SpawnContext<'_>, name: &str) -> Result<RunningRol
             .with_context(|| format!("spawning role `{name}` (gemini)"))?,
     };
 
-    let RoleHandle {
+    let parts = handle.into_parts();
+    let crate::adapter::RoleHandleParts {
         role: rname,
         engine: _,
         tx_user,
         rx_events,
         stop_tx,
-        ..
-    } = handle;
+        tempfiles,
+    } = parts;
     spawn_event_forwarder(rname, rx_events, Arc::clone(context.bus));
     Ok(RunningRole {
         tx_user,
         stop_tx: Some(stop_tx),
         priors_temp,
+        adapter_tempfiles: tempfiles,
     })
 }
 
@@ -2284,7 +2291,7 @@ mod tests {
             ("", ""),
             ("welcome back, charlie", "tips for getting started"),
             ("● @host  cc · 1M", "• send a task to @host"),
-            ("[ 1.0k ] base tokens", "what's new in 0.1.13"),
+            ("[ 1.0k ] base tokens", "what's new in 0.1.14"),
         ];
         for width in [60usize, 70, 80] {
             let (left_w, right_w) = splash_columns(width, 28);
@@ -2309,7 +2316,7 @@ mod tests {
         let title = join_cells(&[
             styled_cell("codeRoom", "codeRoom".with(output::SPLASH_FRAME).bold()),
             plain_cell(" "),
-            styled_cell("v0.1.13", "v0.1.13".with(output::SPLASH_VERSION)),
+            styled_cell("v0.1.14", "v0.1.14".with(output::SPLASH_VERSION)),
         ]);
         let rendered = [
             strip_ansi(&splash_top(80, &title)),
@@ -2323,7 +2330,7 @@ mod tests {
         ]
         .join("\n");
         insta::assert_snapshot!(rendered, @r"
-┌─ codeRoom v0.1.13 ───────────────────────────────────────────────────────────┐
+┌─ codeRoom v0.1.14 ───────────────────────────────────────────────────────────┐
 │ welcome back, chao             tips for getting started                      │
 └──────────────────────────────────────────────────────────────────────────────┘");
     }
@@ -2379,17 +2386,17 @@ mod tests {
         .trim_start_matches('\n')
         .to_owned();
         insta::assert_snapshot!(rendered, @r"
-┌─ codeRoom v0.1.13 ───────────────────────────────────────────────────────────┐
+┌─ codeRoom v0.1.14 ───────────────────────────────────────────────────────────┐
 │                                                                              │
 │ welcome back, Ada              tips for getting started                      │
 │                                • type @role to send a task to a specific ro… │
 │ ● @backend   cc     · 1M       • /patch <role> persists a correction across… │
 │ ● @host      cc     · 1M       • /journal <role> captures today's lessons-l… │
 │ ● @security  codex  · default                                                │
-│                                what's new in 0.1.13                          │
-│  0  base tokens loaded         • existing Codex and Gemini roles without ex… │
-│ /repo/codeRoom                 • Codex/Gemini ask and auto remain fail-fast… │
-│                                • boot dashboard no longer shows the literal… │
+│                                what's new in 0.1.14                          │
+│  0  base tokens loaded         • Claude hook settings stay alive for the fu… │
+│ /repo/codeRoom                 • Claude stderr is hidden from the REPL unle… │
+│                                • startup stays quiet after roles initialize  │
 │                                                                              │
 │                                /release-notes for more                       │
 │                                                                              │

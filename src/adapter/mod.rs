@@ -124,11 +124,25 @@ pub struct RoleHandle {
     /// waiter. REPL commands use this instead of relying on channel
     /// close / `kill_on_drop` side effects.
     pub stop_tx: oneshot::Sender<crate::crep::StopReason>,
-    #[allow(
-        dead_code,
-        reason = "kept alive only for Drop side-effects such as temp hook settings cleanup"
-    )]
-    _tempfiles: Vec<tempfile::NamedTempFile>,
+    tempfiles: Vec<tempfile::NamedTempFile>,
+}
+
+/// Owned pieces of a [`RoleHandle`] after the REPL takes over event
+/// forwarding and role lifetime management.
+#[derive(Debug)]
+pub struct RoleHandleParts {
+    /// Role's display name.
+    pub role: String,
+    /// Engine driving this role.
+    pub engine: Engine,
+    /// Channel to send new user prompts into the live session.
+    pub tx_user: mpsc::Sender<UserMessage>,
+    /// Channel of CREP events emitted by this role.
+    pub rx_events: mpsc::Receiver<CrepEvent>,
+    /// One-shot shutdown request consumed by the adapter's process waiter.
+    pub stop_tx: oneshot::Sender<crate::crep::StopReason>,
+    /// Adapter-owned tempfiles that must remain alive for the role lifetime.
+    pub tempfiles: Vec<tempfile::NamedTempFile>,
 }
 
 impl RoleHandle {
@@ -161,7 +175,21 @@ impl RoleHandle {
             tx_user,
             rx_events,
             stop_tx,
-            _tempfiles: tempfiles,
+            tempfiles,
+        }
+    }
+
+    /// Consume the handle and return all owned runtime pieces, including
+    /// adapter tempfiles that must be kept alive by the REPL.
+    #[must_use]
+    pub fn into_parts(self) -> RoleHandleParts {
+        RoleHandleParts {
+            role: self.role,
+            engine: self.engine,
+            tx_user: self.tx_user,
+            rx_events: self.rx_events,
+            stop_tx: self.stop_tx,
+            tempfiles: self.tempfiles,
         }
     }
 }
@@ -308,5 +336,28 @@ mod tests {
             allow: false,
             reason: Some("denied by hook".into()),
         };
+    }
+
+    #[test]
+    fn role_handle_into_parts_transfers_tempfiles() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let path = temp.path().to_owned();
+        let (tx_user, _rx_user) = mpsc::channel::<UserMessage>(1);
+        let (_tx_events, rx_events) = mpsc::channel::<CrepEvent>(1);
+        let (stop_tx, _stop_rx) = oneshot::channel();
+
+        let handle = RoleHandle::new_with_tempfiles(
+            "qa".into(),
+            Engine::Cc,
+            tx_user,
+            rx_events,
+            stop_tx,
+            vec![temp],
+        );
+        let parts = handle.into_parts();
+
+        assert!(path.exists(), "tempfile should stay alive in handle parts");
+        drop(parts.tempfiles);
+        assert!(!path.exists(), "tempfile should be cleaned up after drop");
     }
 }
