@@ -309,6 +309,9 @@ crossterm's `should_colorize` behavior. `Stylize::with(Color::...)` is
 expected to emit empty SGR in those environments. Glyphs (`✓` `✗` `↳`)
 remain so `grep`/`tee` consumers retain structure.
 
+**Diagnostics**: startup terminal probing is opt-in. Use
+`CODEROOM_TERMINAL_PROBE=1 cr` when collecting a color-rendering report.
+
 **Out of scope for v0.1**: actively quantizing to 256 colors when
 `COLORTERM != "truecolor"`. crossterm emits 24-bit SGR even on 256-color
 terminals; quantization is the terminal's responsibility. Filed under

@@ -639,7 +639,7 @@ fn splash_context_short(engine: Engine, model: Option<&str>) -> &'static str {
         Engine::Cc => "1M",
         Engine::Codex if normalized.contains("gpt-5") => "400k",
         Engine::Gemini if normalized.contains("pro") => "1M",
-        Engine::Codex | Engine::Gemini => "model",
+        Engine::Codex | Engine::Gemini => "default",
     }
 }
 
@@ -2284,7 +2284,7 @@ mod tests {
             ("", ""),
             ("welcome back, charlie", "tips for getting started"),
             ("● @host  cc · 1M", "• send a task to @host"),
-            ("[ 1.0k ] base tokens", "what's new in 0.1.12"),
+            ("[ 1.0k ] base tokens", "what's new in 0.1.13"),
         ];
         for width in [60usize, 70, 80] {
             let (left_w, right_w) = splash_columns(width, 28);
@@ -2309,7 +2309,7 @@ mod tests {
         let title = join_cells(&[
             styled_cell("codeRoom", "codeRoom".with(output::SPLASH_FRAME).bold()),
             plain_cell(" "),
-            styled_cell("v0.1.12", "v0.1.12".with(output::SPLASH_VERSION)),
+            styled_cell("v0.1.13", "v0.1.13".with(output::SPLASH_VERSION)),
         ]);
         let rendered = [
             strip_ansi(&splash_top(80, &title)),
@@ -2323,7 +2323,7 @@ mod tests {
         ]
         .join("\n");
         insta::assert_snapshot!(rendered, @r"
-┌─ codeRoom v0.1.12 ───────────────────────────────────────────────────────────┐
+┌─ codeRoom v0.1.13 ───────────────────────────────────────────────────────────┐
 │ welcome back, chao             tips for getting started                      │
 └──────────────────────────────────────────────────────────────────────────────┘");
     }
@@ -2379,17 +2379,17 @@ mod tests {
         .trim_start_matches('\n')
         .to_owned();
         insta::assert_snapshot!(rendered, @r"
-┌─ codeRoom v0.1.12 ───────────────────────────────────────────────────────────┐
+┌─ codeRoom v0.1.13 ───────────────────────────────────────────────────────────┐
 │                                                                              │
 │ welcome back, Ada              tips for getting started                      │
 │                                • type @role to send a task to a specific ro… │
 │ ● @backend   cc     · 1M       • /patch <role> persists a correction across… │
 │ ● @host      cc     · 1M       • /journal <role> captures today's lessons-l… │
-│ ● @security  codex  · model                                                  │
-│                                what's new in 0.1.12                          │
-│  0  base tokens loaded         • stop, refresh, Ctrl-C, and timeouts now te… │
-│ /repo/codeRoom                 • @all, /host, cr role host, cr compact, and… │
-│                                • bus replay, cost totals, and engine capabi… │
+│ ● @security  codex  · default                                                │
+│                                what's new in 0.1.13                          │
+│  0  base tokens loaded         • existing Codex and Gemini roles without ex… │
+│ /repo/codeRoom                 • Codex/Gemini ask and auto remain fail-fast… │
+│                                • boot dashboard no longer shows the literal… │
 │                                                                              │
 │                                /release-notes for more                       │
 │                                                                              │

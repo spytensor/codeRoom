@@ -16,6 +16,14 @@ items = [
 ]
 
 [[whats_new]]
+version = "0.1.13"
+items = [
+  "existing Codex and Gemini roles without explicit permission_mode start safely",
+  "Codex/Gemini ask and auto remain fail-fast until approval bridges exist",
+  "boot dashboard no longer shows the literal model placeholder",
+]
+
+[[whats_new]]
 version = "0.1.12"
 items = [
   "stop, refresh, Ctrl-C, and timeouts now tear down role subprocesses",

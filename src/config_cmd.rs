@@ -65,7 +65,7 @@ pub fn show(project_root: &Path) -> Result<()> {
 /// pick up the developer's real `~/.config/coderoom/config.toml`.
 pub fn show_with_user(project_root: &Path, user_path: Option<&Path>) -> Result<()> {
     let cfg = crate::config_layered::load(project_root, user_path)?;
-    print_effective(&cfg);
+    print_effective(&cfg, &project_root.join(CODEROOM_DIR));
     print_layer_footer(user_path, project_root);
     Ok(())
 }
@@ -333,7 +333,7 @@ fn pick_editor_from(get: impl Fn(&str) -> Option<String>) -> Result<PathBuf> {
 
 // ---- Pretty-print ------------------------------------------------------
 
-fn print_effective(cfg: &Config) {
+fn print_effective(cfg: &Config, coderoom_dir: &Path) {
     println!("Effective configuration");
     println!("─────────────────────────");
     println!("default_engine      = {}", cfg.default_engine.as_str());
@@ -353,19 +353,12 @@ fn print_effective(cfg: &Config) {
         println!("  (none — use `cr role add`)");
     } else {
         for name in names {
-            let entry = cfg.roles.get(name);
-            let engine = entry
-                .and_then(|e| e.engine)
-                .unwrap_or(cfg.default_engine)
-                .as_str();
-            let model = entry
-                .and_then(|e| e.model.as_deref())
-                .or(cfg.default_model.as_deref())
-                .unwrap_or("(default)");
-            let permission = entry
-                .and_then(|e| e.permission_mode)
-                .unwrap_or(cfg.permission_mode)
-                .as_str();
+            let role_cfg = cfg
+                .role_config(name, coderoom_dir)
+                .expect("iterated role names must resolve to role configs");
+            let engine = role_cfg.engine.as_str();
+            let model = role_cfg.model.as_deref().unwrap_or("(default)");
+            let permission = role_cfg.permission_mode.as_str();
             let host = if cfg.is_host(name) { " (host)" } else { "" };
             println!("  @{name:<14} {engine:<6} / {model} / {permission}{host}");
         }

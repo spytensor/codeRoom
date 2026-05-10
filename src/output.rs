@@ -166,7 +166,9 @@ pub fn color_enabled() -> bool {
 /// Print one startup diagnostics line to stderr so terminal color
 /// reports can include whether truecolor is discoverable.
 pub fn print_terminal_probe() {
-    eprintln!("{}", terminal_probe_line());
+    if terminal_probe_enabled() {
+        eprintln!("{}", terminal_probe_line());
+    }
 }
 
 fn terminal_probe_line() -> String {
@@ -184,6 +186,17 @@ fn terminal_probe_line_from(term: &str, colorterm: &str) -> String {
     format!(
         "coderoom terminal: TERM={term} COLORTERM={colorterm} truecolor={}",
         if truecolor { "yes" } else { "no" }
+    )
+}
+
+fn terminal_probe_enabled() -> bool {
+    std::env::var("CODEROOM_TERMINAL_PROBE").is_ok_and(|value| terminal_probe_enabled_from(&value))
+}
+
+fn terminal_probe_enabled_from(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
     )
 }
 
@@ -251,5 +264,14 @@ mod tests {
         assert!(line.contains("TERM=xterm-256color"));
         assert!(line.contains("COLORTERM=truecolor"));
         assert!(line.contains("truecolor=yes"));
+    }
+
+    #[test]
+    fn terminal_probe_is_opt_in() {
+        assert!(terminal_probe_enabled_from("1"));
+        assert!(terminal_probe_enabled_from("true"));
+        assert!(terminal_probe_enabled_from("on"));
+        assert!(!terminal_probe_enabled_from(""));
+        assert!(!terminal_probe_enabled_from("0"));
     }
 }

@@ -221,13 +221,23 @@ impl Config {
     #[must_use]
     pub fn role_config(&self, name: &str, coderoom_dir: &Path) -> Option<RoleConfig> {
         let entry = self.roles.get(name)?;
+        let engine = entry.engine.unwrap_or(self.default_engine);
+        let permission_mode = entry.permission_mode.unwrap_or(match engine {
+            // Codex/Gemini approval responders are not wired yet. Existing
+            // projects created before per-role permission modes may have
+            // `engine = "codex"` with no explicit override; keep those roles
+            // startable while explicit ask/auto settings still fail in the
+            // adapters.
+            Engine::Codex | Engine::Gemini => PermissionMode::Bypass,
+            Engine::Cc => self.permission_mode,
+        });
         Some(RoleConfig {
             name: name.to_owned(),
-            engine: entry.engine.unwrap_or(self.default_engine),
+            engine,
             model: entry.model.clone().or_else(|| self.default_model.clone()),
             priors_path: priors_path_for(coderoom_dir, name),
             budget_usd: self.budget_per_role_usd,
-            permission_mode: entry.permission_mode.unwrap_or(self.permission_mode),
+            permission_mode,
             permission_policy_path: None,
         })
     }
@@ -358,6 +368,63 @@ permission_mode = "bypass"
         assert_eq!(security.engine, Engine::Codex);
         assert_eq!(security.model.as_deref(), Some("o3"));
         assert_eq!(security.permission_mode, PermissionMode::Bypass);
+    }
+
+    #[test]
+    fn codex_role_without_permission_override_uses_bypass() {
+        let tmp = fixture(
+            r#"
+default_engine = "cc"
+permission_mode = "ask"
+budget_per_role_usd = 0.50
+host_role = "pm"
+
+[roles.pm]
+
+[roles.security]
+engine = "codex"
+"#,
+        );
+        let coderoom = tmp.path().join(CODEROOM_DIR);
+        fs::write(
+            coderoom.join(ROLES_DIR).join("security.md"),
+            "security priors\n",
+        )
+        .unwrap();
+
+        let cfg = Config::load_test(tmp.path()).unwrap();
+        let security = cfg.role_config("security", &coderoom).unwrap();
+        assert_eq!(security.engine, Engine::Codex);
+        assert_eq!(security.permission_mode, PermissionMode::Bypass);
+    }
+
+    #[test]
+    fn explicit_codex_permission_mode_is_preserved() {
+        let tmp = fixture(
+            r#"
+default_engine = "cc"
+permission_mode = "bypass"
+budget_per_role_usd = 0.50
+host_role = "pm"
+
+[roles.pm]
+
+[roles.security]
+engine = "codex"
+permission_mode = "ask"
+"#,
+        );
+        let coderoom = tmp.path().join(CODEROOM_DIR);
+        fs::write(
+            coderoom.join(ROLES_DIR).join("security.md"),
+            "security priors\n",
+        )
+        .unwrap();
+
+        let cfg = Config::load_test(tmp.path()).unwrap();
+        let security = cfg.role_config("security", &coderoom).unwrap();
+        assert_eq!(security.engine, Engine::Codex);
+        assert_eq!(security.permission_mode, PermissionMode::Ask);
     }
 
     #[test]
