@@ -35,6 +35,17 @@ pub enum CrepEvent {
         /// Used to detect drift between intended and actual role identity.
         priors_hash: String,
     },
+    /// Role supplied a display title for the current work unit.
+    ///
+    /// This is metadata for terminal cards, not user-visible chat. The
+    /// title is derived from a `cr-task` block or adapter-native work
+    /// signal and must not be treated as protocol identity.
+    WorkTitle {
+        /// Configured name of the role whose current work title changed.
+        role: String,
+        /// Sanitized one-line work title.
+        title: String,
+    },
     /// The role emitted a final assistant turn (the LLM finished its
     /// response for the current user message).
     ///
@@ -119,6 +130,9 @@ pub enum StopReason {
     /// `--max-budget-usd` ceiling was hit. Tool calls and replies stop;
     /// user must explicitly raise the cap or `/refresh`.
     Budget,
+    /// The wrapper timed out while waiting for the role to finish its
+    /// current turn.
+    TimedOut,
 }
 
 #[cfg(test)]
@@ -153,6 +167,19 @@ mod tests {
         let wire = serde_json::to_value(&event).unwrap();
         assert_eq!(wire["type"], "role_spoke");
         assert_eq!(wire["mentions"], json!(["security", "frontend"]));
+        let parsed: CrepEvent = serde_json::from_value(wire).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn work_title_roundtrips() {
+        let event = CrepEvent::WorkTitle {
+            role: "backend".into(),
+            title: "Review adapter timeout paths".into(),
+        };
+        let wire = serde_json::to_value(&event).unwrap();
+        assert_eq!(wire["type"], "work_title");
+        assert_eq!(wire["title"], "Review adapter timeout paths");
         let parsed: CrepEvent = serde_json::from_value(wire).unwrap();
         assert_eq!(event, parsed);
     }
@@ -197,6 +224,10 @@ mod tests {
             serde_json::from_str::<StopReason>("\"completed\"").unwrap(),
             StopReason::Completed
         );
+        assert_eq!(
+            serde_json::from_str::<StopReason>("\"timed_out\"").unwrap(),
+            StopReason::TimedOut
+        );
     }
 
     #[test]
@@ -222,6 +253,13 @@ mod tests {
                     priors_hash: "p".into(),
                 },
                 "role_started",
+            ),
+            (
+                CrepEvent::WorkTitle {
+                    role: "r".into(),
+                    title: "t".into(),
+                },
+                "work_title",
             ),
             (
                 CrepEvent::RoleSpoke {

@@ -83,6 +83,14 @@ pub(super) fn render_event_line(event: &CrepEvent, host_role: &str) -> String {
                     .italic()
             )
         }
+        CrepEvent::WorkTitle { role, title } => {
+            let role_paint = output::role_color(role, host_role);
+            format!(
+                "{} {}",
+                GUTTER.with(role_paint),
+                format!("@{role} work · {title}").with(output::DIM).italic()
+            )
+        }
         CrepEvent::RoleSpoke {
             role,
             text,

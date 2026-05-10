@@ -527,6 +527,10 @@ fn snapshot_render_event_lines() {
             session_id: "s".into(),
             priors_hash: "p".into(),
         },
+        CrepEvent::WorkTitle {
+            role: "backend".into(),
+            title: "Review work cards".into(),
+        },
         CrepEvent::RoleSpoke {
             role: "backend".into(),
             text: "Ready for @security.".into(),
@@ -564,6 +568,7 @@ fn snapshot_render_event_lines() {
         .join("\n");
     insta::assert_snapshot!(rendered, @r"
 ▎ @backend ready · model=claude-opus-4-7
+▎ @backend work · Review work cards
 ▎ @backend Ready for @security.
 ▎ ↳ @backend · Bash `cargo test --all-features`
 ▎ ✓ @backend · tests passed

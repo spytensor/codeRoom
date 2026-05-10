@@ -23,3 +23,4 @@ pub mod priors;
 pub mod repl;
 pub mod role;
 pub mod update;
+mod work;

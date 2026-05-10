@@ -224,6 +224,11 @@ pub(super) async fn drain_one_turn(
             }
             recv = rx.recv() => match recv {
                 Ok(event) => {
+                    if matches!(&event, CrepEvent::WorkTitle { role: titled, .. } if titled == role)
+                    {
+                        work.apply_event(&event);
+                        continue;
+                    }
                     if let Some(hidden) = TurnActivity::from_foldable_event(&event, role) {
                         work.apply_event(&event);
                         hidden.merge_into(&mut activity);

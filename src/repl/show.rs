@@ -93,6 +93,7 @@ pub(super) fn filter_show_events<'a>(
 fn event_role(event: &CrepEvent) -> &str {
     match event {
         CrepEvent::RoleStarted { role, .. }
+        | CrepEvent::WorkTitle { role, .. }
         | CrepEvent::RoleSpoke { role, .. }
         | CrepEvent::ToolCallProposed { role, .. }
         | CrepEvent::ToolCallExecuted { role, .. }

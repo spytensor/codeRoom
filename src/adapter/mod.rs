@@ -47,6 +47,65 @@ impl Engine {
             Self::Gemini => "gemini",
         }
     }
+
+    /// Work-card tracing capability for this engine adapter.
+    #[must_use]
+    pub const fn work_trace(self) -> WorkTraceCapability {
+        match self {
+            Self::Cc => WorkTraceCapability::from_bits(
+                WorkTraceCapability::CR_TASK_TITLES | WorkTraceCapability::LIVE_TOOL_STEPS,
+            ),
+            Self::Codex => WorkTraceCapability::from_bits(
+                WorkTraceCapability::CR_TASK_TITLES
+                    | WorkTraceCapability::LIVE_TOOL_STEPS
+                    | WorkTraceCapability::PARTIAL_TRACE,
+            ),
+            Self::Gemini => WorkTraceCapability::from_bits(
+                WorkTraceCapability::CR_TASK_TITLES | WorkTraceCapability::PARTIAL_TRACE,
+            ),
+        }
+    }
+}
+
+/// Adapter-level capability flags for WorkCard rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkTraceCapability {
+    bits: u8,
+}
+
+impl WorkTraceCapability {
+    const CR_TASK_TITLES: u8 = 1 << 0;
+    const LIVE_TOOL_STEPS: u8 = 1 << 1;
+    const NATIVE_DELEGATES: u8 = 1 << 2;
+    const PARTIAL_TRACE: u8 = 1 << 3;
+
+    const fn from_bits(bits: u8) -> Self {
+        Self { bits }
+    }
+
+    /// Whether the adapter extracts `cr-task` title blocks into WorkTitle.
+    #[must_use]
+    pub const fn cr_task_titles(self) -> bool {
+        self.bits & Self::CR_TASK_TITLES != 0
+    }
+
+    /// Whether tool steps can arrive while the role is still running.
+    #[must_use]
+    pub const fn live_tool_steps(self) -> bool {
+        self.bits & Self::LIVE_TOOL_STEPS != 0
+    }
+
+    /// Whether native nested task/subagent events are exposed as work units.
+    #[must_use]
+    pub const fn native_delegates(self) -> bool {
+        self.bits & Self::NATIVE_DELEGATES != 0
+    }
+
+    /// Whether traces may be incomplete compared with the engine's internal work.
+    #[must_use]
+    pub const fn partial_trace(self) -> bool {
+        self.bits & Self::PARTIAL_TRACE != 0
+    }
 }
 
 /// Wrapper permission mode for engine tool calls.
@@ -216,6 +275,32 @@ pub enum UserMessage {
     },
 }
 
+pub(crate) fn role_spoke_events_from_text(
+    role: &str,
+    text: &str,
+    cost_usd: f64,
+    cache_read: u64,
+) -> Vec<CrepEvent> {
+    let extracted = crate::work::extract_cr_task(text);
+    let mut events = Vec::new();
+    if let Some(title) = extracted.title {
+        events.push(CrepEvent::WorkTitle {
+            role: role.to_owned(),
+            title,
+        });
+    }
+    let body = extracted.body.trim().to_owned();
+    let mentions = cc::parse_mentions(&body);
+    events.push(CrepEvent::RoleSpoke {
+        role: role.to_owned(),
+        text: body,
+        mentions,
+        cost_usd,
+        cache_read,
+    });
+    events
+}
+
 /// Errors an adapter may surface during start/teardown.
 #[derive(Debug, Error)]
 pub enum AdapterError {
@@ -316,6 +401,18 @@ mod tests {
     }
 
     #[test]
+    fn work_trace_capabilities_reflect_adapter_modes() {
+        let cc = Engine::Cc.work_trace();
+        assert!(cc.cr_task_titles());
+        assert!(cc.live_tool_steps());
+        assert!(!cc.native_delegates());
+        assert!(!cc.partial_trace());
+
+        assert!(Engine::Codex.work_trace().partial_trace());
+        assert!(!Engine::Gemini.work_trace().live_tool_steps());
+    }
+
+    #[test]
     fn permission_mode_lowercase_in_config_toml_form() {
         #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
         struct Sample {
@@ -341,6 +438,34 @@ mod tests {
             allow: false,
             reason: Some("denied by hook".into()),
         };
+    }
+
+    #[test]
+    fn role_spoke_events_extract_work_title_and_clean_text() {
+        let events = role_spoke_events_from_text(
+            "qa",
+            "```cr-task\nReview adapter timeout paths\n```\n\nI checked with @backend.",
+            0.5,
+            42,
+        );
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0],
+            CrepEvent::WorkTitle {
+                role: "qa".into(),
+                title: "Review adapter timeout paths".into(),
+            }
+        );
+        assert_eq!(
+            events[1],
+            CrepEvent::RoleSpoke {
+                role: "qa".into(),
+                text: "I checked with @backend.".into(),
+                mentions: vec!["backend".into()],
+                cost_usd: 0.5,
+                cache_read: 42,
+            }
+        );
     }
 
     #[test]

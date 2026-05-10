@@ -612,7 +612,7 @@ async fn drain_one_turn_with_timeout(
             PER_TURN_TIMEOUT.as_secs()
         ));
         if let Some(running) = roles.remove(role) {
-            stop_running_role(role, running, StopReason::Crashed);
+            stop_running_role(role, running, StopReason::TimedOut);
         }
         Ok(None)
     }

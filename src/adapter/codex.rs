@@ -49,7 +49,10 @@ const CHANNEL_CAPACITY: usize = 32;
 /// MCP protocol version we initialize with. Confirmed in the L3 spike.
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
-const RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+// Keep this above the REPL's per-turn timeout so interactive sessions get one
+// user-visible timeout surface: the REPL interrupted WorkCard. The adapter
+// timeout is still useful for headless tests or future non-REPL consumers.
+const RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(6 * 60);
 
 /// Adapter that drives Codex's `mcp-server` mode.
 #[derive(Debug, Clone)]
@@ -816,23 +819,23 @@ async fn write_loop(
         match client.request("tools/call", params).await {
             Ok(result) => {
                 let text = extract_text_from_tool_result(&result);
-                let mentions = crate::adapter::cc::parse_mentions(&text);
+                for event in crate::adapter::role_spoke_events_from_text(&role, &text, 0.0, 0) {
+                    let _ = events.send(event).await;
+                }
+            }
+            Err(error) => {
+                warn!(role, %error, "codex tools/call failed");
+                let text = match error {
+                    RpcError::Timeout => format!(
+                        "[codex timeout: tools/call did not respond after {}s]",
+                        RPC_REQUEST_TIMEOUT.as_secs()
+                    ),
+                    other => format!("[codex error: {other}]"),
+                };
                 let _ = events
                     .send(CrepEvent::RoleSpoke {
                         role: role.clone(),
                         text,
-                        mentions,
-                        cost_usd: 0.0,
-                        cache_read: 0,
-                    })
-                    .await;
-            }
-            Err(error) => {
-                warn!(role, %error, "codex tools/call failed");
-                let _ = events
-                    .send(CrepEvent::RoleSpoke {
-                        role: role.clone(),
-                        text: format!("[codex error: {error}]"),
                         mentions: Vec::new(),
                         cost_usd: 0.0,
                         cache_read: 0,

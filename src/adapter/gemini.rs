@@ -235,17 +235,11 @@ impl GeminiLoop {
                     for event in turn.events {
                         let _ = self.events.send(event).await;
                     }
-                    let mentions = crate::adapter::cc::parse_mentions(&turn.text);
-                    let _ = self
-                        .events
-                        .send(CrepEvent::RoleSpoke {
-                            role: self.role.clone(),
-                            text: turn.text,
-                            mentions,
-                            cost_usd: 0.0,
-                            cache_read: 0,
-                        })
-                        .await;
+                    for event in
+                        crate::adapter::role_spoke_events_from_text(&self.role, &turn.text, 0.0, 0)
+                    {
+                        let _ = self.events.send(event).await;
+                    }
                 }
                 Err(error) => {
                     warn!(role = %self.role, %error, "gemini turn failed");

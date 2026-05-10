@@ -186,6 +186,41 @@ fn translate_assistant_with_tool_use_yields_tool_call_proposed() {
 }
 
 #[test]
+fn translate_assistant_text_yields_work_title_before_tool_use() {
+    let line = json!({
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "text", "text": "```cr-task\nInspect permissions\n```"},
+                {
+                    "type": "tool_use",
+                    "id": "toolu_01abc",
+                    "name": "Read",
+                    "input": {"file_path": "README.md"}
+                }
+            ]
+        }
+    });
+    let events = translate("security", "h", &line);
+    assert_eq!(events.len(), 2);
+    assert_eq!(
+        events[0],
+        CrepEvent::WorkTitle {
+            role: "security".into(),
+            title: "Inspect permissions".into(),
+        }
+    );
+    assert!(matches!(
+        events[1],
+        CrepEvent::ToolCallProposed {
+            ref role,
+            ref tool_name,
+            ..
+        } if role == "security" && tool_name == "Read"
+    ));
+}
+
+#[test]
 fn translate_user_with_tool_result_yields_tool_call_executed() {
     let line = json!({
         "type": "user",
