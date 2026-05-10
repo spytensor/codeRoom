@@ -19,6 +19,8 @@ Make the first-run CLI experience match the polished terminal UI direction from 
 - [x] Fold live tool traces into one per-turn activity summary while keeping full traces in `cr show`.
 - [x] Detect existing host-only `.coderoom/` projects on `cr` start and offer a checkbox role expansion flow.
 - [x] Keep generated role priors short and role-shaped; move long procedures / references toward engine skills or docs instead of bloating every prompt.
+- [x] Refresh the terminal palette, dashboard borders, truecolor probe, and Codex model labels for the next patch release.
+- [x] Prepare v0.1.11 with README, CHANGELOG, Cargo, and npm package metadata in sync.
 
 ## Notes
 

@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (nothing yet)
 
+## [0.1.11] - 2026-05-10
+
+### Fixed
+
+- Refreshed the terminal role palette with the OKLCH-selected eight-color
+  set; `@host` is always lavender, and generated role colors now use the
+  new lavender / jade / coral / rose / sky / blossom / honey / teal ramp.
+- The boot dashboard no longer uses yellow as decoration. Box borders now
+  share the dim `#6a6a6a` rule color, panel headings use bold `#f0f0f0`,
+  and all dashboard borders use single-line box drawing.
+- Startup now prints a one-line `TERM` / `COLORTERM` truecolor diagnostic
+  to stderr so bad terminal color negotiation is visible in user reports.
+- Codex-backed roles no longer display the literal placeholder `model` in
+  ready banners when the adapter does not report a concrete model name.
+
+### Changed
+
+- Removed `cr update` from the in-REPL welcome dashboard because users
+  cannot run shell-level `cr ...` commands from inside the REPL prompt.
+
 ## [0.1.10] - 2026-05-09
 
 ### Fixed
@@ -375,7 +395,11 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.11
+[0.1.10]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.10
+[0.1.9]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.9
+[0.1.8]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.8
 [0.1.7]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.7
 [0.1.6]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.6
 [0.1.5]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.5

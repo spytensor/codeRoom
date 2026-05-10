@@ -198,6 +198,7 @@ fn main() -> Result<()> {
         )
         .with_writer(std::io::stderr)
         .try_init();
+    coderoom::output::print_terminal_probe();
 
     // Engine-binary check up front. `cr config`, `cr update`, and
     // `cr upgrade` are useful without any engine installed (inspecting

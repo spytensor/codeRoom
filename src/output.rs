@@ -15,133 +15,12 @@ use std::io::IsTerminal;
 
 use crossterm::style::{Color, StyledContent, Stylize};
 
-// ───────────────────── semantic colors ─────────────────────
+mod palette;
 
-/// Success — paired with `✓`.
-pub const OK: Color = Color::Rgb {
-    r: 0x97,
-    g: 0xc4,
-    b: 0x59,
-};
-/// Attention but not failure — paired with `⚠`, `⟳`, `⊘`.
-pub const WARN: Color = Color::Rgb {
-    r: 0xef,
-    g: 0x9f,
-    b: 0x27,
-};
-/// Failure — paired with `✗`.
-pub const BAD: Color = Color::Rgb {
-    r: 0xea,
-    g: 0x5b,
-    b: 0x5b,
-};
-/// Neutral hint, auto-routing arrow.
-pub const INFO: Color = Color::Rgb {
-    r: 0x6f,
-    g: 0xa8,
-    b: 0xdc,
-};
-/// Commands and hotkeys (`/help`, `cr update`).
-pub const KEY: Color = Color::Rgb {
-    r: 0xd4,
-    g: 0xb8,
-    b: 0x7a,
-};
-/// Input prompt (`cr ›`).
-pub const PROMPT: Color = Color::Rgb {
-    r: 0x58,
-    g: 0xc3,
-    b: 0x9c,
-};
-/// Emphasis: API paths, key values.
-pub const EM: Color = Color::Rgb {
-    r: 0xf0,
-    g: 0xf0,
-    b: 0xf0,
-};
-/// Default body text.
-pub const TEXT: Color = Color::Rgb {
-    r: 0xd4,
-    g: 0xd4,
-    b: 0xd4,
-};
-/// Secondary information: timestamps, side labels.
-pub const MUTE: Color = Color::Rgb {
-    r: 0x9a,
-    g: 0x9a,
-    b: 0x9a,
-};
-/// System rows: tool call summaries, in-place spinner status.
-pub const DIM: Color = Color::Rgb {
-    r: 0x82,
-    g: 0x82,
-    b: 0x82,
-};
-/// Decorative `·` separators and the `↳` glyph. Sub-AA by design.
-pub const FADE: Color = Color::Rgb {
-    r: 0x4a,
-    g: 0x4a,
-    b: 0x4a,
-};
-/// Box borders. Reserved for future drawing; sub-AA by design.
-pub const RULE: Color = Color::Rgb {
-    r: 0x3a,
-    g: 0x3a,
-    b: 0x3d,
-};
+use palette::ROLE_PALETTE;
+pub use palette::{BAD, DIM, EM, FADE, INFO, KEY, MUTE, OK, PROMPT, RULE, TEXT, WARN};
 
 // ───────────────────── role palette ────────────────────────
-
-const ROLE_PALETTE: [Color; 8] = [
-    // 0: lavender — `@host` is pinned here.
-    Color::Rgb {
-        r: 0xc0,
-        g: 0xa8,
-        b: 0xff,
-    },
-    // 1: jade
-    Color::Rgb {
-        r: 0x5d,
-        g: 0xca,
-        b: 0xa5,
-    },
-    // 2: coral
-    Color::Rgb {
-        r: 0xf0,
-        g: 0x99,
-        b: 0x7b,
-    },
-    // 3: rose
-    Color::Rgb {
-        r: 0xf0,
-        g: 0x90,
-        b: 0x80,
-    },
-    // 4: sky
-    Color::Rgb {
-        r: 0x85,
-        g: 0xb7,
-        b: 0xeb,
-    },
-    // 5: blossom
-    Color::Rgb {
-        r: 0xe0,
-        g: 0x88,
-        b: 0xc4,
-    },
-    // 6: honey
-    Color::Rgb {
-        r: 0xf4,
-        g: 0xc7,
-        b: 0x75,
-    },
-    // 7: teal
-    Color::Rgb {
-        r: 0x7b,
-        g: 0xc6,
-        b: 0xc1,
-    },
-];
 
 /// FNV-1a 32-bit. Stable across Rust toolchain versions, unlike
 /// `std::hash::DefaultHasher`. Five lines, no dependency.
@@ -159,7 +38,7 @@ fn fnv1a(s: &str) -> u32 {
 /// keeps the same color across sessions and across Rust versions.
 #[must_use]
 pub fn role_color(role: &str, host_role: &str) -> Color {
-    if role == host_role {
+    if role == "host" || role == host_role {
         return ROLE_PALETTE[0];
     }
     let idx = 1 + (fnv1a(role) as usize) % 7;
@@ -224,7 +103,7 @@ pub fn role_dot(role: &str, host_role: &str) -> StyledContent<&'static str> {
     "●".with(role_color(role, host_role))
 }
 
-/// Style a command/hotkey token (`/help`, `cr update`).
+/// Style a command/hotkey token (`/help`, `/patch`).
 #[must_use]
 pub fn cmd(text: impl Into<String>) -> StyledContent<String> {
     text.into().with(KEY)
@@ -275,6 +154,30 @@ pub fn color_enabled() -> bool {
     !matches!(std::env::var("TERM").as_deref(), Ok("dumb"))
 }
 
+/// Print one startup diagnostics line to stderr so terminal color
+/// reports can include whether truecolor is discoverable.
+pub fn print_terminal_probe() {
+    eprintln!("{}", terminal_probe_line());
+}
+
+fn terminal_probe_line() -> String {
+    let term = std::env::var("TERM").unwrap_or_else(|_| "(unset)".to_owned());
+    let colorterm = std::env::var("COLORTERM").unwrap_or_else(|_| "(unset)".to_owned());
+    terminal_probe_line_from(&term, &colorterm)
+}
+
+fn terminal_probe_line_from(term: &str, colorterm: &str) -> String {
+    let term_lower = term.to_ascii_lowercase();
+    let colorterm_lower = colorterm.to_ascii_lowercase();
+    let truecolor = matches!(colorterm_lower.as_str(), "truecolor" | "24bit")
+        || term_lower.contains("truecolor")
+        || term_lower.contains("24bit");
+    format!(
+        "coderoom terminal: TERM={term} COLORTERM={colorterm} truecolor={}",
+        if truecolor { "yes" } else { "no" }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +186,11 @@ mod tests {
     fn host_role_pins_to_lavender() {
         let host = role_color("host", "host");
         assert_eq!(host, ROLE_PALETTE[0]);
+    }
+
+    #[test]
+    fn literal_host_is_always_lavender() {
+        assert_eq!(role_color("host", "backend"), ROLE_PALETTE[0]);
     }
 
     #[test]
@@ -326,5 +234,13 @@ mod tests {
                 "role `{name}` collided with the host slot"
             );
         }
+    }
+
+    #[test]
+    fn terminal_probe_detects_truecolor_from_colorterm() {
+        let line = terminal_probe_line_from("xterm-256color", "truecolor");
+        assert!(line.contains("TERM=xterm-256color"));
+        assert!(line.contains("COLORTERM=truecolor"));
+        assert!(line.contains("truecolor=yes"));
     }
 }

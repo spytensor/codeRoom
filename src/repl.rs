@@ -388,7 +388,7 @@ fn label_cell(label: &str, value: UiCell) -> UiCell {
 }
 
 fn heading_cell(text: &str) -> UiCell {
-    styled_cell(text, text.with(output::KEY).bold())
+    styled_cell(text, text.with(output::EM).bold())
 }
 
 fn home_width() -> usize {
@@ -398,42 +398,64 @@ fn home_width() -> usize {
 
 fn top_border(width: usize, title: &UiCell) -> String {
     let fill = width.saturating_sub(title.visible + 3);
-    format!("╭─{}{}╮", title.styled, "─".repeat(fill))
-}
-
-fn mid_border(left_width: usize, right_width: usize) -> String {
     format!(
-        "├{}┬{}┤",
-        "─".repeat(left_width + 2),
-        "─".repeat(right_width + 2)
+        "{}{}{}{}{}",
+        border("┌"),
+        border("─"),
+        title.styled,
+        border(&"─".repeat(fill)),
+        border("┐")
     )
 }
 
+fn mid_border(left_width: usize, right_width: usize) -> String {
+    section_border(left_width + right_width + 7)
+}
+
 fn section_border(width: usize) -> String {
-    format!("├{}┤", "─".repeat(width.saturating_sub(2)))
+    format!(
+        "{}{}{}",
+        border("├"),
+        border(&"─".repeat(width.saturating_sub(2))),
+        border("┤")
+    )
 }
 
 fn bottom_border(width: usize) -> String {
-    format!("╰{}╯", "─".repeat(width.saturating_sub(2)))
+    format!(
+        "{}{}{}",
+        border("└"),
+        border(&"─".repeat(width.saturating_sub(2))),
+        border("┘")
+    )
 }
 
 fn full_line(width: usize, cell: &UiCell) -> String {
     let content_width = width.saturating_sub(4);
     format!(
-        "│ {}{} │",
+        "{} {}{} {}",
+        border("│"),
         cell.styled,
-        " ".repeat(content_width.saturating_sub(cell.visible))
+        " ".repeat(content_width.saturating_sub(cell.visible)),
+        border("│")
     )
 }
 
 fn pair_line(left: &UiCell, right: &UiCell, left_width: usize, right_width: usize) -> String {
     format!(
-        "│ {}{} │ {}{} │",
+        "{} {}{} {} {}{} {}",
+        border("│"),
         left.styled,
         " ".repeat(left_width.saturating_sub(left.visible)),
+        border("│"),
         right.styled,
-        " ".repeat(right_width.saturating_sub(right.visible))
+        " ".repeat(right_width.saturating_sub(right.visible)),
+        border("│")
     )
+}
+
+fn border(s: &str) -> String {
+    s.with(output::RULE).to_string()
 }
 
 fn project_display_name(project_root: &Path) -> &str {
@@ -469,14 +491,33 @@ fn context_hint(engine: Engine, model: Option<&str>) -> &'static str {
 }
 
 fn model_label(engine: Engine, model: Option<&str>) -> String {
-    model.map_or_else(
-        || match engine {
-            Engine::Cc => "Claude default".to_owned(),
-            Engine::Codex => "Codex default".to_owned(),
-            Engine::Gemini => "Gemini default".to_owned(),
-        },
-        ToOwned::to_owned,
-    )
+    model
+        .filter(|value| !is_placeholder_model(value))
+        .map_or_else(
+            || match engine {
+                Engine::Cc => "Claude default".to_owned(),
+                Engine::Codex => "Codex default".to_owned(),
+                Engine::Gemini => "Gemini default".to_owned(),
+            },
+            ToOwned::to_owned,
+        )
+}
+
+fn is_placeholder_model(model: &str) -> bool {
+    let normalized = model.trim().to_ascii_lowercase();
+    normalized.is_empty() || normalized == "model"
+}
+
+fn started_model_label(engine: &str, model: &str) -> String {
+    if !is_placeholder_model(model) {
+        return model.to_owned();
+    }
+    match engine {
+        "cc" => "Claude default".to_owned(),
+        "codex" => "Codex default".to_owned(),
+        "gemini" => "Gemini default".to_owned(),
+        other => format!("{other} default"),
+    }
 }
 
 fn role_profile_cell(cfg: &Config, coderoom_dir: &Path, name: &str, max_width: usize) -> UiCell {
@@ -592,10 +633,6 @@ fn print_home(cfg: &Config, coderoom_dir: &Path, project_root: &Path, first_run:
             styled_cell("/patch", "/patch".with(output::KEY)),
             plain_cell(" persist a correction"),
         ]),
-        join_cells(&[
-            styled_cell("cr update", "cr update".with(output::KEY)),
-            plain_cell(" upgrade this install"),
-        ]),
         plain_cell("/help · /welcome · /exit"),
     ];
 
@@ -603,7 +640,7 @@ fn print_home(cfg: &Config, coderoom_dir: &Path, project_root: &Path, first_run:
     let title = styled_cell(
         &format!(" codeRoom v{} ", env!("CARGO_PKG_VERSION")),
         format!(" codeRoom v{} ", env!("CARGO_PKG_VERSION"))
-            .with(output::KEY)
+            .with(output::EM)
             .bold(),
     );
     println!("{}", top_border(width, &title));
@@ -1106,7 +1143,13 @@ async fn show_transcript(coderoom_dir: &Path, role: &str, host_role: &str) {
 
 fn render_event(event: &CrepEvent, host_role: &str) {
     match event {
-        CrepEvent::RoleStarted { role, model, .. } => {
+        CrepEvent::RoleStarted {
+            role,
+            engine,
+            model,
+            ..
+        } => {
+            let model = started_model_label(engine, model);
             output::system(format!("@{role} ready · model={model}"));
         }
         CrepEvent::RoleSpoke {
@@ -1462,6 +1505,15 @@ mod tests {
     #[test]
     fn parse_welcome() {
         assert_eq!(parse_line("/welcome"), Command::Welcome);
+    }
+
+    #[test]
+    fn started_model_label_hides_literal_model_placeholder() {
+        assert_eq!(started_model_label("codex", "model"), "Codex default");
+        assert_eq!(
+            started_model_label("cc", "claude-opus-4-7"),
+            "claude-opus-4-7"
+        );
     }
 
     #[test]

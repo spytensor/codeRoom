@@ -122,11 +122,12 @@ impl EngineAdapter for CodexAdapter {
         let client = RpcClient::new(Arc::clone(&writer), Arc::clone(&pending));
         match client.initialize().await {
             Ok(model) => {
+                let model = codex_display_model(config.model.as_deref(), model.as_deref());
                 let _ = tx_events
                     .send(CrepEvent::RoleStarted {
                         role: config.name.clone(),
                         engine: Engine::Codex.as_str().to_owned(),
-                        model: model.unwrap_or_else(|| "codex".to_owned()),
+                        model,
                         session_id: format!("codex-{}", config.name),
                         priors_hash: crate::adapter::cc::fingerprint(&priors_text),
                     })
@@ -272,6 +273,19 @@ impl RpcClient {
     }
 }
 
+fn codex_display_model(config_model: Option<&str>, reported_model: Option<&str>) -> String {
+    config_model
+        .filter(|model| !is_placeholder_model(model))
+        .or_else(|| reported_model.filter(|model| !is_placeholder_model(model)))
+        .unwrap_or("Codex default")
+        .to_owned()
+}
+
+fn is_placeholder_model(model: &str) -> bool {
+    let normalized = model.trim().to_ascii_lowercase();
+    normalized.is_empty() || normalized == "model" || normalized == "codex"
+}
+
 async fn read_rpc_loop(
     stdout: ChildStdout,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
@@ -415,5 +429,19 @@ mod tests {
             ],
         });
         assert_eq!(extract_text_from_tool_result(&v), "ok");
+    }
+
+    #[test]
+    fn display_model_uses_configured_model_before_server_name() {
+        assert_eq!(
+            codex_display_model(Some("gpt-5.1-codex"), Some("model")),
+            "gpt-5.1-codex"
+        );
+    }
+
+    #[test]
+    fn display_model_does_not_show_placeholder_model() {
+        assert_eq!(codex_display_model(None, Some("model")), "Codex default");
+        assert_eq!(codex_display_model(None, Some("codex")), "Codex default");
     }
 }
