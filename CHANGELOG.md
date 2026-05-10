@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Codex `permission_mode="bypass"` now disables Codex's own command sandbox
+  (`danger-full-access`) instead of pairing `approval-policy=never` with
+  `workspace-write`, so yolo/bypass roles do not hang behind an unavailable
+  Linux sandbox.
+- Codex subprocess shutdown now signals the spawned process group, so killing
+  the npm wrapper after a turn timeout does not leave the vendor binary running
+  as an orphan.
+
 ## [0.1.16] - 2026-05-10
 
 ### Fixed

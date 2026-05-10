@@ -66,6 +66,10 @@ tempfile = "3.10"
 # Cross-process advisory file locks for `.coderoom/messages.jsonl`.
 fs2 = "0.4"
 
+[target.'cfg(unix)'.dependencies]
+# Process-group signalling for engine wrappers that spawn vendor binaries.
+nix = { version = "0.30", default-features = false, features = ["signal"] }
+
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"

@@ -50,8 +50,8 @@ reply.
   as `—` instead of fake zeroes.
 - **Permission modes.** Projects can choose `ask`, `auto`, or `bypass`.
   Claude Code is gated by a CodeRoom-injected PreToolUse hook; Codex and
-  Gemini are intentionally bypass-only until their approval bridges can be
-  supervised.
+  Gemini approval support follows each engine's native protocol and is shown
+  only when CodeRoom can supervise it.
 
 ## Status / Roadmap
 
@@ -180,7 +180,7 @@ Useful commands:
 | Tool trace events | proposed + executed | exec notifications when emitted | stream-json tool_use/tool_result |
 | Cost reporting | per turn | — | — |
 | Budget enforcement | native cap | — | — |
-| Permission gating | `ask` / `auto` / `bypass` via PreToolUse hook | explicit `bypass` only | explicit `bypass` only |
+| Permission gating | `ask` / `auto` / `bypass` via PreToolUse hook | `ask` / `auto` / `bypass` via MCP approval bridge in live REPL | explicit `bypass` only |
 
 `cr cost` excludes unsupported engines from the numeric total and marks them
 with `—`. This is deliberate: older builds displayed `$0.00` for engines
@@ -209,7 +209,9 @@ permission_mode = "bypass"
 - `auto` allows low-risk read-only tools and asks for risky or unknown tools.
 - `bypass` is explicit yolo mode. It is not required for Claude Code. Codex
   can run `ask` / `auto` only from a live REPL with a permission bridge;
-  headless Codex runs still need `bypass`.
+  headless Codex runs still need `bypass`. In bypass mode, CodeRoom disables
+  Codex's own command sandbox as well as approvals, matching the yolo semantics
+  of the other adapters.
 - For compatibility with projects created before per-role permission modes,
   Codex and Gemini roles that omit `permission_mode` run as `bypass`.
   Explicit `ask` or `auto` on Gemini still fails fast.

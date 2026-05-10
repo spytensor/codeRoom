@@ -24,6 +24,10 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(unix)]
+use nix::sys::signal::{kill, Signal};
+#[cfg(unix)]
+use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -112,6 +116,7 @@ impl EngineAdapter for CodexAdapter {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        isolate_process_group(&mut cmd);
         let mut child = cmd.spawn().map_err(|source| AdapterError::Spawn {
             engine: Engine::Codex.as_str(),
             source,
@@ -432,13 +437,24 @@ async fn read_rpc_loop(
 /// Map CodeRoom's permission_mode to codex's `approval-policy`.
 /// `ask` becomes `untrusted` (codex asks for ~everything that isn't
 /// trivially safe), `auto` becomes `on-request` (codex asks only for
-/// genuinely risky calls), `bypass` becomes `never` (codex never asks
-/// — equivalent to claude's `--dangerously-skip-permissions`).
+/// genuinely risky calls), `bypass` becomes `never` (codex never asks).
 fn codex_approval_policy(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Ask => "untrusted",
         PermissionMode::Auto => "on-request",
         PermissionMode::Bypass => "never",
+    }
+}
+
+/// Map CodeRoom's permission_mode to codex's command sandbox.
+/// `bypass` is CodeRoom's yolo mode, so it must disable both approvals
+/// and Codex's own sandbox. Keeping `workspace-write` here still invokes
+/// Codex's Linux sandbox and can fail in hosts where bubblewrap networking
+/// setup is unavailable.
+fn codex_sandbox(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Ask | PermissionMode::Auto => "workspace-write",
+        PermissionMode::Bypass => "danger-full-access",
     }
 }
 
@@ -776,6 +792,7 @@ async fn write_loop(
     events: mpsc::Sender<CrepEvent>,
 ) {
     let approval_policy = codex_approval_policy(permission_mode);
+    let sandbox = codex_sandbox(permission_mode);
     while let Some(msg) = rx.recv().await {
         let UserMessage::Prompt(prompt) = msg else {
             continue;
@@ -791,7 +808,7 @@ async fn write_loop(
                 // "never" here, which made the entire approval pipe
                 // unreachable regardless of permission_mode.
                 "approval-policy": approval_policy,
-                "sandbox": "workspace-write",
+                "sandbox": sandbox,
             },
         });
         let _ = budget_usd; // wired in v0.2 with codex's --max-* config
@@ -866,9 +883,11 @@ async fn wait_child(
 }
 
 async fn terminate_child(role: &str, child: &mut Child) {
-    if let Err(error) = child.start_kill() {
-        warn!(role, %error, "failed to start codex subprocess kill");
-        return;
+    if !signal_process_group(role, child, SignalKind::Terminate) {
+        if let Err(error) = child.start_kill() {
+            warn!(role, %error, "failed to start codex subprocess kill");
+            return;
+        }
     }
     match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
         Ok(Ok(_)) => {}
@@ -878,9 +897,56 @@ async fn terminate_child(role: &str, child: &mut Child) {
                 role,
                 "codex subprocess did not exit promptly after kill signal"
             );
+            signal_process_group(role, child, SignalKind::Kill);
             let _ = child.kill().await;
         }
     }
+}
+
+#[cfg(unix)]
+fn isolate_process_group(cmd: &mut Command) {
+    cmd.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn isolate_process_group(_cmd: &mut Command) {}
+
+#[derive(Debug, Clone, Copy)]
+enum SignalKind {
+    Terminate,
+    Kill,
+}
+
+#[cfg(unix)]
+fn signal_process_group(role: &str, child: &Child, signal: SignalKind) -> bool {
+    let Some(pid) = child.id() else {
+        return false;
+    };
+    let Ok(pid) = i32::try_from(pid) else {
+        warn!(role, pid, "codex subprocess pid does not fit i32");
+        return false;
+    };
+    let signal = match signal {
+        SignalKind::Terminate => Signal::SIGTERM,
+        SignalKind::Kill => Signal::SIGKILL,
+    };
+    match kill(Pid::from_raw(-pid), signal) {
+        Ok(()) => true,
+        Err(error) => {
+            warn!(
+                role,
+                %error,
+                ?signal,
+                "failed to signal codex subprocess group"
+            );
+            false
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn signal_process_group(_role: &str, _child: &Child, _signal: SignalKind) -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -959,6 +1025,13 @@ mod tests {
         assert_eq!(codex_approval_policy(PermissionMode::Bypass), "never");
         assert_eq!(codex_approval_policy(PermissionMode::Ask), "untrusted");
         assert_eq!(codex_approval_policy(PermissionMode::Auto), "on-request");
+    }
+
+    #[test]
+    fn permission_mode_maps_to_codex_sandbox() {
+        assert_eq!(codex_sandbox(PermissionMode::Bypass), "danger-full-access");
+        assert_eq!(codex_sandbox(PermissionMode::Ask), "workspace-write");
+        assert_eq!(codex_sandbox(PermissionMode::Auto), "workspace-write");
     }
 
     #[test]

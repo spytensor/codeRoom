@@ -214,6 +214,9 @@ PermissionDenied, RoleStopped).
   `auto` maps to `on-request`, and `bypass` maps to `never`. In live REPL
   sessions, server-initiated `execCommandApproval` / `applyPatchApproval`
   requests flow through CodeRoom's permission bridge and session policy.
+  `ask` and `auto` keep Codex's `workspace-write` command sandbox; `bypass`
+  uses `danger-full-access`, matching CodeRoom's yolo semantics for other
+  adapters.
   Missing per-role permission modes on Codex roles still resolve to bypass
   for older generated configs.
 
