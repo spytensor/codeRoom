@@ -10,7 +10,7 @@ use std::path::Path;
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::adapter::Engine;
+use crate::adapter::{Engine, PermissionMode};
 use crate::config::{Config, RoleEntry, CODEROOM_DIR, CONFIG_FILE, ROLES_DIR};
 use crate::config_layered::ProjectConfigRaw;
 
@@ -54,6 +54,11 @@ pub fn add(
     let entry = RoleEntry {
         engine,
         model: model.map(ToOwned::to_owned),
+        permission_mode: if matches!(engine, Some(Engine::Codex | Engine::Gemini)) {
+            Some(PermissionMode::Bypass)
+        } else {
+            None
+        },
     };
     raw.roles.insert(name.to_owned(), entry);
     write_project_raw(&coderoom_dir, &raw)?;
@@ -279,6 +284,10 @@ fn append_roles_config_body(coderoom_dir: &Path, additions: &[RoleAddition]) -> 
             let value = toml::Value::String(model.clone());
             writeln!(&mut body, "model = {value}")
                 .expect("writing role model to string should not fail");
+        }
+        if matches!(addition.engine, Some(Engine::Codex | Engine::Gemini)) {
+            writeln!(&mut body, "permission_mode = \"bypass\"")
+                .expect("writing role permission mode to string should not fail");
         }
         body.push('\n');
     }

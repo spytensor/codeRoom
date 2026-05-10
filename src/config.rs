@@ -16,6 +16,7 @@
 //! ```toml
 //! default_engine = "cc"          # cc | codex | gemini
 //! default_model = "opus"         # optional; engine-specific id
+//! permission_mode = "ask"        # ask | auto | bypass
 //! budget_per_role_usd = 0.50     # hard cap fed to each engine
 //! host_role = "pm"               # role that catches un-addressed text
 //!
@@ -33,7 +34,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::adapter::{Engine, RoleConfig};
+use crate::adapter::{Engine, PermissionMode, RoleConfig};
 
 /// Standard subdirectory inside a project that holds CodeRoom state.
 pub const CODEROOM_DIR: &str = ".coderoom";
@@ -53,6 +54,9 @@ pub struct Config {
     /// (e.g. `"opus"` for `cc`, `"o3"` for `codex`).
     #[serde(default)]
     pub default_model: Option<String>,
+    /// Default permission mode for any role that doesn't override.
+    #[serde(default = "default_permission_mode")]
+    pub permission_mode: PermissionMode,
     /// Per-role budget cap in USD, fed to each engine via its native
     /// budget flag (`--max-budget-usd` for `cc`, etc.).
     pub budget_per_role_usd: f64,
@@ -75,6 +79,13 @@ pub struct RoleEntry {
     /// Model override. `None` ⇒ use [`Config::default_model`].
     #[serde(default)]
     pub model: Option<String>,
+    /// Permission mode override. `None` ⇒ use [`Config::permission_mode`].
+    #[serde(default)]
+    pub permission_mode: Option<PermissionMode>,
+}
+
+const fn default_permission_mode() -> PermissionMode {
+    PermissionMode::Ask
 }
 
 /// Errors raised while loading or validating a config.
@@ -216,6 +227,8 @@ impl Config {
             model: entry.model.clone().or_else(|| self.default_model.clone()),
             priors_path: priors_path_for(coderoom_dir, name),
             budget_usd: self.budget_per_role_usd,
+            permission_mode: entry.permission_mode.unwrap_or(self.permission_mode),
+            permission_policy_path: None,
         })
     }
 
@@ -277,6 +290,7 @@ host_role = "pm"
 
         let cfg = Config::load_test(tmp.path()).expect("load");
         assert_eq!(cfg.default_engine, Engine::Cc);
+        assert_eq!(cfg.permission_mode, PermissionMode::Ask);
         assert_eq!(cfg.host_role, "pm");
         assert_eq!(cfg.roles.len(), 2);
         assert!(cfg.is_host("pm"));
@@ -304,10 +318,12 @@ host_role = "pm"
         assert_eq!(pm.engine, Engine::Cc);
         assert_eq!(pm.model.as_deref(), Some("opus"));
         assert!((pm.budget_usd - 0.50).abs() < 1e-9);
+        assert_eq!(pm.permission_mode, PermissionMode::Ask);
 
         let backend = cfg.role_config("backend", &coderoom).unwrap();
         assert_eq!(backend.engine, Engine::Cc); // inherited
         assert_eq!(backend.model.as_deref(), Some("opus")); // inherited
+        assert_eq!(backend.permission_mode, PermissionMode::Ask); // inherited
     }
 
     #[test]
@@ -316,6 +332,7 @@ host_role = "pm"
             r#"
 default_engine = "cc"
 default_model = "opus"
+permission_mode = "auto"
 budget_per_role_usd = 0.50
 host_role = "pm"
 
@@ -325,6 +342,7 @@ host_role = "pm"
 [roles.security]
 engine = "codex"
 model = "o3"
+permission_mode = "bypass"
 "#,
         );
         let coderoom = tmp.path().join(CODEROOM_DIR);
@@ -339,6 +357,7 @@ model = "o3"
         let security = cfg.role_config("security", &coderoom).unwrap();
         assert_eq!(security.engine, Engine::Codex);
         assert_eq!(security.model.as_deref(), Some("o3"));
+        assert_eq!(security.permission_mode, PermissionMode::Bypass);
     }
 
     #[test]

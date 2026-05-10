@@ -49,6 +49,33 @@ impl Engine {
     }
 }
 
+/// Wrapper permission mode for engine tool calls.
+///
+/// Wire format in `config.toml` is the lower-case variant name
+/// (`"ask"`, `"auto"`, `"bypass"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionMode {
+    /// Ask before tools that are not explicitly allowed.
+    Ask,
+    /// Allow low-risk read-only tools; ask for risky or unknown tools.
+    Auto,
+    /// Let the engine run with its native bypass/yolo mode.
+    Bypass,
+}
+
+impl PermissionMode {
+    /// Stable string id for config files, CLI flags, and hook command args.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Auto => "auto",
+            Self::Bypass => "bypass",
+        }
+    }
+}
+
 /// Static configuration for a role, supplied to an adapter at spawn time.
 #[derive(Debug, Clone)]
 pub struct RoleConfig {
@@ -66,6 +93,12 @@ pub struct RoleConfig {
     /// Maximum dollar amount the engine may spend on this session before
     /// the adapter forces a `RoleStopped { reason: Budget }`.
     pub budget_usd: f64,
+    /// Permission mode applied to this role's tool calls.
+    pub permission_mode: PermissionMode,
+    /// Optional path to the session policy file used by hook-backed
+    /// adapters. `None` means no session-level `/allow` or `/deny`
+    /// overrides are available.
+    pub permission_policy_path: Option<PathBuf>,
 }
 
 /// A live handle to a running role: send the role new prompts, observe its
@@ -91,6 +124,46 @@ pub struct RoleHandle {
     /// waiter. REPL commands use this instead of relying on channel
     /// close / `kill_on_drop` side effects.
     pub stop_tx: oneshot::Sender<crate::crep::StopReason>,
+    #[allow(
+        dead_code,
+        reason = "kept alive only for Drop side-effects such as temp hook settings cleanup"
+    )]
+    _tempfiles: Vec<tempfile::NamedTempFile>,
+}
+
+impl RoleHandle {
+    /// Construct a role handle without extra adapter-owned tempfiles.
+    #[must_use]
+    pub fn new(
+        role: String,
+        engine: Engine,
+        tx_user: mpsc::Sender<UserMessage>,
+        rx_events: mpsc::Receiver<CrepEvent>,
+        stop_tx: oneshot::Sender<crate::crep::StopReason>,
+    ) -> Self {
+        Self::new_with_tempfiles(role, engine, tx_user, rx_events, stop_tx, Vec::new())
+    }
+
+    /// Construct a role handle and keep adapter-owned tempfiles alive for
+    /// the handle's lifetime.
+    #[must_use]
+    pub fn new_with_tempfiles(
+        role: String,
+        engine: Engine,
+        tx_user: mpsc::Sender<UserMessage>,
+        rx_events: mpsc::Receiver<CrepEvent>,
+        stop_tx: oneshot::Sender<crate::crep::StopReason>,
+        tempfiles: Vec<tempfile::NamedTempFile>,
+    ) -> Self {
+        Self {
+            role,
+            engine,
+            tx_user,
+            rx_events,
+            stop_tx,
+            _tempfiles: tempfiles,
+        }
+    }
 }
 
 /// A user-originated message routed to a role's session.
@@ -205,6 +278,24 @@ mod tests {
         };
         let toml_text = toml::to_string(&sample).unwrap();
         assert!(toml_text.contains("engine = \"codex\""), "got: {toml_text}");
+        let parsed: Sample = toml::from_str(&toml_text).unwrap();
+        assert_eq!(sample, parsed);
+    }
+
+    #[test]
+    fn permission_mode_lowercase_in_config_toml_form() {
+        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+        struct Sample {
+            permission_mode: PermissionMode,
+        }
+        let sample = Sample {
+            permission_mode: PermissionMode::Auto,
+        };
+        let toml_text = toml::to_string(&sample).unwrap();
+        assert!(
+            toml_text.contains("permission_mode = \"auto\""),
+            "got: {toml_text}"
+        );
         let parsed: Sample = toml::from_str(&toml_text).unwrap();
         assert_eq!(sample, parsed);
     }

@@ -7,6 +7,9 @@ default_engine = "cc"
 # Default model id; engine-specific (e.g. "opus" for cc, "o3" for codex).
 # default_model = "opus"
 
+# Default permission mode for tools: ask | auto | bypass.
+permission_mode = "ask"
+
 # Per-role budget cap in USD, fed to each engine's native budget flag.
 budget_per_role_usd = 0.50
 
@@ -19,3 +22,4 @@ host_role = "host"
 [roles.host]
 # engine = "cc"
 # model = "opus"
+# permission_mode = "ask"

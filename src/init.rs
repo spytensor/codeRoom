@@ -1331,6 +1331,12 @@ fn render_config(roles: &[RolePlan]) -> String {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
+        "# Default permission mode for tools: ask | auto | bypass."
+    );
+    let _ = writeln!(out, "permission_mode = \"ask\"");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
         "# Per-role budget cap in USD, fed to each engine's native budget flag."
     );
     let _ = writeln!(out, "budget_per_role_usd = 0.50");
@@ -1346,6 +1352,13 @@ fn render_config(roles: &[RolePlan]) -> String {
         let _ = writeln!(out, "[roles.{}]", role.name);
         if role.engine != DEFAULT_ENGINE {
             let _ = writeln!(out, "engine = \"{}\"", role.engine.as_str());
+        }
+        if matches!(role.engine, Engine::Codex | Engine::Gemini) {
+            let _ = writeln!(
+                out,
+                "# This engine is bypass-only until its approval bridge is supervised."
+            );
+            let _ = writeln!(out, "permission_mode = \"bypass\"");
         }
         let _ = writeln!(out);
     }
@@ -1459,6 +1472,7 @@ fn detect_installed_engines() -> InstalledEngines {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapter::PermissionMode;
     use crate::config::{Config, RoleEntry};
     use pretty_assertions::assert_eq;
     use std::collections::HashMap;
@@ -1779,6 +1793,7 @@ enter writes · esc goes back · q aborts
         Config {
             default_engine,
             default_model: default_model.map(ToOwned::to_owned),
+            permission_mode: PermissionMode::Ask,
             budget_per_role_usd: 0.50,
             host_role: "host".into(),
             roles: HashMap::from([("host".into(), RoleEntry::default())]),
