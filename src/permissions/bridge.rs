@@ -290,6 +290,76 @@ async fn write_response(
     writer.flush().await
 }
 
+/// Async client used by in-process adapter tasks (codex's MCP receive
+/// loop, etc.) to ask the same listener for a permission decision. The
+/// hook subprocess uses [`request_decision_blocking`]; both paths share
+/// the wire format so the listener doesn't care which one it answered.
+///
+/// Pass the bridge socket path explicitly here since adapter tasks know
+/// it from `RoleConfig::permission_socket_path` and shouldn't depend on
+/// process-global env state.
+pub async fn request_decision_async(
+    socket_path: &Path,
+    role: &str,
+    tool: &str,
+    input: &Value,
+    reason: &str,
+) -> Result<BridgeResponse, BridgeError> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader};
+
+    let mut stream = tokio::net::UnixStream::connect(socket_path)
+        .await
+        .map_err(|error| BridgeError::Io(format!("connecting {socket_path:?}: {error}")))?;
+
+    let request = BridgeRequest {
+        v: PROTOCOL_VERSION,
+        role: role.to_owned(),
+        tool: tool.to_owned(),
+        input: input.clone(),
+        reason: reason.to_owned(),
+    };
+    let mut send_buf = serde_json::to_vec(&request)
+        .map_err(|error| BridgeError::Io(format!("serializing permission request: {error}")))?;
+    send_buf.push(b'\n');
+    stream
+        .write_all(&send_buf)
+        .await
+        .map_err(|error| BridgeError::Io(format!("writing request: {error}")))?;
+    stream
+        .flush()
+        .await
+        .map_err(|error| BridgeError::Io(format!("flushing request: {error}")))?;
+
+    let (read_half, _) = stream.into_split();
+    let mut reader = TokioBufReader::new(read_half).lines();
+    let line = match tokio::time::timeout(READ_TIMEOUT, reader.next_line()).await {
+        Ok(Ok(Some(line))) => line,
+        Ok(Ok(None)) => {
+            return Err(BridgeError::Protocol(
+                "permission bridge closed without sending a response".to_owned(),
+            ));
+        }
+        Ok(Err(error)) => {
+            return Err(BridgeError::Io(format!("reading response: {error}")));
+        }
+        Err(_) => {
+            return Err(BridgeError::Io(
+                "permission bridge response timed out".to_owned(),
+            ))
+        }
+    };
+
+    let response: BridgeResponse = serde_json::from_str(line.trim_end_matches('\n'))
+        .map_err(|error| BridgeError::Protocol(format!("decoding response: {error}")))?;
+    if response.v != PROTOCOL_VERSION {
+        return Err(BridgeError::Protocol(format!(
+            "unsupported response protocol version {}",
+            response.v
+        )));
+    }
+    Ok(response)
+}
+
 /// Synchronous client used by the hook subprocess. Connects to the
 /// socket pointed at by `CODEROOM_PERMISSION_SOCKET`, sends a request,
 /// reads one response. Returns [`BridgeError::NoSocket`] if the env var
