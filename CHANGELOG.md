@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (v0.2 PR b — trust + interrupt)
+
+- **Deleted `PER_TURN_TIMEOUT`.** The REPL no longer kills a role's
+  turn after 5 minutes of wall-clock. Modern Claude / Codex / Gemini
+  models self-terminate; the wrapper does not adjudicate timing. Long
+  security scans and refactors that legitimately take 10–30 minutes
+  now run to completion. The `RoleStopped { reason: "timed_out" }`
+  variant is retired (kept on the wire for v0.1 log replay).
+- **Ctrl-C is two-press now.** First press cancels every in-flight
+  turn (each role's `interrupt_tx` fires). The REPL stays. A second
+  press within 2 seconds force-stops all roles and exits — the
+  v0.1 single-press behaviour. Documented in splash + `docs/architecture.md`.
+- **Codex stdio idle watchdog bumped from 6 to 10 minutes** and
+  reframed in code comments as a "stdio protocol watchdog" (per
+  `docs/v0.2-trust-and-interrupt.md` § B): fires only on engine
+  silence, not on slow-but-active model work. cc and gemini idle
+  watchdogs are scoped to PR c since their cancel paths already
+  terminate via `stop_tx`.
+
+### Added (v0.2 PR b — trust + interrupt)
+
+- **`/halt` and `/halt @role`** at the prompt. `/halt` cancels every
+  in-flight turn; `/halt @role` cancels just one. Roles stay alive —
+  only the turn ends. Plumbed through `interrupt_tx` to all three
+  adapters: codex (MCP `notifications/cancelled`), gemini (SIGTERM
+  the per-turn child), cc (emit `TurnInterrupted` for the drain to
+  honour; cc subprocess keeps running per § F.1's spike-pending plan).
+- **Cancel SLO of 5 seconds.** If an adapter does not produce a
+  turn-final event within 5s of `/halt` or Ctrl-C, the REPL escalates
+  by removing the role and force-stopping its process via `stop_tx`,
+  with a clear diagnostic. Per `docs/v0.2-trust-and-interrupt.md` § H.1.
+- **Adapters emit `CrepEvent::TurnInterrupted`** on cancel: codex
+  detects the user-cancel branch via a shared flag and emits the
+  event instead of an error `RoleSpoke`; gemini flushes its streaming
+  accumulator into `partial_text` and parses `partial_mentions`
+  (REPL surfaces these as a hint but never auto-routes them per
+  § H.3); cc emits the event directly so the drain unblocks even
+  while the cc subprocess keeps running.
+- **`docs/architecture.md` constitution amendments** in lockstep
+  with PR b (§ K): Role Invariance Principle bullet 2 lists
+  `/halt`/`/stop`/`/refresh` with auto-routing-as-delegation
+  footnote; CREP table covers all v0.2 events; hop-depth limit
+  restated per `thread_id`; REPL command list adds `/halt` and
+  Ctrl-C two-press.
+
 ### Added
 
 - v0.2 plumbing **(wire format only — no producers yet; PR b lights

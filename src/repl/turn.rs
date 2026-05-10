@@ -288,6 +288,37 @@ pub(super) async fn drain_one_turn(
                             render_event(&event, host_role);
                             true
                         }
+                        // `TurnInterrupted` is a turn boundary in v0.2:
+                        // adapters emit it when a user `/halt` or
+                        // Ctrl-C cancellation reaches them. The role
+                        // process stays alive — only the current turn
+                        // ends. Surface partial mentions for the user
+                        // (per `docs/v0.2-trust-and-interrupt.md` § H.3
+                        // they are NOT auto-routed) and finalize the
+                        // WorkCard as Interrupted.
+                        CrepEvent::TurnInterrupted {
+                            role: interrupted,
+                            partial_mentions,
+                            ..
+                        } if interrupted == role => {
+                            let card = work
+                                .lock()
+                                .expect("turn work mutex poisoned")
+                                .interrupted_card("halted by user");
+                            work::render_card(&card);
+                            render_event(&event, host_role);
+                            if !partial_mentions.is_empty() {
+                                let names = partial_mentions
+                                    .iter()
+                                    .map(|n| format!("@{n}"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                output::hint(format!(
+                                    "partial reply mentioned {names} (not dispatched)"
+                                ));
+                            }
+                            true
+                        }
                         _ => {
                             render_event(&event, host_role);
                             false

@@ -548,6 +548,8 @@ pub(super) fn print_help(cfg: &Config) {
     println!("  /allow <tool>       allow a tool for this session");
     println!("  /deny <tool>        deny a tool for this session");
     println!("  /stop <role>        terminate a role's subprocess");
+    println!("  /halt [<role>]      interrupt the in-flight turn; role stays alive");
+    println!("  Ctrl-C              like /halt; second press within 2s exits REPL");
     println!("  /help               this help");
     println!("  /exit, /quit        leave the REPL");
     println!();

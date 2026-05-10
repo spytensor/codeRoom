@@ -33,7 +33,12 @@ Concretely, v0.1 enforces this by construction:
   passes through the engine's permission contract, which the wrapper gates.
 - **The user is the only routing source.** Roles can `@` each other in
   their replies, but the user alone introduces new threads and can
-  `/stop` or `/refresh` any role at any time.
+  `/halt`, `/stop`, or `/refresh` any role at any time. (v0.2 amendment:
+  an auto-routed `@<peer>` mention is delegation *within* a thread, not
+  a new thread; `thread_id` makes that explicit. v0.2 adds `/halt` for
+  turn-level cancellation that keeps the role process alive — see
+  `docs/v0.2-trust-and-interrupt.md` § E. `/stop` retains its v0.1
+  process-kill semantics.)
 - **Journal citations are mandatory.** A role's "what I learned today" is
   rejected without a transcript anchor or repo file path. Roles cannot
   self-promote belief into long-term memory.
@@ -168,11 +173,19 @@ these. UI, message bus, and patch logic only ever see CREP.
 | Event              | When fired                                       | Key fields                                       |
 | ------------------ | ------------------------------------------------ | ------------------------------------------------ |
 | `RoleStarted`      | Subprocess up, system prompt loaded              | role, engine, model, session_id, priors_hash     |
-| `RoleSpoke`        | Role emitted a final assistant turn              | role, text, mentions[], cost_usd, cache_read     |
-| `ToolCallProposed` | PreToolUse fired                                 | role, tool_name, tool_input, tool_use_id         |
-| `ToolCallExecuted` | PostToolUse fired                                | role, tool_use_id, ok, output_summary            |
-| `PermissionDenied` | Wrapper denied via PreToolUse                    | role, tool_name, tool_input, reason              |
-| `RoleStopped`      | Subprocess exited or `/refresh` invoked          | role, reason: completed/refreshed/crashed/budget |
+| `TurnDispatched`   | (v0.2) REPL fired a turn at a role               | role, turn_id, thread_id, parent_turn_id, queue_position |
+| `RoleSpoke`        | Role emitted a final assistant turn              | role, text, mentions[], cost_usd, cache_read, turn_id, thread_id |
+| `TurnInterrupted`  | (v0.2) `/halt` or watchdog cancelled the turn    | role, turn_id, thread_id, source, partial_text, partial_mentions |
+| `ToolCallProposed` | PreToolUse fired                                 | role, tool_name, tool_input, tool_use_id, turn_id, thread_id |
+| `ToolCallExecuted` | PostToolUse fired                                | role, tool_use_id, ok, output_summary, turn_id, thread_id |
+| `PermissionDenied` | Wrapper denied via PreToolUse                    | role, tool_name, tool_input, reason, turn_id, thread_id |
+| `RoleStopped`      | Subprocess exited or `/refresh` invoked          | role, reason: completed/refreshed/crashed/budget, turn_id (Some when stopped during a turn) |
+
+v0.2 amendment: `RoleStopped.reason="timed_out"` is retired alongside
+the wall-clock `PER_TURN_TIMEOUT` (deleted in PR b). Turn-level
+interruption is its own event — `TurnInterrupted` — so a halted turn
+no longer collapses with a crashed role. The variant stays on the
+wire for v0.1 log replay only.
 
 `RoleSpoke.mentions` is the parsed list of `@x` references found in `text`.
 The wrapper uses this to route briefs.
@@ -326,7 +339,7 @@ Raw CREP JSONL per role per session. Never auto-loaded — used for forensics,
 | Brief loses thread context (HIPAA)   | Thread sticky: rolling 200-token constraint summary auto-prepended on every cross-role route. User-emphasized statements ("we use…", "must…") seed it. |
 | Journal hallucination compounding    | JSON-schema-enforced citations on every `learned` entry; unverified entries quarantined |
 | Patch directory bloat                | Hard 50-cap per role + FIFO archive at v0.1               |
-| Routing loops (`@a` ↔ `@b` ↔ `@a`)   | Per-thread hop-depth counter. ≥3 cross-role hops triggers escalation message back to user |
+| Routing loops (`@a` ↔ `@b` ↔ `@a`)   | Per-thread hop-depth counter (counted on `thread_id`). ≥3 cross-role hops triggers escalation message back to user. (v0.2: with parallel turns, sibling hops on the same `thread_id` count together — `A → B` and `A → C` both add to the same thread's depth.) |
 | Permission gate fail-open            | Hook script defaults to deny on any error; wrapper supervises hook process and treats non-zero exit without decision-file as deny |
 | Concurrency / SIGINT mid-tool        | Each role's tool calls wrapped in `.coderoom/locks/<role>.inflight`. On startup, stale inflight markers put the role in recovery mode (no new tool calls until user acknowledges) |
 | Token cost runaway                   | `--max-budget-usd` ceiling per engine call. Wrapper-tracked daily aggregate per role with soft warning |
@@ -359,12 +372,19 @@ cr cost                          # cost breakdown per role since YYYY-MM-DD
 
 /patch <role> <text>             # save correction
 /refresh <role>                  # tear down + respawn from priors+patches+journal
-/stop <role>
+/stop <role>                     # terminate the role's subprocess (v0.1 semantics)
+/halt                            # (v0.2) interrupt every in-flight turn; roles stay alive
+/halt <role>                     # (v0.2) interrupt one role's in-flight turn
 /transcript <role>               # paginate latest archive
 /host <role>                     # switch host for the current session only
 /help
 /exit
 ```
+
+**Ctrl-C semantics (v0.2):** first press behaves like bare `/halt` —
+cancels all in-flight turns and the REPL stays. A second press within
+2 seconds force-stops every role and exits the REPL. Per
+`docs/v0.2-trust-and-interrupt.md` § E.
 
 ### Out of scope for v0.1
 
