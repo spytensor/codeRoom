@@ -42,6 +42,10 @@ pub enum Command {
     Deny(String),
     /// `/stop <role>` — terminate the named role's subprocess.
     Stop(String),
+    /// `/halt` (no arg) interrupts the current in-flight turn for every
+    /// running role. `/halt @role` interrupts that role only. Roles
+    /// stay alive — only the turn ends. v0.2 § E.
+    Halt(Option<String>),
     /// `/host <role>` — session-only host role swap.
     Host(String),
     /// `/help` — print the help banner.
@@ -67,6 +71,14 @@ pub fn parse_line(input: &str) -> Command {
             "exit" | "quit" => Command::Exit,
             "stop" if !arg.is_empty() => {
                 Command::Stop(arg.strip_prefix('@').unwrap_or(arg).to_owned())
+            }
+            "halt" => {
+                let role = arg.strip_prefix('@').unwrap_or(arg).trim();
+                if role.is_empty() {
+                    Command::Halt(None)
+                } else {
+                    Command::Halt(Some(role.to_owned()))
+                }
             }
             "host" if !arg.is_empty() => {
                 Command::Host(arg.strip_prefix('@').unwrap_or(arg).to_owned())

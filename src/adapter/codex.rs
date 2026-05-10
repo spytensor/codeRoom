@@ -52,16 +52,22 @@ const CHANNEL_CAPACITY: usize = 32;
 /// MCP protocol version we initialize with. Confirmed in the L3 spike.
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
-// **Idle** timeout: how long we wait without seeing ANY codex/event for our
-// in-flight request before declaring the RPC stuck. Codex emits a steady
-// stream of notifications during a real turn (exec_command_begin/end,
-// agent_message_content_delta, token_count, …), so silence this long means
-// the server genuinely wedged. We deliberately do NOT cap total wall-clock
-// time — long security scans or refactors can run 10+ minutes legitimately,
-// and the REPL's per-turn timeout is the user-visible cap for interactive
-// sessions. This timer is the safety net for headless callers and for the
-// "codex froze mid-turn" case where REPL idle-cap should also kick in.
-const RPC_IDLE_TIMEOUT: Duration = Duration::from_secs(6 * 60);
+// **Stdio protocol watchdog** — how long we wait without seeing ANY
+// `codex/event` for our in-flight `tools/call` before declaring the
+// MCP server wedged.
+//
+// Per `docs/v0.2-trust-and-interrupt.md` § B this is **not** a model
+// timing decision: codex emits a steady stream of notifications
+// during a real turn (`exec_command_begin/end`,
+// `agent_message_content_delta`, `token_count`, …), so silence this
+// long means the stdio bridge or the codex process itself is stuck —
+// not "the model is taking too long to think." A real model
+// taking 25 minutes to plan a refactor is fine; we never cap that.
+//
+// Bumped from 6 to 10 minutes after PR a feedback: real codex turns
+// can be quiet for several minutes mid-reasoning before producing
+// the next visible event, and 6 minutes was clipping legitimate runs.
+const RPC_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Adapter that drives Codex's `mcp-server` mode.
 #[derive(Debug, Clone)]
@@ -156,6 +162,13 @@ impl EngineAdapter for CodexAdapter {
         // *current* turn, not an `initialize` id or a stale id sitting
         // in `pending` during a deferred cleanup window.
         let current_tools_call: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
+        // Set by `drain_codex_interrupts` when it sends a
+        // `notifications/cancelled`; read by `write_loop` to decide
+        // whether the resulting RPC error is a user-requested halt
+        // (emit `TurnInterrupted`) or a real protocol failure (emit
+        // the existing error `RoleSpoke`). Reset on response so a
+        // halt only attaches to the turn it was meant for.
+        let cancel_requested: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
         // Spawn the JSON-RPC reader: parses each line, dispatches
         // responses by id to the matching pending request, and routes
@@ -208,22 +221,24 @@ impl EngineAdapter for CodexAdapter {
             rx_user,
             client,
             Arc::clone(&current_tools_call),
+            Arc::clone(&cancel_requested),
             CodexWriteRuntime {
                 base: runtime,
                 internal_stop: internal_stop_tx,
             },
         ));
 
-        // Turn-cancellation drain. On every interrupt request, look up
-        // the in-flight `tools/call` request id from `current_tools_call`
-        // (published by `write_loop` before the request is sent) and
-        // emit `notifications/cancelled` per MCP 2024-11-05. PR a wires
-        // the path; the REPL does not yet call `interrupt_tx`, so this
-        // code stays dormant until PR b lights up `/halt`.
+        // Turn-cancellation drain. On every interrupt request:
+        // 1. Set the `cancel_requested` flag so the next RPC error in
+        //    `write_loop` is recognised as a user halt rather than a
+        //    protocol failure.
+        // 2. Look up the in-flight `tools/call` request id and emit
+        //    `notifications/cancelled` per MCP 2024-11-05.
         tokio::spawn(drain_codex_interrupts(
             config.name.clone(),
             interrupt_rx,
             Arc::clone(&current_tools_call),
+            Arc::clone(&cancel_requested),
             Arc::clone(&writer),
         ));
 
@@ -251,6 +266,7 @@ async fn drain_codex_interrupts(
     role: String,
     mut rx: mpsc::Receiver<TurnId>,
     current_tools_call: Arc<Mutex<Option<u64>>>,
+    cancel_requested: Arc<AtomicBool>,
     writer: Arc<Mutex<ChildStdin>>,
 ) {
     while let Some(turn_id) = rx.recv().await {
@@ -263,6 +279,10 @@ async fn drain_codex_interrupts(
                     request_id = id,
                     "codex notifications/cancelled"
                 );
+                // Flag set BEFORE the cancel goes out so a quick
+                // RPC error reaching write_loop already sees the
+                // "this is a user halt" signal.
+                cancel_requested.store(true, Ordering::SeqCst);
                 if let Err(error) = send_codex_cancellation(&writer, id).await {
                     warn!(role = %role, %error, "codex cancellation notification write failed");
                 }
@@ -1063,6 +1083,10 @@ async fn drain_stderr(role: String, stderr: ChildStderr) {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "all 8 are intrinsic state for the loop; bundling them into a struct only moves the noise"
+)]
 async fn write_loop(
     priors_text: String,
     budget_usd: f64,
@@ -1070,6 +1094,7 @@ async fn write_loop(
     mut rx: mpsc::Receiver<UserMessage>,
     client: RpcClient,
     current_tools_call: Arc<Mutex<Option<u64>>>,
+    cancel_requested: Arc<AtomicBool>,
     runtime: CodexWriteRuntime,
 ) {
     let approval_policy = codex_approval_policy(permission_mode);
@@ -1130,6 +1155,27 @@ async fn write_loop(
                     runtime.base.stopping.store(true, Ordering::SeqCst);
                     let _ = runtime.internal_stop.try_send(StopReason::TimedOut);
                     break;
+                }
+                // If the user halted this turn, the RPC error is
+                // expected (codex closed the pending request after
+                // our `notifications/cancelled` reached it). Emit
+                // `TurnInterrupted` instead of an error `RoleSpoke`
+                // so the REPL renders this as "halted by you", not
+                // "codex broke."
+                if cancel_requested.swap(false, Ordering::SeqCst) {
+                    let _ = runtime
+                        .base
+                        .events
+                        .send(CrepEvent::TurnInterrupted {
+                            role: runtime.base.role.clone(),
+                            turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                            thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                            source: crate::crep::InterruptSource::UserHalt,
+                            partial_text: None,
+                            partial_mentions: Vec::new(),
+                        })
+                        .await;
+                    continue;
                 }
                 let text = format!("[codex error: {error}]");
                 let _ = runtime

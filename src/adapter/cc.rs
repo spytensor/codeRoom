@@ -178,13 +178,22 @@ impl EngineAdapter for CcAdapter {
             turn_done_rx,
         ));
 
-        // Turn-interrupt drain: PR a stub. cc cancellation path is gated
-        // on `spike/L4-cc-interrupt.sh` (see docs/v0.2-trust-and-interrupt.md
-        // §F.1). Until the spike confirms a stream-json `interrupt` verb,
-        // this task only logs requested cancellations so the channel is
-        // bound and unit-testable. PR b promotes it to a real cancel
-        // path or falls back to `stop_tx` + respawn.
-        tokio::spawn(drain_interrupts_stub(config.name.clone(), interrupt_rx));
+        // Turn-interrupt drain. PR b's behaviour: emit a
+        // `TurnInterrupted` event so the REPL's drain unblocks
+        // immediately, but do NOT kill the cc subprocess — that's
+        // what `/refresh` is for. The cc session keeps running and
+        // its eventual `RoleSpoke` for the halted prompt will arrive
+        // late; the bus consumer renders it as a normal event. The
+        // streaming `{"type":"interrupt"}` verb stays gated on the
+        // PR a spike (`spike/L4-cc-interrupt.sh`) — until that spike
+        // ships in CI we don't risk pushing an unverified envelope
+        // onto cc's stdin. See `docs/v0.2-trust-and-interrupt.md`
+        // § F.1.
+        tokio::spawn(emit_cc_interrupt_events(
+            config.name.clone(),
+            interrupt_rx,
+            tx_events.clone(),
+        ));
 
         // Process waiter: emit a final RoleStopped when the subprocess exits.
         tokio::spawn(wait_child(config.name.clone(), child, tx_events, stop_rx));
@@ -201,13 +210,31 @@ impl EngineAdapter for CcAdapter {
     }
 }
 
-async fn drain_interrupts_stub(role: String, mut rx: mpsc::Receiver<TurnId>) {
+async fn emit_cc_interrupt_events(
+    role: String,
+    mut rx: mpsc::Receiver<TurnId>,
+    events: mpsc::Sender<CrepEvent>,
+) {
     while let Some(turn_id) = rx.recv().await {
         tracing::debug!(
             role = %role,
             turn_id = %turn_id,
-            "cc cancel_turn requested (stub — see PR b)"
+            "cc /halt: emitting TurnInterrupted (subprocess kept alive; spike-pending interrupt verb)"
         );
+        let _ = events
+            .send(CrepEvent::TurnInterrupted {
+                role: role.clone(),
+                turn_id: if turn_id.is_empty() {
+                    crate::turn::LEGACY_TURN_ID.to_owned()
+                } else {
+                    turn_id
+                },
+                thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                source: crate::crep::InterruptSource::UserHalt,
+                partial_text: None,
+                partial_mentions: Vec::new(),
+            })
+            .await;
     }
 }
 

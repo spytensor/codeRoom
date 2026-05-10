@@ -261,13 +261,34 @@ impl GeminiLoop {
             .await;
             match outcome {
                 GeminiTurnOutcome::Stopped(reason) => break reason,
-                GeminiTurnOutcome::Interrupted { partial_text: _ } => {
-                    // PR a captures the partial bytes via the accumulator
-                    // but does not yet emit `TurnInterrupted` — that
-                    // event needs the dispatched turn_id, which arrives
-                    // through `UserMessage` plumbing in PR b. The role
-                    // stays alive for the next dispatch.
-                    debug!(role = %self.role, "gemini turn interrupted; partial bytes discarded (pending PR b)");
+                GeminiTurnOutcome::Interrupted { partial_text } => {
+                    // Emit a turn-boundary event so the REPL's drain
+                    // unblocks when the user halts. We don't yet know
+                    // the dispatched turn_id (UserMessage will carry
+                    // it once parallel dispatch lands), so tag with
+                    // the legacy empty-string id; drain matches on
+                    // role + variant, not on id.
+                    let trimmed = partial_text.trim().to_owned();
+                    let partial_mentions = if trimmed.is_empty() {
+                        Vec::new()
+                    } else {
+                        crate::adapter::cc::parse_mentions(&trimmed)
+                    };
+                    let _ = self
+                        .events
+                        .send(CrepEvent::TurnInterrupted {
+                            role: self.role.clone(),
+                            turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                            thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                            source: crate::crep::InterruptSource::UserHalt,
+                            partial_text: if trimmed.is_empty() {
+                                None
+                            } else {
+                                Some(trimmed)
+                            },
+                            partial_mentions,
+                        })
+                        .await;
                 }
                 GeminiTurnOutcome::Completed(Ok(turn)) => {
                     for event in turn.events {

@@ -226,6 +226,13 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
 
+    // Tracks the timestamp of the most recent Ctrl-C so a second
+    // press within `CTRL_C_DOUBLE_PRESS_WINDOW` can be treated as
+    // "exit REPL" while the first press only halts the in-flight
+    // turn. Lives across drain calls so the window is honoured even
+    // when the user presses Ctrl-C in two consecutive turns.
+    let last_ctrl_c: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
+
     // Bridge receiver is owned by the input loop while the user is at
     // the prompt and re-borrowed by `drain_one_turn` during a turn.
     // Held as Option so it can be moved into the blocking input thread
@@ -312,9 +319,11 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                     &coderoom_dir,
                     &role,
                     &cfg.host_role,
+                    &last_ctrl_c,
                 )
                 .await;
             }
+            Command::Halt(target) => handle_halt(&roles, target.as_deref()).await,
             Command::Welcome => {
                 print_home(&cfg, &coderoom_dir, project_root, false);
             }
@@ -363,6 +372,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                     &role,
                     &text,
                     &cfg.host_role,
+                    &last_ctrl_c,
                 )
                 .await?;
             }
@@ -391,6 +401,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                         &role,
                         &text,
                         &cfg.host_role,
+                        &last_ctrl_c,
                     )
                     .await?;
                 }
@@ -404,6 +415,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                     &host,
                     &text,
                     &cfg.host_role,
+                    &last_ctrl_c,
                 )
                 .await?;
             }
@@ -516,9 +528,11 @@ async fn send_and_drain(
     role: &str,
     text: &str,
     host_role: &str,
+    last_ctrl_c: &Arc<Mutex<Option<std::time::Instant>>>,
 ) -> Result<()> {
     let Some(captured) =
-        drain_one_turn_with_timeout(roles, rx, bridge_rx, role, text, host_role).await?
+        drain_one_turn_with_timeout(roles, rx, bridge_rx, role, text, host_role, last_ctrl_c)
+            .await?
     else {
         return Ok(());
     };
@@ -573,9 +587,17 @@ async fn send_and_drain(
                 .with(output::DIM)
                 .italic(),
         );
-        if drain_one_turn_with_timeout(roles, rx, bridge_rx, mention, &brief, host_role)
-            .await?
-            .is_none()
+        if drain_one_turn_with_timeout(
+            roles,
+            rx,
+            bridge_rx,
+            mention,
+            &brief,
+            host_role,
+            last_ctrl_c,
+        )
+        .await?
+        .is_none()
         {
             break;
         }
@@ -590,61 +612,134 @@ async fn drain_one_turn_with_timeout(
     role: &str,
     text: &str,
     host_role: &str,
+    last_ctrl_c: &Arc<Mutex<Option<std::time::Instant>>>,
 ) -> Result<Option<CapturedTurn>> {
-    let Some(tx_user) = roles.get(role).map(|running| running.tx_user.clone()) else {
+    let Some((tx_user, interrupt_tx)) = roles
+        .get(role)
+        .map(|running| (running.tx_user.clone(), running.interrupt_tx.clone()))
+    else {
         output::bad(format!("no such role: @{role}"));
         return Ok(None);
     };
     let work_state = Arc::new(Mutex::new(TurnWork::new(role, host_role, text)));
 
-    let result = tokio::select! {
+    let drain = drain_one_turn(
+        tx_user,
+        rx,
+        bridge_rx,
+        role,
+        text,
+        host_role,
+        Arc::clone(&work_state),
+    );
+    tokio::pin!(drain);
+
+    tokio::select! {
         biased;
         signal = tokio::signal::ctrl_c() => {
             signal.context("installing Ctrl-C handler")?;
-            let card = work_state
-                .lock()
-                .expect("turn work mutex poisoned")
-                .interrupted_card("interrupted by Ctrl-C");
-            render_card(&card);
-            output::system("interrupt received; stopping roles...");
-            shutdown_all_roles(roles, StopReason::Crashed);
-            anyhow::bail!("interrupted");
+            let now = std::time::Instant::now();
+            let was_recent = {
+                let mut guard = last_ctrl_c.lock().expect("ctrl-c mutex poisoned");
+                let recent = guard
+                    .is_some_and(|prev| now.duration_since(prev) < CTRL_C_DOUBLE_PRESS_WINDOW);
+                *guard = Some(now);
+                recent
+            };
+            if was_recent {
+                // Second press in window: spec § H.2 — force stop_tx
+                // on every still-uninterrupted role and exit.  We don't
+                // wait for in-flight cancels.
+                let card = work_state
+                    .lock()
+                    .expect("turn work mutex poisoned")
+                    .interrupted_card("Ctrl-C twice — exiting REPL");
+                render_card(&card);
+                output::system("Ctrl-C twice; stopping all roles");
+                shutdown_all_roles(roles, StopReason::Crashed);
+                anyhow::bail!("interrupted");
+            }
+            output::system(format!(
+                "Ctrl-C → halting @{role} (press again within {}s to exit)",
+                CTRL_C_DOUBLE_PRESS_WINDOW.as_secs()
+            ));
+            // Fire interrupt; wait for the adapter to wrap up (its
+            // `TurnInterrupted` or RoleSpoke), bounded by the cancel SLO
+            // from § H.1.
+            let _ = interrupt_tx.send(crate::turn::LEGACY_TURN_ID.to_owned()).await;
+            let escalate_at = tokio::time::sleep(CANCEL_SLO);
+            tokio::pin!(escalate_at);
+            tokio::select! {
+                biased;
+                result = &mut drain => result,
+                () = &mut escalate_at => {
+                    let card = work_state
+                        .lock()
+                        .expect("turn work mutex poisoned")
+                        .interrupted_card(format!(
+                            "halt SLO ({}s) elapsed; killing @{role}",
+                            CANCEL_SLO.as_secs()
+                        ));
+                    render_card(&card);
+                    output::bad(format!(
+                        "@{role} did not respond to halt within {}s; killing role",
+                        CANCEL_SLO.as_secs()
+                    ));
+                    if let Some(running) = roles.remove(role) {
+                        stop_running_role(role, running, StopReason::Crashed);
+                    }
+                    Ok(None)
+                }
+            }
         }
-        result = tokio::time::timeout(
-        PER_TURN_TIMEOUT,
-            drain_one_turn(
-                tx_user,
-                rx,
-                bridge_rx,
-                role,
-                text,
-                host_role,
-                Arc::clone(&work_state),
-            ),
-        ) => result,
-    };
-    if let Ok(result) = result {
-        result
-    } else {
-        let card = work_state
-            .lock()
-            .expect("turn work mutex poisoned")
-            .interrupted_card(format!("timed out after {}s", PER_TURN_TIMEOUT.as_secs()));
-        render_card(&card);
-        output::bad(format!(
-            "@{role} timed out after {}s; stopping role",
-            PER_TURN_TIMEOUT.as_secs()
-        ));
-        if let Some(running) = roles.remove(role) {
-            stop_running_role(role, running, StopReason::TimedOut);
-        }
-        Ok(None)
+        result = &mut drain => result,
     }
 }
 
-/// Maximum wall-clock time the REPL will wait for one role turn before
-/// returning control to the user and terminating the wedged role.
-const PER_TURN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// Window during which a second Ctrl-C press is treated as "exit
+/// REPL" rather than "halt this turn." Per
+/// `docs/v0.2-trust-and-interrupt.md` § E.
+const CTRL_C_DOUBLE_PRESS_WINDOW: Duration = Duration::from_secs(2);
+
+/// Handle `/halt [@role]` from the prompt. Sends a turn-cancellation
+/// signal to every running role (or just one). Adapters route this
+/// through their `interrupt_tx`: codex emits MCP
+/// `notifications/cancelled`; gemini SIGTERMs the per-turn child;
+/// cc emits a `TurnInterrupted` event for the REPL drain to honour
+/// (the cc subprocess keeps running per `docs/v0.2-trust-and-interrupt.md`
+/// § F.1 fallback). When invoked between turns this is a near-no-op:
+/// the channel buffers the request and the next-turn drain picks it
+/// up, or the message is silently dropped if no turn arrives soon.
+async fn handle_halt(roles: &HashMap<String, RunningRole>, target: Option<&str>) {
+    let mut targets: Vec<&String> = if let Some(name) = target {
+        if !roles.contains_key(name) {
+            output::bad(format!("no such role: @{name}"));
+            return;
+        }
+        roles.keys().filter(|k| *k == name).collect()
+    } else {
+        roles.keys().collect()
+    };
+    targets.sort();
+    for name in targets {
+        if let Some(running) = roles.get(name) {
+            if let Err(error) = running
+                .interrupt_tx
+                .send(crate::turn::LEGACY_TURN_ID.to_owned())
+                .await
+            {
+                debug!(role = %name, %error, "interrupt channel closed");
+            }
+        }
+    }
+    let label = target.map_or_else(|| "all roles".to_owned(), |n| format!("@{n}"));
+    output::system(format!("/halt → {label}"));
+}
+
+/// Cancel SLO — how long the REPL waits for an adapter to honour an
+/// interrupt before escalating to a process kill via `stop_tx`.
+/// Per `docs/v0.2-trust-and-interrupt.md` § H.1.
+const CANCEL_SLO: Duration = Duration::from_secs(5);
 
 /// Prompt the named role to write a journal entry, capture the reply,
 /// and persist it under `.coderoom/journal/YYYY-MM-DD/<role>.md`.
@@ -659,6 +754,7 @@ async fn write_journal(
     coderoom_dir: &Path,
     role: &str,
     host_role: &str,
+    last_ctrl_c: &Arc<Mutex<Option<std::time::Instant>>>,
 ) {
     if !roles.contains_key(role) {
         output::bad(format!("no such role: @{role}"));
@@ -677,7 +773,8 @@ async fn write_journal(
     );
 
     let Ok(Some(captured)) =
-        drain_one_turn_with_timeout(roles, rx, bridge_rx, role, prompt, host_role).await
+        drain_one_turn_with_timeout(roles, rx, bridge_rx, role, prompt, host_role, last_ctrl_c)
+            .await
     else {
         output::bad(format!("@{role} did not produce a journal entry"));
         return;
