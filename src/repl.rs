@@ -1313,6 +1313,7 @@ async fn spawn_role(
         engine: _,
         tx_user,
         rx_events,
+        ..
     } = handle;
     spawn_event_forwarder(rname, rx_events, Arc::clone(bus));
     Ok(RunningRole {

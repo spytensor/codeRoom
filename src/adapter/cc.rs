@@ -33,12 +33,13 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use regex::Regex;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::mpsc;
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
 use crate::adapter::{
@@ -128,9 +129,12 @@ impl EngineAdapter for CcAdapter {
 
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
 
         let (tx_user, rx_user) = mpsc::channel::<UserMessage>(CHANNEL_CAPACITY);
         let (tx_events, rx_events) = mpsc::channel::<CrepEvent>(CHANNEL_CAPACITY);
+        let (turn_done_tx, turn_done_rx) = mpsc::channel::<()>(CHANNEL_CAPACITY);
+        let (stop_tx, stop_rx) = oneshot::channel::<StopReason>();
 
         // Stdout reader: parse stream-json → CREP.
         tokio::spawn(read_stdout(
@@ -138,19 +142,29 @@ impl EngineAdapter for CcAdapter {
             priors_hash,
             stdout,
             tx_events.clone(),
+            turn_done_tx,
+        ));
+        tokio::spawn(drain_stderr(config.name.clone(), stderr));
+
+        // Stdin writer: serialize user messages onto the engine's stdin,
+        // pacing prompts until the prior turn has produced a RoleSpoke or
+        // RoleStopped boundary.
+        tokio::spawn(write_stdin(
+            config.name.clone(),
+            rx_user,
+            stdin,
+            turn_done_rx,
         ));
 
-        // Stdin writer: serialize user messages onto the engine's stdin.
-        tokio::spawn(write_stdin(config.name.clone(), rx_user, stdin));
-
         // Process waiter: emit a final RoleStopped when the subprocess exits.
-        tokio::spawn(wait_child(config.name.clone(), child, tx_events));
+        tokio::spawn(wait_child(config.name.clone(), child, tx_events, stop_rx));
 
         Ok(RoleHandle {
             role: config.name,
             engine: Engine::Cc,
             tx_user,
             rx_events,
+            stop_tx,
         })
     }
 }
@@ -339,6 +353,7 @@ async fn read_stdout(
     priors_hash: String,
     stdout: ChildStdout,
     events: mpsc::Sender<CrepEvent>,
+    turn_done: mpsc::Sender<()>,
 ) {
     let mut lines = BufReader::new(stdout).lines();
     loop {
@@ -352,9 +367,16 @@ async fn read_stdout(
                     }
                 };
                 for event in translate(&role, &priors_hash, &value) {
+                    let is_turn_boundary = matches!(
+                        event,
+                        CrepEvent::RoleSpoke { .. } | CrepEvent::RoleStopped { .. }
+                    );
                     if events.send(event).await.is_err() {
                         debug!(role, "event receiver dropped; stopping reader");
                         return;
+                    }
+                    if is_turn_boundary {
+                        let _ = turn_done.send(()).await;
                     }
                 }
             }
@@ -370,7 +392,27 @@ async fn read_stdout(
     }
 }
 
-async fn write_stdin(role: String, mut rx: mpsc::Receiver<UserMessage>, mut stdin: ChildStdin) {
+async fn drain_stderr(role: String, stderr: ChildStderr) {
+    let mut lines = BufReader::new(stderr).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) if line.trim().is_empty() => {}
+            Ok(Some(line)) => warn!(role, line = %line, "claude stderr"),
+            Ok(None) => return,
+            Err(error) => {
+                warn!(role, %error, "error reading claude stderr");
+                return;
+            }
+        }
+    }
+}
+
+async fn write_stdin(
+    role: String,
+    mut rx: mpsc::Receiver<UserMessage>,
+    mut stdin: ChildStdin,
+    mut turn_done: mpsc::Receiver<()>,
+) {
     while let Some(msg) = rx.recv().await {
         match msg {
             UserMessage::Prompt(text) => {
@@ -390,6 +432,10 @@ async fn write_stdin(role: String, mut rx: mpsc::Receiver<UserMessage>, mut stdi
                     warn!(role, %error, "failed to flush stdin");
                     return;
                 }
+                if turn_done.recv().await.is_none() {
+                    debug!(role, "turn boundary channel closed; stopping stdin writer");
+                    return;
+                }
             }
             UserMessage::ToolDecision { tool_use_id, .. } => {
                 // PreToolUse hook integration arrives in a follow-up PR.
@@ -406,16 +452,43 @@ async fn write_stdin(role: String, mut rx: mpsc::Receiver<UserMessage>, mut stdi
     debug!(role, "user-message channel closed; closing stdin");
 }
 
-async fn wait_child(role: String, mut child: Child, events: mpsc::Sender<CrepEvent>) {
-    let reason = match child.wait().await {
-        Ok(status) if status.success() => StopReason::Completed,
-        Ok(_) => StopReason::Crashed,
-        Err(error) => {
-            warn!(role, %error, "error waiting on subprocess");
-            StopReason::Crashed
+async fn wait_child(
+    role: String,
+    mut child: Child,
+    events: mpsc::Sender<CrepEvent>,
+    stop_rx: oneshot::Receiver<StopReason>,
+) {
+    let reason = tokio::select! {
+        status = child.wait() => match status {
+            Ok(status) if status.success() => StopReason::Completed,
+            Ok(_) => StopReason::Crashed,
+            Err(error) => {
+                warn!(role, %error, "error waiting on subprocess");
+                StopReason::Crashed
+            }
+        },
+        requested = stop_rx => {
+            let reason = requested.unwrap_or(StopReason::Crashed);
+            terminate_child(&role, &mut child).await;
+            reason
         }
     };
     let _ = events.send(CrepEvent::RoleStopped { role, reason }).await;
+}
+
+async fn terminate_child(role: &str, child: &mut Child) {
+    if let Err(error) = child.start_kill() {
+        warn!(role, %error, "failed to start subprocess kill");
+        return;
+    }
+    match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => warn!(role, %error, "error waiting after subprocess kill"),
+        Err(_) => {
+            warn!(role, "subprocess did not exit promptly after kill signal");
+            let _ = child.kill().await;
+        }
+    }
 }
 
 #[cfg(test)]

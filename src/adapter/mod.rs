@@ -17,7 +17,7 @@ pub mod gemini;
 use std::path::PathBuf;
 
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::crep::CrepEvent;
 
@@ -87,6 +87,10 @@ pub struct RoleHandle {
     pub tx_user: mpsc::Sender<UserMessage>,
     /// Channel of CREP events emitted by this role.
     pub rx_events: mpsc::Receiver<CrepEvent>,
+    /// One-shot shutdown request consumed by the adapter's process
+    /// waiter. REPL commands use this instead of relying on channel
+    /// close / `kill_on_drop` side effects.
+    pub stop_tx: oneshot::Sender<crate::crep::StopReason>,
 }
 
 /// A user-originated message routed to a role's session.
