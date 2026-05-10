@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use coderoom::adapter::codex::CodexAdapter;
-use coderoom::adapter::{Engine, EngineAdapter, RoleConfig, UserMessage};
+use coderoom::adapter::{Engine, EngineAdapter, PermissionMode, RoleConfig, UserMessage};
 use coderoom::crep::CrepEvent;
 use tokio::time::timeout;
 
@@ -36,6 +36,8 @@ async fn codex_smoke_says_hello() {
         model: None,
         priors_path,
         budget_usd: 0.50,
+        permission_mode: PermissionMode::Bypass,
+        permission_policy_path: None,
     };
 
     let mut handle = adapter.start(config).await.expect("start");

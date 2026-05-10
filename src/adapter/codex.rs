@@ -11,11 +11,13 @@
 //!   the CC adapter's long-lived session, but functionally correct.
 //! - Codex exec lifecycle notifications are translated into best-effort
 //!   CREP tool events when the installed CLI emits them.
-//! - Approval policy remains `never` until CodeRoom can answer Codex
-//!   approval requests without hanging the MCP call.
+//! - Codex runs only with `permission_mode="bypass"` until CodeRoom can
+//!   answer Codex approval requests over MCP. `ask` / `auto` fail fast
+//!   instead of hanging inside a pending approval request.
 //!
 //! Multi-turn (resume / `codex-reply`), tool-call event mapping, and
-//! approval-policy delegation are scheduled for `feat/adapter-codex-v2`.
+//! wrapper-side approval request responses are scheduled for
+//! `feat/adapter-codex-v2`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -31,7 +33,8 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, warn};
 
 use crate::adapter::{
-    AdapterError, AdapterResult, Engine, EngineAdapter, RoleConfig, RoleHandle, UserMessage,
+    AdapterError, AdapterResult, Engine, EngineAdapter, PermissionMode, RoleConfig, RoleHandle,
+    UserMessage,
 };
 use crate::crep::{CrepEvent, StopReason};
 
@@ -79,6 +82,18 @@ impl EngineAdapter for CodexAdapter {
     }
 
     async fn start(&self, config: RoleConfig) -> AdapterResult<RoleHandle> {
+        if config.permission_mode != PermissionMode::Bypass {
+            return Err(AdapterError::Engine {
+                engine: Engine::Codex.as_str(),
+                message: format!(
+                    "Codex roles require permission_mode=\"bypass\"; \
+                     CodeRoom cannot yet answer Codex approval requests \
+                     in permission_mode=\"{}\"",
+                    config.permission_mode.as_str()
+                ),
+            });
+        }
+
         let priors_text = tokio::fs::read_to_string(&config.priors_path)
             .await
             .map_err(|source| AdapterError::PriorsRead {
@@ -155,13 +170,13 @@ impl EngineAdapter for CodexAdapter {
 
         tokio::spawn(wait_child(config.name.clone(), child, tx_events, stop_rx));
 
-        Ok(RoleHandle {
-            role: config.name,
-            engine: Engine::Codex,
+        Ok(RoleHandle::new(
+            config.name,
+            Engine::Codex,
             tx_user,
             rx_events,
             stop_tx,
-        })
+        ))
     }
 }
 
@@ -578,6 +593,28 @@ mod tests {
     fn display_model_does_not_show_placeholder_model() {
         assert_eq!(codex_display_model(None, Some("model")), "Codex default");
         assert_eq!(codex_display_model(None, Some("codex")), "Codex default");
+    }
+
+    #[tokio::test]
+    async fn start_rejects_non_bypass_permission_modes_before_spawn() {
+        let adapter = CodexAdapter::with_path(PathBuf::from("/definitely/not/codex"));
+        for permission_mode in [PermissionMode::Ask, PermissionMode::Auto] {
+            let err = adapter
+                .start(RoleConfig {
+                    name: "qa".into(),
+                    engine: Engine::Codex,
+                    model: None,
+                    priors_path: PathBuf::from("/missing/priors.md"),
+                    budget_usd: 0.50,
+                    permission_mode,
+                    permission_policy_path: None,
+                })
+                .await
+                .expect_err("codex non-bypass should fail before spawn");
+            let text = err.to_string();
+            assert!(text.contains("permission_mode=\"bypass\""), "{text}");
+            assert!(text.contains(permission_mode.as_str()), "{text}");
+        }
     }
 
     #[test]

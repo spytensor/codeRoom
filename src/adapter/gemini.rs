@@ -31,7 +31,8 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
 use crate::adapter::{
-    AdapterError, AdapterResult, Engine, EngineAdapter, RoleConfig, RoleHandle, UserMessage,
+    AdapterError, AdapterResult, Engine, EngineAdapter, PermissionMode, RoleConfig, RoleHandle,
+    UserMessage,
 };
 use crate::crep::{CrepEvent, StopReason};
 
@@ -80,6 +81,18 @@ impl EngineAdapter for GeminiAdapter {
     }
 
     async fn start(&self, config: RoleConfig) -> AdapterResult<RoleHandle> {
+        if config.permission_mode != PermissionMode::Bypass {
+            return Err(AdapterError::Engine {
+                engine: Engine::Gemini.as_str(),
+                message: format!(
+                    "Gemini roles require permission_mode=\"bypass\"; \
+                     CodeRoom cannot yet supervise Gemini tool approvals \
+                     in permission_mode=\"{}\"",
+                    config.permission_mode.as_str()
+                ),
+            });
+        }
+
         let prompt_mode =
             probe_gemini(&self.gemini_path)
                 .await
@@ -128,13 +141,13 @@ impl EngineAdapter for GeminiAdapter {
             .run(),
         );
 
-        Ok(RoleHandle {
-            role: config.name,
-            engine: Engine::Gemini,
+        Ok(RoleHandle::new(
+            config.name,
+            Engine::Gemini,
             tx_user,
             rx_events,
             stop_tx,
-        })
+        ))
     }
 }
 

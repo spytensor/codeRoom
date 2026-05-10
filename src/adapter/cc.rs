@@ -24,26 +24,29 @@
 //! - emit `ToolCallExecuted` from `user.message.content[*].type="tool_result"`
 //! - emit `RoleStopped` on subprocess exit
 //!
-//! Out of v0.1 scope (deferred to follow-up PRs): wiring `UserMessage::ToolDecision`
-//! into a real PreToolUse hook script (currently logged as a warning), and
-//! parsing `terminal_reason` to detect budget-cap exits separately from crashes.
+//! Out of v0.2 scope (deferred to follow-up PRs): routing dynamic
+//! `UserMessage::ToolDecision` values back into an already-running Claude
+//! native approval prompt, and parsing `terminal_reason` to detect
+//! budget-cap exits separately from crashes.
 
 use std::collections::HashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::PathBuf;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use regex::Regex;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
 use crate::adapter::{
-    AdapterError, AdapterResult, Engine, EngineAdapter, RoleConfig, RoleHandle, UserMessage,
+    AdapterError, AdapterResult, Engine, EngineAdapter, PermissionMode, RoleConfig, RoleHandle,
+    UserMessage,
 };
 use crate::crep::{CrepEvent, StopReason};
 
@@ -102,6 +105,7 @@ impl EngineAdapter for CcAdapter {
         let priors_hash = fingerprint(&priors_text);
         drop(priors_text);
 
+        let mut tempfiles = Vec::new();
         let mut cmd = Command::new(&self.claude_path);
         cmd.arg("--print")
             .arg("--input-format=stream-json")
@@ -114,6 +118,14 @@ impl EngineAdapter for CcAdapter {
                 "--append-system-prompt-file={}",
                 config.priors_path.display()
             ));
+        if config.permission_mode != PermissionMode::Bypass {
+            let settings = claude_hook_settings(
+                config.permission_mode,
+                config.permission_policy_path.as_deref(),
+            )?;
+            cmd.arg("--settings").arg(settings.path());
+            tempfiles.push(settings);
+        }
         if let Some(model) = &config.model {
             cmd.arg(format!("--model={model}"));
         }
@@ -159,14 +171,68 @@ impl EngineAdapter for CcAdapter {
         // Process waiter: emit a final RoleStopped when the subprocess exits.
         tokio::spawn(wait_child(config.name.clone(), child, tx_events, stop_rx));
 
-        Ok(RoleHandle {
-            role: config.name,
-            engine: Engine::Cc,
+        Ok(RoleHandle::new_with_tempfiles(
+            config.name,
+            Engine::Cc,
             tx_user,
             rx_events,
             stop_tx,
-        })
+            tempfiles,
+        ))
     }
+}
+
+fn claude_hook_settings(
+    mode: PermissionMode,
+    policy_path: Option<&Path>,
+) -> AdapterResult<tempfile::NamedTempFile> {
+    let current_exe = std::env::current_exe().map_err(|source| AdapterError::Engine {
+        engine: Engine::Cc.as_str(),
+        message: format!("locating current cr binary for permission hook: {source}"),
+    })?;
+    let mut command = format!(
+        "{} __coderoom-hook-decision --mode {}",
+        shell_quote(&current_exe),
+        mode.as_str()
+    );
+    if let Some(path) = policy_path {
+        command.push_str(" --policy-file ");
+        command.push_str(&shell_quote(path));
+    }
+    let settings = serde_json::json!({
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {"type": "command", "command": command}
+                    ]
+                }
+            ]
+        }
+    });
+    let mut file = tempfile::Builder::new()
+        .prefix("coderoom-cc-hooks-")
+        .suffix(".json")
+        .tempfile()
+        .map_err(|source| AdapterError::Engine {
+            engine: Engine::Cc.as_str(),
+            message: format!("creating hook settings tempfile: {source}"),
+        })?;
+    write!(file, "{settings}").map_err(|source| AdapterError::Engine {
+        engine: Engine::Cc.as_str(),
+        message: format!("writing hook settings tempfile: {source}"),
+    })?;
+    file.flush().map_err(|source| AdapterError::Engine {
+        engine: Engine::Cc.as_str(),
+        message: format!("flushing hook settings tempfile: {source}"),
+    })?;
+    Ok(file)
+}
+
+fn shell_quote(path: &Path) -> String {
+    let raw = path.display().to_string();
+    format!("'{}'", raw.replace('\'', "'\\''"))
 }
 
 /// Cheap, non-cryptographic content fingerprint. Stable for the same
@@ -250,13 +316,15 @@ fn translate(role: &str, priors_hash: &str, line: &Value) -> Vec<CrepEvent> {
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
             let mentions = parse_mentions(&text);
-            vec![CrepEvent::RoleSpoke {
+            let mut events = extract_permission_denials(role, line);
+            events.push(CrepEvent::RoleSpoke {
                 role: role.to_owned(),
                 text,
                 mentions,
                 cost_usd,
                 cache_read,
-            }]
+            });
+            events
         }
 
         "assistant" => extract_tool_uses(role, line),
@@ -268,6 +336,40 @@ fn translate(role: &str, priors_hash: &str, line: &Value) -> Vec<CrepEvent> {
         // archive but don't have CREP equivalents yet.
         _ => Vec::new(),
     }
+}
+
+fn extract_permission_denials(role: &str, line: &Value) -> Vec<CrepEvent> {
+    let Some(denials) = line.get("permission_denials").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    denials
+        .iter()
+        .map(|denial| {
+            let tool_name = denial
+                .get("tool_name")
+                .or_else(|| denial.get("toolName"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_owned();
+            let tool_input = denial
+                .get("tool_input")
+                .or_else(|| denial.get("toolInput"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            let reason = denial
+                .get("reason")
+                .or_else(|| denial.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("denied by CodeRoom permission hook")
+                .to_owned();
+            CrepEvent::PermissionDenied {
+                role: role.to_owned(),
+                tool_name,
+                tool_input,
+                reason,
+            }
+        })
+        .collect()
 }
 
 fn extract_tool_uses(role: &str, line: &Value) -> Vec<CrepEvent> {
@@ -407,12 +509,14 @@ async fn drain_stderr(role: String, stderr: ChildStderr) {
     }
 }
 
-async fn write_stdin(
+async fn write_stdin<W>(
     role: String,
     mut rx: mpsc::Receiver<UserMessage>,
-    mut stdin: ChildStdin,
+    mut stdin: W,
     mut turn_done: mpsc::Receiver<()>,
-) {
+) where
+    W: AsyncWrite + Unpin,
+{
     while let Some(msg) = rx.recv().await {
         match msg {
             UserMessage::Prompt(text) => {
@@ -438,13 +542,12 @@ async fn write_stdin(
                 }
             }
             UserMessage::ToolDecision { tool_use_id, .. } => {
-                // PreToolUse hook integration arrives in a follow-up PR.
-                // For v0.1 the wrapper isn't yet capable of producing tool
-                // decisions, so this branch is dead in practice — but logged
-                // loudly so we notice if it ever gets exercised by accident.
+                // Hook decisions are made synchronously by the configured
+                // PreToolUse command. This async message remains reserved
+                // for a future native prompt bridge.
                 warn!(
                     role,
-                    tool_use_id, "ToolDecision delivered but not yet wired through to a hook"
+                    tool_use_id, "ToolDecision delivered but no live prompt bridge is attached"
                 );
             }
         }
@@ -600,6 +703,50 @@ mod tests {
             }
             other => panic!("expected RoleSpoke, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn translate_result_yields_permission_denied_events() {
+        let line = json!({
+            "type": "result",
+            "subtype": "success",
+            "result": "I could not run that command.",
+            "permission_denials": [
+                {
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "rm -rf target"},
+                    "reason": "destructive shell ops require review"
+                }
+            ]
+        });
+        let events = translate("backend", "dh1:0", &line);
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            CrepEvent::PermissionDenied {
+                role,
+                tool_name,
+                tool_input,
+                reason,
+            } => {
+                assert_eq!(role, "backend");
+                assert_eq!(tool_name, "Bash");
+                assert_eq!(tool_input["command"], "rm -rf target");
+                assert_eq!(reason, "destructive shell ops require review");
+            }
+            other => panic!("expected PermissionDenied, got {other:?}"),
+        }
+        assert!(matches!(events[1], CrepEvent::RoleSpoke { .. }));
+    }
+
+    #[test]
+    fn hook_settings_points_at_hidden_hook_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let policy_path = tmp.path().join("permission_policy.json");
+        let file = claude_hook_settings(PermissionMode::Auto, Some(&policy_path)).unwrap();
+        let text = std::fs::read_to_string(file.path()).unwrap();
+        assert!(text.contains("__coderoom-hook-decision"));
+        assert!(text.contains("--mode auto"));
+        assert!(text.contains("--policy-file"));
     }
 
     #[test]
