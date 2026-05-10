@@ -9,7 +9,9 @@ use tracing::warn;
 use crate::adapter::UserMessage;
 use crate::crep::CrepEvent;
 use crate::output;
+use crate::permissions::BridgeRequestSink;
 
+use super::permission_prompt;
 use super::render::render_event;
 use super::status::{StatusRegion, SPINNER_TICK_MS};
 
@@ -118,6 +120,7 @@ impl TurnActivity {
 pub(super) async fn drain_one_turn(
     tx_user: mpsc::Sender<UserMessage>,
     rx: &mut tokio::sync::broadcast::Receiver<CrepEvent>,
+    bridge_rx: &mut tokio::sync::mpsc::Receiver<BridgeRequestSink>,
     role: &str,
     text: &str,
     host_role: &str,
@@ -136,6 +139,17 @@ pub(super) async fn drain_one_turn(
     loop {
         tokio::select! {
             biased;
+            // Permission requests are surfaced before role events so the
+            // user is asked the moment the engine pauses for approval,
+            // not after the next tool trace flushes.
+            request = bridge_rx.recv() => {
+                let Some(sink) = request else { continue };
+                status.clear();
+                if let Err(error) = permission_prompt::handle_request(sink, host_role).await {
+                    output::bad(format!("permission prompt failed: {error:#}"));
+                }
+                status.repaint();
+            }
             recv = rx.recv() => match recv {
                 Ok(event) => {
                     if let Some(hidden) = TurnActivity::from_foldable_event(&event, role) {

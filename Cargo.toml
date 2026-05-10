@@ -25,7 +25,7 @@ path = "src/lib.rs"
 # Async runtime
 tokio = { version = "1.40", features = [
     "rt-multi-thread", "macros", "process", "io-util", "io-std",
-    "sync", "fs", "signal", "time"
+    "sync", "fs", "signal", "time", "net"
 ] }
 
 # Serialization

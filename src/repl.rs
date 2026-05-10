@@ -29,10 +29,12 @@ use crate::bus::MessageBus;
 use crate::config::{Config, CODEROOM_DIR};
 use crate::crep::{CrepEvent, StopReason};
 use crate::output;
+use crate::permissions::{BridgeHandle, BridgeRequestSink};
 use crate::priors;
 
 mod command;
 mod input;
+mod permission_prompt;
 mod render;
 mod show;
 mod splash;
@@ -92,6 +94,10 @@ struct SpawnContext<'a> {
     adapters: &'a Adapters,
     coderoom_dir: &'a Path,
     permission_policy_path: &'a Path,
+    /// `Some` when the live REPL has a permission bridge listening on
+    /// the given socket path; `None` for headless contexts where there
+    /// is no user available to prompt.
+    permission_socket_path: Option<&'a Path>,
     permission_mode_override: Option<PermissionMode>,
     bus: &'a Arc<MessageBus>,
 }
@@ -160,6 +166,25 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
         output::warn("permission_mode=bypass is active for this session");
     }
 
+    // Permission IPC bridge — hook subprocesses connect over this Unix
+    // socket to surface `ask` verdicts as real user prompts. Held for
+    // the REPL's lifetime; dropped on shutdown to remove the socket.
+    //
+    // If the listener can't bind we fall back to a dead channel so the
+    // downstream `select!` arms compile uniformly; the env var is then
+    // not exported to adapters and hooks degrade to deny.
+    let socket_path = coderoom_dir.join(".permission-ipc.sock");
+    let (bridge_handle, mut bridge_rx) = match crate::permissions::bridge::start(socket_path) {
+        Ok((handle, rx)) => (Some(handle), rx),
+        Err(error) => {
+            output::warn(format!(
+                "permission bridge unavailable ({error}); ask-mode tool requests will deny"
+            ));
+            let (_dead_tx, rx) = tokio::sync::mpsc::channel::<BridgeRequestSink>(1);
+            (None, rx)
+        }
+    };
+
     let mut roles: HashMap<String, RunningRole> = HashMap::new();
     for name in cfg
         .role_names()
@@ -171,6 +196,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
             adapters: &adapters,
             coderoom_dir: &coderoom_dir,
             permission_policy_path: &permission_policy_path,
+            permission_socket_path: bridge_handle.as_ref().map(BridgeHandle::socket_path),
             permission_mode_override: options.permission_mode_override,
             bus: &bus,
         };
@@ -242,6 +268,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                     adapters: &adapters,
                     coderoom_dir: &coderoom_dir,
                     permission_policy_path: &permission_policy_path,
+                    permission_socket_path: bridge_handle.as_ref().map(BridgeHandle::socket_path),
                     permission_mode_override: options.permission_mode_override,
                     bus: &bus,
                 };
@@ -254,6 +281,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                 write_journal(
                     &mut roles,
                     &mut renderer_rx,
+                    &mut bridge_rx,
                     &coderoom_dir,
                     &role,
                     &cfg.host_role,
@@ -301,7 +329,15 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                 }
             }
             Command::SendTo { role, text } => {
-                send_and_drain(&mut roles, &mut renderer_rx, &role, &text, &cfg.host_role).await?;
+                send_and_drain(
+                    &mut roles,
+                    &mut renderer_rx,
+                    &mut bridge_rx,
+                    &role,
+                    &text,
+                    &cfg.host_role,
+                )
+                .await?;
             }
             Command::Broadcast(text) => {
                 let mut names: Vec<String> = roles.keys().cloned().collect();
@@ -321,13 +357,28 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                     .italic(),
                 );
                 for role in names {
-                    send_and_drain(&mut roles, &mut renderer_rx, &role, &text, &cfg.host_role)
-                        .await?;
+                    send_and_drain(
+                        &mut roles,
+                        &mut renderer_rx,
+                        &mut bridge_rx,
+                        &role,
+                        &text,
+                        &cfg.host_role,
+                    )
+                    .await?;
                 }
             }
             Command::SendToHost(text) => {
                 let host = cfg.host_role.clone();
-                send_and_drain(&mut roles, &mut renderer_rx, &host, &text, &cfg.host_role).await?;
+                send_and_drain(
+                    &mut roles,
+                    &mut renderer_rx,
+                    &mut bridge_rx,
+                    &host,
+                    &text,
+                    &cfg.host_role,
+                )
+                .await?;
             }
         }
     }
@@ -434,11 +485,13 @@ async fn mark_welcomed(coderoom_dir: &Path) {
 async fn send_and_drain(
     roles: &mut HashMap<String, RunningRole>,
     rx: &mut tokio::sync::broadcast::Receiver<CrepEvent>,
+    bridge_rx: &mut tokio::sync::mpsc::Receiver<BridgeRequestSink>,
     role: &str,
     text: &str,
     host_role: &str,
 ) -> Result<()> {
-    let Some(captured) = drain_one_turn_with_timeout(roles, rx, role, text, host_role).await?
+    let Some(captured) =
+        drain_one_turn_with_timeout(roles, rx, bridge_rx, role, text, host_role).await?
     else {
         return Ok(());
     };
@@ -457,7 +510,7 @@ async fn send_and_drain(
                 .with(output::DIM)
                 .italic(),
         );
-        if drain_one_turn_with_timeout(roles, rx, mention, &brief, host_role)
+        if drain_one_turn_with_timeout(roles, rx, bridge_rx, mention, &brief, host_role)
             .await?
             .is_none()
         {
@@ -470,6 +523,7 @@ async fn send_and_drain(
 async fn drain_one_turn_with_timeout(
     roles: &mut HashMap<String, RunningRole>,
     rx: &mut tokio::sync::broadcast::Receiver<CrepEvent>,
+    bridge_rx: &mut tokio::sync::mpsc::Receiver<BridgeRequestSink>,
     role: &str,
     text: &str,
     host_role: &str,
@@ -489,7 +543,7 @@ async fn drain_one_turn_with_timeout(
         }
         result = tokio::time::timeout(
         PER_TURN_TIMEOUT,
-            drain_one_turn(tx_user, rx, role, text, host_role),
+            drain_one_turn(tx_user, rx, bridge_rx, role, text, host_role),
         ) => result,
     };
     if let Ok(result) = result {
@@ -519,6 +573,7 @@ const PER_TURN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 async fn write_journal(
     roles: &mut HashMap<String, RunningRole>,
     rx: &mut tokio::sync::broadcast::Receiver<CrepEvent>,
+    bridge_rx: &mut tokio::sync::mpsc::Receiver<BridgeRequestSink>,
     coderoom_dir: &Path,
     role: &str,
     host_role: &str,
@@ -539,7 +594,8 @@ async fn write_journal(
         format!("asking @{role} for a journal entry...").with(output::DIM)
     );
 
-    let Ok(Some(captured)) = drain_one_turn_with_timeout(roles, rx, role, prompt, host_role).await
+    let Ok(Some(captured)) =
+        drain_one_turn_with_timeout(roles, rx, bridge_rx, role, prompt, host_role).await
     else {
         output::bad(format!("@{role} did not produce a journal entry"));
         return;
@@ -676,6 +732,7 @@ async fn spawn_role(context: &SpawnContext<'_>, name: &str) -> Result<RunningRol
         .with_context(|| format!("role `{name}` is declared but has invalid config"))?;
     priors_temp.path().clone_into(&mut role_cfg.priors_path);
     role_cfg.permission_policy_path = Some(context.permission_policy_path.to_path_buf());
+    role_cfg.permission_socket_path = context.permission_socket_path.map(Path::to_path_buf);
     if let Some(mode) = context.permission_mode_override {
         role_cfg.permission_mode = mode;
     }

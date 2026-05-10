@@ -239,6 +239,7 @@ impl Config {
             budget_usd: self.budget_per_role_usd,
             permission_mode,
             permission_policy_path: None,
+            permission_socket_path: None,
         })
     }
 

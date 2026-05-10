@@ -125,6 +125,13 @@ impl EngineAdapter for CcAdapter {
             )?;
             cmd.arg("--settings").arg(settings.path());
             tempfiles.push(settings);
+            // Tell the hook subprocess where to ask the user. Without
+            // this, an `ask` verdict has no UI to surface it through and
+            // the hook degrades to deny.
+            if let Some(socket) = &config.permission_socket_path {
+                cmd.env(crate::permissions::BRIDGE_ENV_VAR, socket);
+                cmd.env(crate::permissions::BRIDGE_ROLE_ENV, &config.name);
+            }
         }
         if let Some(model) = &config.model {
             cmd.arg(format!("--model={model}"));

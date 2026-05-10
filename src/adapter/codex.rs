@@ -608,6 +608,7 @@ mod tests {
                     budget_usd: 0.50,
                     permission_mode,
                     permission_policy_path: None,
+                    permission_socket_path: None,
                 })
                 .await
                 .expect_err("codex non-bypass should fail before spawn");
