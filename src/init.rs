@@ -1230,12 +1230,31 @@ fn write_all(coderoom_dir: &Path, roles: &[RolePlan]) -> Result<()> {
         let body = if role.name == "host" {
             DEFAULT_HOST_PRIORS.to_string()
         } else {
-            DEFAULT_ROLE_TEMPLATE.replace("{ROLE}", &role.name)
+            render_role_priors(&role.name, roles)
         };
         write_file(&path, &body)?;
     }
     write_file(&coderoom_dir.join(".gitignore"), DEFAULT_GITIGNORE)?;
     Ok(())
+}
+
+fn render_role_priors(role_name: &str, roles: &[RolePlan]) -> String {
+    let peers = roles
+        .iter()
+        .filter(|role| role.name != role_name)
+        .map(|role| format!("@{}", role.name))
+        .collect::<Vec<_>>();
+    DEFAULT_ROLE_TEMPLATE
+        .replace("{ROLE}", role_name)
+        .replace("{HOST}", "host")
+        .replace(
+            "{PEERS}",
+            &if peers.is_empty() {
+                "(none configured yet)".to_owned()
+            } else {
+                peers.join(", ")
+            },
+        )
 }
 
 fn render_config(roles: &[RolePlan]) -> String {
@@ -1411,6 +1430,53 @@ mod tests {
         count
     }
 
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' && chars.peek() == Some(&'[') {
+                chars.next();
+                for c2 in chars.by_ref() {
+                    if c2.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    fn snapshot_scan() -> detect::ProjectScan {
+        detect::ProjectScan {
+            root: PathBuf::from("/repo/codeRoom"),
+            stack: vec![
+                detect::StackSignal::CargoToml,
+                detect::StackSignal::GithubWorkflows,
+                detect::StackSignal::ExistingClaudeMd { line_count: 42 },
+            ],
+            suggested_roles: vec!["host", "backend", "security", "ci"],
+        }
+    }
+
+    fn snapshot_plan() -> Vec<RolePlan> {
+        vec![
+            RolePlan {
+                name: "host".into(),
+                engine: Engine::Cc,
+            },
+            RolePlan {
+                name: "backend".into(),
+                engine: Engine::Cc,
+            },
+            RolePlan {
+                name: "security".into(),
+                engine: Engine::Codex,
+            },
+        ]
+    }
+
     fn sample_choices() -> Vec<RoleChoice> {
         ROLE_CATALOG
             .iter()
@@ -1419,6 +1485,138 @@ mod tests {
                 selected: matches!(info.name, "host" | "backend" | "security"),
             })
             .collect()
+    }
+
+    #[test]
+    fn snapshot_init_role_picker() {
+        let scan = snapshot_scan();
+        let rendered = strip_ansi(&render_role_picker(
+            Path::new("/repo/codeRoom"),
+            &scan,
+            &sample_choices(),
+            1,
+        ));
+        insta::assert_snapshot!(rendered, @r"
+pick roles · setting up coderoom in codeRoom
+space toggles · ↑↓ moves · enter continues · esc backs out
+
+detected: Cargo.toml (Rust) · .github/workflows/ · CLAUDE.md (42 lines)
+
+    [x] ● @host        orchestrates requests and keeps the room coherent · req…
+  > [x] ● @backend     APIs, services, storage boundaries
+    [ ] ● @frontend    UI, components, routing, client-side state
+    [x] ● @security    authn, authz, threat modeling
+    [ ] ● @data        schemas, migrations, query patterns
+    [ ] ● @devops      CI/CD, infra, deploys, runtime health
+    [ ] ● @ci          workflows, checks, release gates
+    [ ] ● @qa          test strategy, edge cases, regression risk
+    [ ] ● @docs        technical writing, examples, API reference
+
+3 selected · host is always present · enter continues
+");
+    }
+
+    #[test]
+    fn snapshot_init_role_expansion_picker() {
+        let scan = snapshot_scan();
+        let rendered = strip_ansi(&render_role_expansion_picker(
+            Path::new("/repo/codeRoom"),
+            &scan,
+            &sample_choices(),
+            2,
+        ));
+        insta::assert_snapshot!(rendered, @r"
+suggest roles · setting up coderoom in codeRoom
+space toggles · ↑↓ moves · enter adds selected · esc skips
+
+detected: Cargo.toml (Rust) · .github/workflows/ · CLAUDE.md (42 lines)
+CodeRoom found only @host. Choose the specialists to add:
+
+    [x] ● @host        orchestrates requests and keeps the room coherent · exi…
+    [x] ● @backend     APIs, services, storage boundaries
+  > [ ] ● @frontend    UI, components, routing, client-side state
+    [x] ● @security    authn, authz, threat modeling
+    [ ] ● @data        schemas, migrations, query patterns
+    [ ] ● @devops      CI/CD, infra, deploys, runtime health
+    [ ] ● @ci          workflows, checks, release gates
+    [ ] ● @qa          test strategy, edge cases, regression risk
+    [ ] ● @docs        technical writing, examples, API reference
+
+2 new role(s) selected · enter writes config and priors
+");
+    }
+
+    #[test]
+    fn snapshot_init_engine_picker() {
+        let installed = InstalledEngines {
+            cc: true,
+            codex: true,
+            gemini: false,
+        };
+        let roles = vec!["host".into(), "backend".into(), "security".into()];
+        let assignments = HashMap::from([
+            ("host".into(), Engine::Cc),
+            ("backend".into(), Engine::Cc),
+            ("security".into(), Engine::Codex),
+        ]);
+        let rendered = strip_ansi(&render_engine_picker(
+            Path::new("/repo/codeRoom"),
+            &installed,
+            &roles,
+            &assignments,
+            2,
+        ));
+        insta::assert_snapshot!(rendered, @r"
+assign engines · setting up coderoom in codeRoom
+↑/↓ moves · ←/→ cycles engine · enter continues · esc goes back
+
+detected on your system:
+  ✓ claude-code   installed
+  ✓ codex         installed
+  ✗ gemini-cli    not installed · github.com/google/gemini-cli
+
+  role          ‹ engine     › model              note
+    @host         ‹ claude-code › claude default     ready
+    @backend      ‹ claude-code › claude default     ready
+  > @security     ‹ codex      › codex default      ready
+
+defaults are editable later in .coderoom/config.toml
+");
+    }
+
+    #[test]
+    fn snapshot_init_confirm() {
+        let scan = snapshot_scan();
+        let rendered = strip_ansi(&render_confirm(
+            Path::new("/repo/codeRoom"),
+            &scan,
+            &snapshot_plan(),
+        ));
+        insta::assert_snapshot!(rendered, @r"
+ready to write · setting up coderoom in codeRoom
+nothing is written until Enter
+
+will create:
+
+.coderoom/
+├─ config.toml              3 roles
+├─ shared.md                project-wide priors
+├─ roles/
+│  ├─ host.md            claude-code
+│  ├─ backend.md         claude-code
+│  └─ security.md        codex
+└─ .gitignore
+
+  role           engine       focus
+  @host          claude-code  orchestrates requests and keeps the room coherent
+  @backend       claude-code  APIs, services, storage boundaries
+  @security      codex        authn, authz, threat modeling
+
+! found existing CLAUDE.md (42 lines).
+  coderoom will not touch it; split assistance can land separately.
+
+enter writes · esc goes back · q aborts
+");
     }
 
     #[test]
@@ -1611,9 +1809,27 @@ mod tests {
 
     #[test]
     fn default_priors_templates_stay_compact() {
-        assert!(word_count(DEFAULT_HOST_PRIORS) <= 90);
-        assert!(word_count(DEFAULT_ROLE_TEMPLATE) <= 90);
-        assert!(word_count(DEFAULT_SHARED_PRIORS) <= 45);
+        assert!(word_count(DEFAULT_HOST_PRIORS) <= 160);
+        assert!(word_count(DEFAULT_ROLE_TEMPLATE) <= 180);
+        assert!(word_count(DEFAULT_SHARED_PRIORS) <= 220);
+        for required in ["CodeRoom", "@name", "From @", "/patch", "/journal"] {
+            assert!(
+                DEFAULT_SHARED_PRIORS.contains(required),
+                "shared priors should explain {required}"
+            );
+        }
+        for required in ["@host", "specialist", "From @role"] {
+            assert!(
+                DEFAULT_HOST_PRIORS.contains(required),
+                "host priors should explain {required}"
+            );
+        }
+        for required in ["{ROLE}", "{HOST}", "{PEERS}", "From @role"] {
+            assert!(
+                DEFAULT_ROLE_TEMPLATE.contains(required),
+                "role template should contain {required}"
+            );
+        }
     }
 
     #[test]
@@ -1648,6 +1864,9 @@ mod tests {
         .unwrap();
         // Template's `{ROLE}` placeholder should be replaced.
         assert!(!backend_priors.contains("{ROLE}"));
+        assert!(!backend_priors.contains("{HOST}"));
+        assert!(!backend_priors.contains("{PEERS}"));
+        assert!(backend_priors.contains("@host"));
         assert!(backend_priors.contains("@backend"));
     }
 
