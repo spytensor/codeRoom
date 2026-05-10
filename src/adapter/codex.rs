@@ -9,15 +9,10 @@
 //! - Single-turn per user message. No `codex-reply` for follow-ups; each
 //!   prompt starts a fresh Codex session. Slower / more expensive than
 //!   the CC adapter's long-lived session, but functionally correct.
-//! - No `notifications/progress` plumbing — we wait for the final
-//!   `tools/call` response and emit one `RoleSpoke`. Mid-session tool
-//!   calls, file edits, etc. happen *inside* Codex's own sandbox; the
-//!   wrapper sees only the summary.
-//! - Approval policy is hard-coded to `never` and the sandbox to
-//!   `workspace-write` so Codex behaves equivalently to CC's
-//!   `--dangerously-skip-permissions` mode. The wrapper still owns
-//!   final permission gating once we add a PreToolUse-equivalent
-//!   bridge for Codex (separate PR).
+//! - Codex exec lifecycle notifications are translated into best-effort
+//!   CREP tool events when the installed CLI emits them.
+//! - Approval policy is set to `untrusted` so the engine can surface
+//!   approval requests instead of silently bypassing them.
 //!
 //! Multi-turn (resume / `codex-reply`), tool-call event mapping, and
 //! approval-policy delegation are scheduled for `feat/adapter-codex-v2`.
@@ -26,11 +21,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, warn};
 
@@ -46,6 +42,8 @@ const CHANNEL_CAPACITY: usize = 32;
 
 /// MCP protocol version we initialize with. Confirmed in the L3 spike.
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+
+const RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Adapter that drives Codex's `mcp-server` mode.
 #[derive(Debug, Clone)]
@@ -101,9 +99,11 @@ impl EngineAdapter for CodexAdapter {
 
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
 
         let (tx_user, rx_user) = mpsc::channel::<UserMessage>(CHANNEL_CAPACITY);
         let (tx_events, rx_events) = mpsc::channel::<CrepEvent>(CHANNEL_CAPACITY);
+        let (stop_tx, stop_rx) = oneshot::channel::<StopReason>();
 
         let pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -115,7 +115,9 @@ impl EngineAdapter for CodexAdapter {
             stdout,
             Arc::clone(&pending),
             config.name.clone(),
+            tx_events.clone(),
         ));
+        tokio::spawn(drain_stderr(config.name.clone(), stderr));
 
         // Initialize the MCP connection synchronously before announcing
         // RoleStarted so the role is genuinely ready when CREP says so.
@@ -151,13 +153,14 @@ impl EngineAdapter for CodexAdapter {
             tx_events.clone(),
         ));
 
-        tokio::spawn(wait_child(config.name.clone(), child, tx_events));
+        tokio::spawn(wait_child(config.name.clone(), child, tx_events, stop_rx));
 
         Ok(RoleHandle {
             role: config.name,
             engine: Engine::Codex,
             tx_user,
             rx_events,
+            stop_tx,
         })
     }
 }
@@ -168,6 +171,8 @@ enum RpcError {
     Closed,
     #[error("rpc reported error: {0}")]
     Server(String),
+    #[error("rpc request timed out")]
+    Timeout,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,17 +220,24 @@ impl RpcClient {
         });
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.insert(id, tx);
+        let _guard = PendingRequestGuard {
+            id,
+            pending: Arc::clone(&self.pending),
+        };
 
         let line = format!("{envelope}\n");
         {
             let mut w = self.writer.lock().await;
-            w.write_all(line.as_bytes())
-                .await
-                .map_err(|_| RpcError::Closed)?;
-            w.flush().await.map_err(|_| RpcError::Closed)?;
+            if w.write_all(line.as_bytes()).await.is_err() || w.flush().await.is_err() {
+                self.pending.lock().await.remove(&id);
+                return Err(RpcError::Closed);
+            }
         }
 
-        let response = rx.await.map_err(|_| RpcError::Closed)?;
+        let response = tokio::time::timeout(RPC_REQUEST_TIMEOUT, rx)
+            .await
+            .map_err(|_| RpcError::Timeout)?
+            .map_err(|_| RpcError::Closed)?;
         if let Some(err) = response.error {
             return Err(RpcError::Server(err.to_string()));
         }
@@ -273,6 +285,21 @@ impl RpcClient {
     }
 }
 
+struct PendingRequestGuard {
+    id: u64,
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
+}
+
+impl Drop for PendingRequestGuard {
+    fn drop(&mut self) {
+        let id = self.id;
+        let pending = Arc::clone(&self.pending);
+        tokio::spawn(async move {
+            pending.lock().await.remove(&id);
+        });
+    }
+}
+
 fn codex_display_model(config_model: Option<&str>, reported_model: Option<&str>) -> String {
     config_model
         .filter(|model| !is_placeholder_model(model))
@@ -290,6 +317,7 @@ async fn read_rpc_loop(
     stdout: ChildStdout,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<JsonRpcResponse>>>>,
     role: String,
+    events: mpsc::Sender<CrepEvent>,
 ) {
     let mut lines = BufReader::new(stdout).lines();
     while let Ok(Some(line)) = lines.next_line().await {
@@ -301,9 +329,14 @@ async fn read_rpc_loop(
             }
         };
         // Responses carry a numeric id matched by request().
-        // Notifications have no id and are silently ignored at v0.1.
+        // Notifications have no id; map known exec lifecycle messages
+        // into CREP and ignore the rest.
         let Some(id) = value.get("id").and_then(Value::as_u64) else {
-            debug!(role, line = %line, "codex notification ignored at v0.1");
+            if let Some(event) = codex_notification_to_event(&role, &value) {
+                let _ = events.send(event).await;
+            } else {
+                debug!(role, line = %line, "codex notification ignored");
+            }
             continue;
         };
         let response = JsonRpcResponse {
@@ -314,7 +347,79 @@ async fn read_rpc_loop(
             let _ = tx.send(response);
         }
     }
+    let mut guard = pending.lock().await;
+    for (_, tx) in guard.drain() {
+        let _ = tx.send(JsonRpcResponse {
+            result: None,
+            error: Some(json!({"code": -32000, "message": "codex rpc disconnected"})),
+        });
+    }
     debug!(role, "codex rpc loop exiting");
+}
+
+fn codex_notification_to_event(role: &str, value: &Value) -> Option<CrepEvent> {
+    let method = value.get("method").and_then(Value::as_str)?;
+    let params = value.get("params").unwrap_or(&Value::Null);
+    let tool_use_id = params
+        .get("id")
+        .or_else(|| params.get("call_id"))
+        .or_else(|| params.get("command_id"))
+        .and_then(Value::as_str)
+        .unwrap_or(method)
+        .to_owned();
+    match method {
+        "notifications/exec_command_started" | "exec_command_started" => {
+            let command = params
+                .get("command")
+                .or_else(|| params.get("cmd"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            Some(CrepEvent::ToolCallProposed {
+                role: role.to_owned(),
+                tool_name: "Bash".to_owned(),
+                tool_input: if command.is_null() {
+                    params.clone()
+                } else {
+                    json!({ "command": command })
+                },
+                tool_use_id,
+            })
+        }
+        "notifications/exec_command_completed" | "exec_command_completed" => {
+            let ok = params
+                .get("exit_code")
+                .and_then(Value::as_i64)
+                .is_none_or(|code| code == 0);
+            let summary = params
+                .get("summary")
+                .or_else(|| params.get("stderr"))
+                .or_else(|| params.get("stdout"))
+                .and_then(Value::as_str)
+                .unwrap_or("codex command completed");
+            Some(CrepEvent::ToolCallExecuted {
+                role: role.to_owned(),
+                tool_use_id,
+                ok,
+                output_summary: summary.chars().take(200).collect(),
+            })
+        }
+        _ => None,
+    }
+}
+
+async fn drain_stderr(role: String, stderr: ChildStderr) {
+    let mut lines = BufReader::new(stderr).lines();
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) if line.trim().is_empty() => {}
+            Ok(Some(line)) => warn!(role, line = %line, "codex stderr"),
+            Ok(None) => return,
+            Err(error) => {
+                warn!(role, %error, "error reading codex stderr");
+                return;
+            }
+        }
+    }
 }
 
 async fn write_loop(
@@ -385,16 +490,46 @@ fn extract_text_from_tool_result(result: &Value) -> String {
         .join("\n\n")
 }
 
-async fn wait_child(role: String, mut child: Child, events: mpsc::Sender<CrepEvent>) {
-    let reason = match child.wait().await {
-        Ok(status) if status.success() => StopReason::Completed,
-        Ok(_) => StopReason::Crashed,
-        Err(error) => {
-            warn!(role, %error, "error waiting on codex subprocess");
-            StopReason::Crashed
+async fn wait_child(
+    role: String,
+    mut child: Child,
+    events: mpsc::Sender<CrepEvent>,
+    stop_rx: oneshot::Receiver<StopReason>,
+) {
+    let reason = tokio::select! {
+        status = child.wait() => match status {
+            Ok(status) if status.success() => StopReason::Completed,
+            Ok(_) => StopReason::Crashed,
+            Err(error) => {
+                warn!(role, %error, "error waiting on codex subprocess");
+                StopReason::Crashed
+            }
+        },
+        requested = stop_rx => {
+            let reason = requested.unwrap_or(StopReason::Crashed);
+            terminate_child(&role, &mut child).await;
+            reason
         }
     };
     let _ = events.send(CrepEvent::RoleStopped { role, reason }).await;
+}
+
+async fn terminate_child(role: &str, child: &mut Child) {
+    if let Err(error) = child.start_kill() {
+        warn!(role, %error, "failed to start codex subprocess kill");
+        return;
+    }
+    match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => warn!(role, %error, "error waiting after codex subprocess kill"),
+        Err(_) => {
+            warn!(
+                role,
+                "codex subprocess did not exit promptly after kill signal"
+            );
+            let _ = child.kill().await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -443,5 +578,49 @@ mod tests {
     fn display_model_does_not_show_placeholder_model() {
         assert_eq!(codex_display_model(None, Some("model")), "Codex default");
         assert_eq!(codex_display_model(None, Some("codex")), "Codex default");
+    }
+
+    #[test]
+    fn exec_notifications_translate_to_tool_events() {
+        let started = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/exec_command_started",
+            "params": {"id": "cmd-1", "command": "cargo test"}
+        });
+        let event = codex_notification_to_event("qa", &started).expect("started event");
+        match event {
+            CrepEvent::ToolCallProposed {
+                role,
+                tool_name,
+                tool_use_id,
+                ..
+            } => {
+                assert_eq!(role, "qa");
+                assert_eq!(tool_name, "Bash");
+                assert_eq!(tool_use_id, "cmd-1");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let completed = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/exec_command_completed",
+            "params": {"id": "cmd-1", "exit_code": 0, "summary": "ok"}
+        });
+        let event = codex_notification_to_event("qa", &completed).expect("completed event");
+        match event {
+            CrepEvent::ToolCallExecuted {
+                role,
+                tool_use_id,
+                ok,
+                output_summary,
+            } => {
+                assert_eq!(role, "qa");
+                assert_eq!(tool_use_id, "cmd-1");
+                assert!(ok);
+                assert_eq!(output_summary, "ok");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }

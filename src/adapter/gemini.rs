@@ -6,12 +6,9 @@
 //!
 //! Why so simple at v0.1:
 //!
-//! - Gemini's CLI does not expose a `--system-prompt` flag (only the
-//!   `gemini skills` / `gemini extensions` subsystems load instructions
-//!   automatically, and those are user-global rather than per-session).
-//!   For v0.1 we prepend the composed priors to each user prompt with a
-//!   fence separator. Inelegant, but functionally correct, and keeps the
-//!   adapter trivially debuggable.
+//! - Gemini must expose `--system-instruction-file`; otherwise CodeRoom
+//!   refuses to start the role instead of concatenating priors into the
+//!   user prompt and losing system-prompt isolation.
 //! - `-y` (yolo) skips approval prompts, mirroring CC's
 //!   `--dangerously-skip-permissions`. The wrapper-side gate over Gemini
 //!   tool calls lands once we plumb its hook system (Gemini ships
@@ -26,9 +23,10 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::time::Duration;
 
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, warn};
 
 use crate::adapter::{
@@ -37,6 +35,14 @@ use crate::adapter::{
 use crate::crep::{CrepEvent, StopReason};
 
 const CHANNEL_CAPACITY: usize = 32;
+const GEMINI_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const GEMINI_UNTRUSTED_PRIORS_ENV: &str = "CODEROOM_GEMINI_UNTRUSTED_PRIORS";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GeminiPromptMode {
+    SystemInstructionFile,
+    InlineUntrusted,
+}
 
 /// Adapter that drives the Gemini CLI in one-shot per-turn mode.
 #[derive(Debug, Clone)]
@@ -72,6 +78,13 @@ impl EngineAdapter for GeminiAdapter {
     }
 
     async fn start(&self, config: RoleConfig) -> AdapterResult<RoleHandle> {
+        let prompt_mode =
+            probe_gemini(&self.gemini_path)
+                .await
+                .map_err(|message| AdapterError::Engine {
+                    engine: Engine::Gemini.as_str(),
+                    message,
+                })?;
         let priors_text = tokio::fs::read_to_string(&config.priors_path)
             .await
             .map_err(|source| AdapterError::PriorsRead {
@@ -82,6 +95,7 @@ impl EngineAdapter for GeminiAdapter {
 
         let (tx_user, rx_user) = mpsc::channel::<UserMessage>(CHANNEL_CAPACITY);
         let (tx_events, rx_events) = mpsc::channel::<CrepEvent>(CHANNEL_CAPACITY);
+        let (stop_tx, stop_rx) = oneshot::channel::<StopReason>();
 
         // Synthetic session id — Gemini's CLI offers --resume by index
         // for sessions persisted to disk, but we treat each turn as
@@ -97,70 +111,140 @@ impl EngineAdapter for GeminiAdapter {
             })
             .await;
 
-        tokio::spawn(per_turn_loop(
-            self.gemini_path.clone(),
-            config.name.clone(),
-            config.model.clone(),
-            priors_text,
-            rx_user,
-            tx_events,
-        ));
+        tokio::spawn(
+            GeminiLoop {
+                gemini_path: self.gemini_path.clone(),
+                role: config.name.clone(),
+                model: config.model.clone(),
+                priors_path: config.priors_path.clone(),
+                priors_text,
+                prompt_mode,
+                rx: rx_user,
+                events: tx_events,
+                stop_rx,
+            }
+            .run(),
+        );
 
         Ok(RoleHandle {
             role: config.name,
             engine: Engine::Gemini,
             tx_user,
             rx_events,
+            stop_tx,
         })
     }
 }
 
-async fn per_turn_loop(
+async fn probe_gemini(gemini_path: &PathBuf) -> Result<GeminiPromptMode, String> {
+    let mut cmd = Command::new(gemini_path);
+    cmd.arg("--help")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let output = tokio::time::timeout(GEMINI_PROBE_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| "gemini --help timed out".to_owned())?
+        .map_err(|error| format!("gemini probe failed: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "gemini --help exited with {}: {stderr}",
+            output.status
+        ));
+    }
+    let help = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !help.contains("--system-instruction-file") {
+        if std::env::var(GEMINI_UNTRUSTED_PRIORS_ENV).as_deref() == Ok("1") {
+            return Ok(GeminiPromptMode::InlineUntrusted);
+        }
+        return Err(
+            "installed gemini CLI does not advertise --system-instruction-file; \
+             refusing to inline priors into user prompts. Set \
+             CODEROOM_GEMINI_UNTRUSTED_PRIORS=1 to opt into the unsafe fallback"
+                .to_owned(),
+        );
+    }
+    Ok(GeminiPromptMode::SystemInstructionFile)
+}
+
+struct GeminiLoop {
     gemini_path: PathBuf,
     role: String,
     model: Option<String>,
+    priors_path: PathBuf,
     priors_text: String,
-    mut rx: mpsc::Receiver<UserMessage>,
+    prompt_mode: GeminiPromptMode,
     events: mpsc::Sender<CrepEvent>,
-) {
-    while let Some(msg) = rx.recv().await {
-        let UserMessage::Prompt(prompt) = msg else {
-            continue;
+    rx: mpsc::Receiver<UserMessage>,
+    stop_rx: oneshot::Receiver<StopReason>,
+}
+
+impl GeminiLoop {
+    async fn run(mut self) {
+        let stop_reason = loop {
+            let msg = tokio::select! {
+                biased;
+                requested = &mut self.stop_rx => break requested.unwrap_or(StopReason::Crashed),
+                msg = self.rx.recv() => msg,
+            };
+            let Some(msg) = msg else {
+                break StopReason::Completed;
+            };
+            let UserMessage::Prompt(prompt) = msg else {
+                continue;
+            };
+            match run_one_turn(
+                &self.gemini_path,
+                self.model.as_deref(),
+                &self.priors_path,
+                &self.priors_text,
+                self.prompt_mode,
+                &prompt,
+            )
+            .await
+            {
+                Ok(text) => {
+                    let mentions = crate::adapter::cc::parse_mentions(&text);
+                    let _ = self
+                        .events
+                        .send(CrepEvent::RoleSpoke {
+                            role: self.role.clone(),
+                            text,
+                            mentions,
+                            cost_usd: 0.0,
+                            cache_read: 0,
+                        })
+                        .await;
+                }
+                Err(error) => {
+                    warn!(role = %self.role, %error, "gemini turn failed");
+                    let _ = self
+                        .events
+                        .send(CrepEvent::RoleSpoke {
+                            role: self.role.clone(),
+                            text: format!("[gemini error: {error}]"),
+                            mentions: Vec::new(),
+                            cost_usd: 0.0,
+                            cache_read: 0,
+                        })
+                        .await;
+                }
+            }
         };
-        match run_one_turn(&gemini_path, model.as_deref(), &priors_text, &prompt).await {
-            Ok(text) => {
-                let mentions = crate::adapter::cc::parse_mentions(&text);
-                let _ = events
-                    .send(CrepEvent::RoleSpoke {
-                        role: role.clone(),
-                        text,
-                        mentions,
-                        cost_usd: 0.0,
-                        cache_read: 0,
-                    })
-                    .await;
-            }
-            Err(error) => {
-                warn!(role, %error, "gemini turn failed");
-                let _ = events
-                    .send(CrepEvent::RoleSpoke {
-                        role: role.clone(),
-                        text: format!("[gemini error: {error}]"),
-                        mentions: Vec::new(),
-                        cost_usd: 0.0,
-                        cache_read: 0,
-                    })
-                    .await;
-            }
-        }
+        let _ = self
+            .events
+            .send(CrepEvent::RoleStopped {
+                role: self.role,
+                reason: stop_reason,
+            })
+            .await;
+        debug!("gemini per-turn loop exiting");
     }
-    let _ = events
-        .send(CrepEvent::RoleStopped {
-            role,
-            reason: StopReason::Completed,
-        })
-        .await;
-    debug!("gemini per-turn loop exiting");
 }
 
 /// Run a single `gemini -p` invocation with priors prepended and return
@@ -168,20 +252,28 @@ async fn per_turn_loop(
 async fn run_one_turn(
     gemini_path: &PathBuf,
     model: Option<&str>,
+    priors_path: &PathBuf,
     priors_text: &str,
+    prompt_mode: GeminiPromptMode,
     user_prompt: &str,
 ) -> std::io::Result<String> {
-    let combined = format!("{priors_text}\n\n---\n\n{user_prompt}");
-
     let mut cmd = Command::new(gemini_path);
     cmd.arg("-p")
-        .arg(&combined)
+        .arg(match prompt_mode {
+            GeminiPromptMode::SystemInstructionFile => user_prompt.to_owned(),
+            GeminiPromptMode::InlineUntrusted => {
+                format!("{priors_text}\n\n---\n\n{user_prompt}")
+            }
+        })
         .arg("--output-format")
         .arg("text")
         .arg("-y")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if prompt_mode == GeminiPromptMode::SystemInstructionFile {
+        cmd.arg("--system-instruction-file").arg(priors_path);
+    }
     if let Some(model) = model {
         cmd.arg("--model").arg(model);
     }
