@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-05-10
+
 ### Fixed
 
 - Codex session-scoped approval choices now update CodeRoom's permission
@@ -500,7 +502,8 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.15...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.16
 [0.1.15]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.15
 [0.1.14]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.14
 [0.1.13]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.13

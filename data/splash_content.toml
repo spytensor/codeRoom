@@ -16,6 +16,14 @@ items = [
 ]
 
 [[whats_new]]
+version = "0.1.16"
+items = [
+  "Codex approval prompts remember allow-session and deny-session choices",
+  "Codex tool denials now trip the grounding gate correctly",
+  "permission prompts cancel cleanly when a role turn times out",
+]
+
+[[whats_new]]
 version = "0.1.15"
 items = [
   "CJK input deletes cleanly in the REPL prompt",
