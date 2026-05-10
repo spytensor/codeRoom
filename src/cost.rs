@@ -24,6 +24,9 @@ pub struct RoleStats {
     pub turns: u64,
     /// Sum of `cost_usd` across all turns.
     pub cost_usd: f64,
+    /// Whether this role's engine reports real cost. Unsupported
+    /// engines render as `—` rather than a fake `$0.00`.
+    pub cost_supported: bool,
     /// Sum of `cache_read_input_tokens` across all turns.
     pub cache_read: u64,
 }
@@ -55,20 +58,30 @@ pub async fn aggregate(
         }
     }
 
-    let events = MessageBus::replay(&log_path).await?;
+    let replay = MessageBus::replay(&log_path).await?;
     let mut by_role: BTreeMap<String, RoleStats> = BTreeMap::new();
-    for event in events {
-        if let CrepEvent::RoleSpoke {
-            role,
-            cost_usd,
-            cache_read,
-            ..
-        } = event
-        {
-            let entry = by_role.entry(role).or_default();
-            entry.turns += 1;
-            entry.cost_usd += cost_usd;
-            entry.cache_read = entry.cache_read.saturating_add(cache_read);
+    let mut engine_by_role: BTreeMap<String, String> = BTreeMap::new();
+    for event in replay.events {
+        match event {
+            CrepEvent::RoleStarted { role, engine, .. } => {
+                engine_by_role.insert(role, engine);
+            }
+            CrepEvent::RoleSpoke {
+                role,
+                cost_usd,
+                cache_read,
+                ..
+            } => {
+                let engine = engine_by_role.get(&role).map(String::as_str);
+                let entry = by_role.entry(role).or_default();
+                entry.turns += 1;
+                if engine == Some("cc") || cost_usd > 0.0 {
+                    entry.cost_supported = true;
+                    entry.cost_usd += cost_usd;
+                }
+                entry.cache_read = entry.cache_read.saturating_add(cache_read);
+            }
+            _ => {}
         }
     }
     Ok(by_role)
@@ -84,7 +97,12 @@ pub async fn run(project_root: &Path, since: Option<NaiveDate>) -> Result<()> {
     }
 
     let total_turns: u64 = stats.values().map(|s| s.turns).sum();
-    let total_cost: f64 = stats.values().map(|s| s.cost_usd).sum();
+    let total_cost: f64 = stats
+        .values()
+        .filter(|s| s.cost_supported)
+        .map(|s| s.cost_usd)
+        .sum();
+    let any_unsupported = stats.values().any(|s| !s.cost_supported);
     let total_cache: u64 = stats.values().map(|s| s.cache_read).sum();
 
     println!(
@@ -94,18 +112,33 @@ pub async fn run(project_root: &Path, since: Option<NaiveDate>) -> Result<()> {
     println!("{}", "-".repeat(50));
     for (role, s) in &stats {
         println!(
-            "{:<16} {:>6} {:>10.4} {:>14}",
+            "{:<16} {:>6} {:>10} {:>14}",
             format!("@{role}"),
             s.turns,
-            s.cost_usd,
+            if s.cost_supported {
+                format!("{:.4}", s.cost_usd)
+            } else {
+                "—".to_owned()
+            },
             s.cache_read
         );
     }
     println!("{}", "-".repeat(50));
     println!(
-        "{:<16} {:>6} {:>10.4} {:>14}",
-        "TOTAL", total_turns, total_cost, total_cache
+        "{:<16} {:>6} {:>10} {:>14}",
+        "TOTAL",
+        total_turns,
+        if any_unsupported {
+            format!("{total_cost:.4}+")
+        } else {
+            format!("{total_cost:.4}")
+        },
+        total_cache
     );
+    if any_unsupported {
+        println!();
+        println!("— = engine does not report reliable cost yet; total excludes it.");
+    }
 
     Ok(())
 }
@@ -146,8 +179,22 @@ mod tests {
         write_log(
             &tmp,
             &[
+                CrepEvent::RoleStarted {
+                    role: "backend".into(),
+                    engine: "cc".into(),
+                    model: "opus".into(),
+                    session_id: "b".into(),
+                    priors_hash: "h".into(),
+                },
                 spoke("backend", 0.05, 1000),
                 spoke("backend", 0.10, 2000),
+                CrepEvent::RoleStarted {
+                    role: "frontend".into(),
+                    engine: "cc".into(),
+                    model: "opus".into(),
+                    session_id: "f".into(),
+                    priors_hash: "h".into(),
+                },
                 spoke("frontend", 0.02, 500),
                 CrepEvent::RoleStopped {
                     role: "backend".into(),
@@ -159,10 +206,34 @@ mod tests {
         assert_eq!(stats.len(), 2);
         let backend = stats.get("backend").unwrap();
         assert_eq!(backend.turns, 2);
+        assert!(backend.cost_supported);
         assert!((backend.cost_usd - 0.15).abs() < 1e-9);
         assert_eq!(backend.cache_read, 3_000);
         let frontend = stats.get("frontend").unwrap();
         assert_eq!(frontend.turns, 1);
+    }
+
+    #[tokio::test]
+    async fn aggregate_marks_non_cc_zero_cost_as_unsupported() {
+        let tmp = TempDir::new().unwrap();
+        write_log(
+            &tmp,
+            &[
+                CrepEvent::RoleStarted {
+                    role: "security".into(),
+                    engine: "codex".into(),
+                    model: "Codex default".into(),
+                    session_id: "c".into(),
+                    priors_hash: "h".into(),
+                },
+                spoke("security", 0.0, 0),
+            ],
+        );
+        let stats = aggregate(tmp.path(), None).await.unwrap();
+        let security = stats.get("security").unwrap();
+        assert_eq!(security.turns, 1);
+        assert!(!security.cost_supported);
+        assert!(security.cost_usd.abs() < 1e-9);
     }
 
     #[tokio::test]
