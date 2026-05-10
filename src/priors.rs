@@ -15,8 +15,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use serde::Deserialize;
 
-use crate::config::ROLES_DIR;
+use crate::config::{CONFIG_FILE, ROLES_DIR};
 
 /// Hard cap on active patches per role at v0.1. Once exceeded, the
 /// oldest patch is moved to `_archive/` (still loadable on demand,
@@ -73,6 +74,13 @@ pub fn compose_for(coderoom_dir: &Path, role_name: &str) -> Result<String> {
     })?;
     out.push_str(role_content.trim_end());
 
+    let roster = team_roster(coderoom_dir, role_name)?;
+    if !roster.is_empty() {
+        out.push_str(SECTION_FENCE);
+        out.push_str("## Team roster\n\n");
+        out.push_str(&roster);
+    }
+
     let patches = ordered_patches(coderoom_dir, role_name)?;
     if !patches.is_empty() {
         out.push_str(SECTION_FENCE);
@@ -104,6 +112,70 @@ pub fn compose_for(coderoom_dir: &Path, role_name: &str) -> Result<String> {
 
     out.push('\n');
     Ok(out)
+}
+
+#[derive(Debug, Deserialize)]
+struct RosterConfig {
+    host_role: String,
+}
+
+fn team_roster(coderoom_dir: &Path, role_name: &str) -> Result<String> {
+    let roles_dir = coderoom_dir.join(ROLES_DIR);
+    if !roles_dir.is_dir() {
+        return Ok(String::new());
+    }
+    let host_role = read_host_role(coderoom_dir).unwrap_or_else(|| "host".to_owned());
+    let mut roles = std::fs::read_dir(&roles_dir)
+        .with_context(|| format!("reading {}", roles_dir.display()))?
+        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+                return None;
+            }
+            let name = path.file_stem()?.to_str()?.to_owned();
+            (name != role_name).then_some((name, path))
+        })
+        .collect::<Vec<_>>();
+    roles.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut out = String::new();
+    for (name, path) in roles {
+        let summary = role_summary(&path)?;
+        let host_marker = if name == host_role { " (host)" } else { "" };
+        out.push_str(&format!("- @{name}{host_marker}: {summary}\n"));
+    }
+    Ok(out.trim_end().to_owned())
+}
+
+fn read_host_role(coderoom_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(coderoom_dir.join(CONFIG_FILE)).ok()?;
+    toml::from_str::<RosterConfig>(&text)
+        .ok()
+        .map(|cfg| cfg.host_role)
+}
+
+fn role_summary(path: &Path) -> Result<String> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("reading role priors {}", path.display()))?;
+    let summary = content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .unwrap_or("configured peer role");
+    Ok(truncate_summary(summary, 160))
+}
+
+fn truncate_summary(input: &str, max_chars: usize) -> String {
+    if input.chars().count() <= max_chars {
+        return input.to_owned();
+    }
+    let mut out = input
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    out.push('…');
+    out
 }
 
 /// Return `(date, path)` pairs for the role's journal entries within the
@@ -194,6 +266,113 @@ pub fn write_patch(coderoom_dir: &Path, role_name: &str, text: &str) -> Result<P
 
     let archived = enforce_active_cap(&dir)?;
     Ok(PatchWriteOutcome { path, archived })
+}
+
+/// Compact archived patches and old journal entries into the role's
+/// base priors file. This is deterministic and local: it preserves
+/// source paths and short excerpts instead of asking an engine to
+/// summarize itself.
+pub fn compact_role(coderoom_dir: &Path, role_name: &str) -> Result<PathBuf> {
+    let role_path = coderoom_dir.join(ROLES_DIR).join(format!("{role_name}.md"));
+    let mut body = std::fs::read_to_string(&role_path)
+        .with_context(|| format!("reading role priors {}", role_path.display()))?;
+    let summary = compact_summary(coderoom_dir, role_name)?;
+    if summary.trim().is_empty() {
+        return Ok(role_path);
+    }
+    if !body.ends_with('\n') {
+        body.push('\n');
+    }
+    body.push_str("\n## Compacted history\n\n");
+    body.push_str(&summary);
+    body.push('\n');
+    std::fs::write(&role_path, body)
+        .with_context(|| format!("writing compacted priors {}", role_path.display()))?;
+    Ok(role_path)
+}
+
+fn compact_summary(coderoom_dir: &Path, role_name: &str) -> Result<String> {
+    let mut out = String::new();
+    let archive = coderoom_dir
+        .join(PATCHES_DIR)
+        .join(role_name)
+        .join(ARCHIVE_SUBDIR);
+    if archive.is_dir() {
+        let mut patches = std::fs::read_dir(&archive)
+            .with_context(|| format!("reading {}", archive.display()))?
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"))
+            .collect::<Vec<_>>();
+        patches.sort();
+        for path in patches {
+            let excerpt = first_content_line(&path)?;
+            out.push_str(&format!(
+                "- Archived patch `{}`: {}\n",
+                path.display(),
+                excerpt
+            ));
+        }
+    }
+
+    let journals = old_journals(coderoom_dir, role_name, JOURNAL_WINDOW_DAYS)?;
+    for (date, path) in journals {
+        let excerpt = first_content_line(&path)?;
+        out.push_str(&format!(
+            "- Journal {date} `{}`: {}\n",
+            path.display(),
+            excerpt
+        ));
+    }
+    Ok(out)
+}
+
+fn first_content_line(path: &Path) -> Result<String> {
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let line = content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .unwrap_or("(empty)");
+    Ok(truncate_summary(line, 180))
+}
+
+fn old_journals(
+    coderoom_dir: &Path,
+    role_name: &str,
+    window_days: i64,
+) -> Result<Vec<(String, PathBuf)>> {
+    let dir = coderoom_dir.join(JOURNAL_DIR);
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let today = chrono::Local::now().date_naive();
+    let cutoff = today
+        .checked_sub_signed(chrono::Duration::days(window_days))
+        .unwrap_or(today);
+    let mut entries = Vec::new();
+    for dirent in std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
+        let day_path = dirent?.path();
+        let Some(name) = day_path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Ok(date) = chrono::NaiveDate::parse_from_str(name, "%Y-%m-%d") else {
+            continue;
+        };
+        if date >= cutoff {
+            continue;
+        }
+        let role_file = day_path.join(format!("{role_name}.md"));
+        if role_file.is_file() {
+            entries.push((date, name.to_owned(), role_file));
+        }
+    }
+    entries.sort_by_key(|(date, _, _)| *date);
+    Ok(entries
+        .into_iter()
+        .map(|(_, label, path)| (label, path))
+        .collect())
 }
 
 /// Pick the next patch sequence number for `dir`. Considers both the
@@ -415,6 +594,29 @@ mod tests {
     }
 
     #[test]
+    fn compose_includes_team_roster_for_peer_roles() {
+        let tmp = fixture("backend", "# Backend\n\nOwns APIs.");
+        let coderoom = coderoom_of(&tmp);
+        fs::write(coderoom.join(CONFIG_FILE), "host_role = \"host\"\n").unwrap();
+        fs::write(
+            coderoom.join(ROLES_DIR).join("host.md"),
+            "# Host\n\nRoutes work.",
+        )
+        .unwrap();
+        fs::write(
+            coderoom.join(ROLES_DIR).join("security.md"),
+            "# Security\n\nReviews risk.",
+        )
+        .unwrap();
+
+        let composed = compose_for(&coderoom, "backend").unwrap();
+        assert!(composed.contains("## Team roster"));
+        assert!(composed.contains("@host (host): Routes work."));
+        assert!(composed.contains("@security: Reviews risk."));
+        assert!(!composed.contains("@backend:"));
+    }
+
+    #[test]
     fn empty_shared_md_is_skipped() {
         let tmp = fixture("backend", "BACKEND_PRIORS");
         fs::write(coderoom_of(&tmp).join(SHARED_FILE), "   \n").unwrap();
@@ -580,6 +782,40 @@ mod tests {
             .filter(|e| e.path().is_file() && leading_seq_from_md(&e.path()).is_some())
             .count();
         assert_eq!(active_count, MAX_ACTIVE_PATCHES_PER_ROLE);
+    }
+
+    #[test]
+    fn compact_role_appends_archived_patch_and_old_journal_summary() {
+        let tmp = fixture("backend", "BACKEND_PRIORS\n");
+        let coderoom = coderoom_of(&tmp);
+        let archive = coderoom
+            .join(PATCHES_DIR)
+            .join("backend")
+            .join(ARCHIVE_SUBDIR);
+        fs::create_dir_all(&archive).unwrap();
+        fs::write(archive.join("001-old.md"), "Use the gateway path.\n").unwrap();
+
+        let old_day = chrono::Local::now()
+            .date_naive()
+            .checked_sub_signed(chrono::Duration::days(JOURNAL_WINDOW_DAYS + 2))
+            .unwrap()
+            .format("%Y-%m-%d")
+            .to_string();
+        let old_dir = coderoom.join(JOURNAL_DIR).join(&old_day);
+        fs::create_dir_all(&old_dir).unwrap();
+        fs::write(
+            old_dir.join("backend.md"),
+            "Decision with src/lib.rs evidence.\n",
+        )
+        .unwrap();
+
+        let path = compact_role(&coderoom, "backend").unwrap();
+        let body = fs::read_to_string(path).unwrap();
+        assert!(body.contains("## Compacted history"));
+        assert!(body.contains("Archived patch"));
+        assert!(body.contains("Use the gateway path."));
+        assert!(body.contains(&old_day));
+        assert!(body.contains("Decision with src/lib.rs evidence."));
     }
 
     #[test]

@@ -70,6 +70,63 @@ pub fn show_with_user(project_root: &Path, user_path: Option<&Path>) -> Result<(
     Ok(())
 }
 
+/// Print one effective merged config value.
+pub fn get(project_root: &Path, key: &str) -> Result<()> {
+    let cfg = crate::config_layered::load(project_root, user_config_path().as_deref())?;
+    let value = match key {
+        "default_engine" | "defaults.engine" => cfg.default_engine.as_str().to_owned(),
+        "default_model" | "defaults.model" => cfg
+            .default_model
+            .clone()
+            .unwrap_or_else(|| "(engine default)".to_owned()),
+        "budget_per_role_usd" | "defaults.budget_per_role_usd" => {
+            format!("{:.2}", cfg.budget_per_role_usd)
+        }
+        "host_role" => cfg.host_role,
+        other => bail!("unsupported key `{other}`"),
+    };
+    println!("{value}");
+    Ok(())
+}
+
+/// Set a scalar config value in one writable layer.
+pub fn set(layer: LayerTarget, project_root: &Path, key: &str, value: &str) -> Result<()> {
+    let key = normalize_set_key(layer, key);
+    let target = resolve_path(layer, project_root)?;
+    match layer {
+        LayerTarget::Project if !target.is_file() => bail!(
+            "{} not found — run `cr init` first to bootstrap the project",
+            target.display()
+        ),
+        LayerTarget::Local => {
+            let coderoom_dir = project_root.join(CODEROOM_DIR);
+            if !coderoom_dir.is_dir() {
+                bail!(
+                    "{} not found — run `cr init` first to bootstrap the project",
+                    coderoom_dir.display()
+                );
+            }
+            ensure_local_gitignored(&coderoom_dir)?;
+        }
+        LayerTarget::User | LayerTarget::Project => {}
+    }
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating parent dir for {}", target.display()))?;
+    }
+
+    let existing = std::fs::read_to_string(&target).unwrap_or_default();
+    let mut root = toml::Value::Table(
+        toml::from_str::<toml::map::Map<String, toml::Value>>(&existing)
+            .unwrap_or_else(|_| toml::map::Map::new()),
+    );
+    set_value(&mut root, &key, parse_scalar(value))?;
+    let text = toml::to_string_pretty(&root).context("serializing updated config")?;
+    std::fs::write(&target, text).with_context(|| format!("writing {}", target.display()))?;
+    println!("set {key} in {}", target.display());
+    Ok(())
+}
+
 /// Open `$EDITOR` on the chosen layer file. Creates the parent
 /// directory and seeds a commented stub when the file doesn't exist
 /// yet (user / local). For `--local`, also ensures `.coderoom/.gitignore`
@@ -139,6 +196,52 @@ fn resolve_path(layer: LayerTarget, project_root: &Path) -> Result<PathBuf> {
         LayerTarget::Project => Ok(project_root.join(CODEROOM_DIR).join(CONFIG_FILE)),
         LayerTarget::Local => Ok(project_root.join(CODEROOM_DIR).join(CONFIG_LOCAL_FILE)),
     }
+}
+
+fn parse_scalar(value: &str) -> toml::Value {
+    if let Ok(value) = value.parse::<bool>() {
+        return toml::Value::Boolean(value);
+    }
+    if let Ok(value) = value.parse::<i64>() {
+        return toml::Value::Integer(value);
+    }
+    if let Ok(value) = value.parse::<f64>() {
+        return toml::Value::Float(value);
+    }
+    toml::Value::String(value.to_owned())
+}
+
+fn normalize_set_key(layer: LayerTarget, key: &str) -> String {
+    if layer == LayerTarget::User {
+        match key {
+            "default_engine" => "defaults.engine".to_owned(),
+            "budget_per_role_usd" => "defaults.budget_per_role_usd".to_owned(),
+            _ => key.to_owned(),
+        }
+    } else {
+        key.to_owned()
+    }
+}
+
+fn set_value(root: &mut toml::Value, key: &str, value: toml::Value) -> Result<()> {
+    let parts = key.split('.').collect::<Vec<_>>();
+    if parts.is_empty() || parts.iter().any(|part| part.is_empty()) {
+        bail!("invalid key `{key}`");
+    }
+    let mut cursor = root;
+    for part in &parts[..parts.len() - 1] {
+        let table = cursor
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("`{key}` crosses a non-table value"))?;
+        cursor = table
+            .entry((*part).to_owned())
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    }
+    let table = cursor
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("`{key}` crosses a non-table value"))?;
+    table.insert(parts[parts.len() - 1].to_owned(), value);
+    Ok(())
 }
 
 const USER_STUB: &str = "\
@@ -420,6 +523,20 @@ mod tests {
         path(LayerTarget::Local, tmp.path()).unwrap();
         // user can be None in some CI envs; tolerate either.
         let _ = path(LayerTarget::User, tmp.path());
+    }
+
+    #[test]
+    fn set_project_scalar_updates_config() {
+        let tmp = fixture();
+        set(
+            LayerTarget::Project,
+            tmp.path(),
+            "budget_per_role_usd",
+            "0.25",
+        )
+        .unwrap();
+        let cfg = crate::config::Config::load_test(tmp.path()).unwrap();
+        assert!((cfg.budget_per_role_usd - 0.25).abs() < 1e-9);
     }
 
     #[test]

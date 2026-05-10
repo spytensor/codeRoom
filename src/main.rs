@@ -73,6 +73,14 @@ enum Cmd {
         #[arg(long)]
         since: Option<String>,
     },
+    /// Compact archived patches and old journals into a role's priors.
+    Compact {
+        /// Role name to compact.
+        role: String,
+        /// Project root. Defaults to the current working directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
     /// Inspect or edit the layered config (user / project / .local).
     Config {
         #[command(subcommand)]
@@ -119,6 +127,14 @@ enum RoleCmd {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Promote an existing role to host in project config.
+    Host {
+        /// Role name to make host.
+        name: String,
+        /// Project root. Defaults to the current working directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -157,6 +173,31 @@ enum ConfigCmd {
         /// Print the project-local path.
         #[arg(long, group = "layer")]
         local: bool,
+    },
+    /// Print one effective config value, such as `default_engine`.
+    Get {
+        /// Project root. Defaults to the current working directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Dotted key to read.
+        key: String,
+    },
+    /// Set one config value. Defaults to the user layer; pass
+    /// `--project-layer` or `--local` for other writable layers.
+    Set {
+        /// Project root. Defaults to the current working directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Write project `.coderoom/config.toml`.
+        #[arg(long = "project-layer", group = "layer")]
+        project_layer: bool,
+        /// Write the project-local override.
+        #[arg(long, group = "layer")]
+        local: bool,
+        /// Dotted key to set.
+        key: String,
+        /// TOML-ish scalar value to write.
+        value: String,
     },
 }
 
@@ -236,6 +277,14 @@ fn main() -> Result<()> {
         Some(Cmd::Config { command }) => run_config_cmd(command),
         Some(Cmd::Update) => coderoom::update::check(),
         Some(Cmd::Upgrade) => coderoom::update::upgrade(),
+        Some(Cmd::Compact { role, project }) => {
+            let root = project_root_or_cwd(project)?;
+            let role = role.strip_prefix('@').unwrap_or(&role);
+            let path =
+                coderoom::priors::compact_role(&root.join(coderoom::config::CODEROOM_DIR), role)?;
+            println!("compacted @{role} history into {}", path.display());
+            Ok(())
+        }
         Some(Cmd::Cost { project, since }) => {
             let since_date = match since {
                 Some(s) => Some(
@@ -284,6 +333,25 @@ fn run_config_cmd(cmd: ConfigCmd) -> Result<()> {
             let layer = layer_from_flags(user, local);
             coderoom::config_cmd::path(layer, &project_root_or_cwd(project)?)
         }
+        ConfigCmd::Get { project, key } => {
+            coderoom::config_cmd::get(&project_root_or_cwd(project)?, &key)
+        }
+        ConfigCmd::Set {
+            project,
+            project_layer,
+            local,
+            key,
+            value,
+        } => {
+            let layer = if project_layer {
+                LayerTarget::Project
+            } else if local {
+                LayerTarget::Local
+            } else {
+                LayerTarget::User
+            };
+            coderoom::config_cmd::set(layer, &project_root_or_cwd(project)?, &key, &value)
+        }
     }
 }
 
@@ -300,5 +368,8 @@ fn run_role_cmd(cmd: RoleCmd) -> Result<()> {
         }
         RoleCmd::List { project } => coderoom::role::list(&project_root_or_cwd(project)?),
         RoleCmd::Rm { name, project } => coderoom::role::rm(&project_root_or_cwd(project)?, &name),
+        RoleCmd::Host { name, project } => {
+            coderoom::role::set_host(&project_root_or_cwd(project)?, &name)
+        }
     }
 }

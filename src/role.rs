@@ -62,8 +62,12 @@ pub fn add(
     if !priors_path.exists() {
         std::fs::create_dir_all(priors_path.parent().expect("roles parent"))
             .with_context(|| format!("creating roles dir for `{name}`"))?;
-        std::fs::write(&priors_path, render_role_template(name))
-            .with_context(|| format!("writing {}", priors_path.display()))?;
+        let peers = role_peers(&raw, name);
+        std::fs::write(
+            &priors_path,
+            render_role_template(name, &raw.host_role, &peers),
+        )
+        .with_context(|| format!("writing {}", priors_path.display()))?;
     }
 
     println!("✓ added role @{name}");
@@ -110,8 +114,19 @@ pub(crate) fn add_many(project_root: &Path, additions: &[RoleAddition]) -> Resul
     for addition in &to_add {
         let priors_path = roles_dir.join(format!("{}.md", addition.name));
         if !priors_path.exists() {
-            std::fs::write(&priors_path, render_role_template(&addition.name))
-                .with_context(|| format!("writing {}", priors_path.display()))?;
+            let mut peers = raw.roles.keys().cloned().collect::<Vec<_>>();
+            peers.extend(
+                to_add
+                    .iter()
+                    .map(|role| role.name.clone())
+                    .filter(|name| name != &addition.name),
+            );
+            peers.sort();
+            std::fs::write(
+                &priors_path,
+                render_role_template(&addition.name, &raw.host_role, &peers),
+            )
+            .with_context(|| format!("writing {}", priors_path.display()))?;
         }
     }
 
@@ -177,6 +192,24 @@ pub fn rm(project_root: &Path, name: &str) -> Result<()> {
     }
 
     println!("✓ removed @{name}");
+    Ok(())
+}
+
+/// Promote an existing role to be the project host. This persists the
+/// `host_role` field in `.coderoom/config.toml`; the REPL `/host`
+/// command is the session-only counterpart.
+pub fn set_host(project_root: &Path, name: &str) -> Result<()> {
+    validate_name(name)?;
+    let coderoom_dir = project_root.join(CODEROOM_DIR);
+    let mut raw = read_project_raw(&coderoom_dir)?;
+
+    if !raw.roles.contains_key(name) {
+        bail!("no such role: @{name}");
+    }
+    name.clone_into(&mut raw.host_role);
+    write_project_raw(&coderoom_dir, &raw)?;
+
+    println!("✓ @{name} is now the host role");
     Ok(())
 }
 
@@ -255,8 +288,33 @@ fn append_roles_config_body(coderoom_dir: &Path, additions: &[RoleAddition]) -> 
     Ok(body)
 }
 
-fn render_role_template(name: &str) -> String {
-    DEFAULT_ROLE_PRIORS.replace("{ROLE}", name)
+fn role_peers(raw: &ProjectConfigRaw, name: &str) -> Vec<String> {
+    let mut peers = raw
+        .roles
+        .keys()
+        .filter(|role| role.as_str() != name)
+        .cloned()
+        .collect::<Vec<_>>();
+    peers.sort();
+    peers
+}
+
+fn render_role_template(name: &str, host: &str, peers: &[String]) -> String {
+    DEFAULT_ROLE_PRIORS
+        .replace("{ROLE}", name)
+        .replace("{HOST}", host)
+        .replace(
+            "{PEERS}",
+            &if peers.is_empty() {
+                "(none configured yet)".to_owned()
+            } else {
+                peers
+                    .iter()
+                    .map(|peer| format!("@{peer}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            },
+        )
 }
 
 #[cfg(test)]
@@ -295,7 +353,12 @@ host_role = "host"
         let coderoom = tmp.path().join(CODEROOM_DIR);
         let cfg = Config::load_test(tmp.path()).unwrap();
         assert!(cfg.roles.contains_key("backend"));
-        assert!(coderoom.join(ROLES_DIR).join("backend.md").is_file());
+        let priors = fs::read_to_string(coderoom.join(ROLES_DIR).join("backend.md")).unwrap();
+        assert!(priors.contains("@backend"));
+        assert!(priors.contains("@host"));
+        assert!(!priors.contains("{ROLE}"));
+        assert!(!priors.contains("{HOST}"));
+        assert!(!priors.contains("{PEERS}"));
     }
 
     #[test]
@@ -441,5 +504,14 @@ host_role = "host"
         let tmp = fixture();
         let err = rm(tmp.path(), "ghost").expect_err("unknown role");
         assert!(err.to_string().contains("ghost"));
+    }
+
+    #[test]
+    fn set_host_persists_host_role() {
+        let tmp = fixture();
+        add(tmp.path(), "backend", None, None).unwrap();
+        set_host(tmp.path(), "backend").unwrap();
+        let cfg = Config::load_test(tmp.path()).unwrap();
+        assert_eq!(cfg.host_role, "backend");
     }
 }
