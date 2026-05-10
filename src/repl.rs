@@ -217,7 +217,11 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
 
     loop {
         let input = if interactive_tty {
-            input::read_tty_line().await?
+            // Snapshot role names per iteration so /stop and /refresh
+            // additions are reflected in the next prompt's `@`-completer.
+            let mut role_names: Vec<String> = roles.keys().cloned().collect();
+            role_names.sort();
+            input::read_tty_line(role_names).await?
         } else {
             prompt(&mut stdout).await?;
             let stdin = stdin.as_mut().expect("non-tty stdin reader");
