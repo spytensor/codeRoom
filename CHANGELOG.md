@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 (nothing yet)
 
+## [0.1.12] - 2026-05-10
+
+### Added
+
+- `@all <text>` broadcasts a prompt to every running role, and `/host <role>`
+  switches the host role for the current REPL session.
+- `cr role host <name>` persists a new project host role.
+- `cr compact <role>` appends archived patches and old journals into a
+  deterministic compacted-history section in that role's priors.
+- `cr config get <key>` and scalar `cr config set <key> <value>` cover the
+  common config edits without opening an editor.
+- Boot dashboard, init wizard, and CREP renderer snapshots now lock down the
+  terminal surfaces most likely to regress.
+
+### Changed
+
+- Default host, specialist, and shared priors now describe the CodeRoom
+  protocol directly, including `From @role`, `/patch`, `/journal`, host, and
+  peer context.
+- Role priors now include a team roster when composed, so each spawned role
+  knows the configured host and peers.
+- Gemini roles require a CLI that advertises `--system-instruction-file`; the
+  old inline-priors fallback is only available behind
+  `CODEROOM_GEMINI_UNTRUSTED_PRIORS=1`.
+- Engine capability gaps are documented and rendered honestly: unsupported
+  cost and permission fields use `—` instead of fake zeroes or implied parity.
+- Integration workflow now runs on a weekly schedule in addition to manual
+  dispatch.
+
+### Fixed
+
+- `/stop`, `/refresh`, Ctrl-C, and per-turn timeouts now signal role adapters
+  explicitly and terminate child processes instead of leaking subprocesses.
+- Claude Code and Codex adapters drain stderr so noisy child processes cannot
+  block on a full stderr pipe.
+- Claude Code turn pacing now waits for a `RoleSpoke` / `RoleStopped` boundary
+  before accepting the next prompt, avoiding accidental turn merges.
+- Codex pending RPC requests are cleaned up on timeout / disconnect, tool
+  notifications are translated into CREP tool events, and the adapter stays on
+  `approval-policy=never` until a real approval bridge exists.
+- `.coderoom/messages.jsonl` writes are single-record appends under an
+  advisory process lock; replay reports malformed lines instead of silently
+  dropping corruption, and second-session lock failures now explain what to
+  close.
+- `cr cost` excludes unsupported engines from numeric totals instead of
+  reporting `$0.00` when an engine never supplied reliable usage data.
+- Journal writes and role spawning no longer do blocking file work directly on
+  the async REPL path.
+
 ## [0.1.11] - 2026-05-10
 
 ### Fixed
@@ -395,7 +444,8 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.11...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.1.12...HEAD
+[0.1.12]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.12
 [0.1.11]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.11
 [0.1.10]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.10
 [0.1.9]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.9

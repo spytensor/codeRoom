@@ -128,14 +128,18 @@ has a paper trail.
 ## Releasing (maintainer only)
 
 ```bash
-# bump version in Cargo.toml + CHANGELOG.md (move [Unreleased] → [vX.Y.Z])
-cargo build --release          # sanity check
+# bump version in Cargo.toml, npm/package.json, src/lib.rs,
+# README.md, data/splash_content.toml, and CHANGELOG.md
+cargo test --all-features
+cargo clippy --all-targets --all-features -- -D warnings
+cargo build --release
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin main vX.Y.Z
 ```
 
-The release tag triggers the (future) release workflow that produces
-binaries for linux + macOS.
+The release tag triggers `.github/workflows/release.yml`, which builds
+linux + macOS binaries, uploads the GitHub Release assets, and publishes
+the npm wrapper when `NPM_PUBLISH_ENABLED` / `NPM_TOKEN` are configured.
 
 ## Code of conduct
 

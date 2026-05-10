@@ -38,7 +38,7 @@ review, and *then* be implemented in a subsequent PR.
 
 ## A-001: Adapter contract is role-handle based, not method-per-action
 
-- **Status:** proposed
+- **Status:** implemented in v0.1.12
 - **Filed:** 2026-05-10
 - **Touches:** Locked decision 3, Engine adapters / Adapter contract
 
@@ -84,11 +84,11 @@ timeout, and Ctrl-C behavior.
 
 ### Decision
 
-Pending review.
+Accepted in #67 and implemented in v0.1.12.
 
 ## A-002: Permission and observability are per-engine capabilities
 
-- **Status:** proposed
+- **Status:** implemented in v0.1.12
 - **Filed:** 2026-05-10
 - **Touches:** Locked decisions 5, 13, 14; Engine adapters; README claims
 
@@ -130,7 +130,7 @@ intentional truth-in-advertising.
 
 ### Decision
 
-Pending review.
+Accepted in #67 and implemented in v0.1.12.
 
 ## A-003: Concurrent REPL rendering requires a StatusRegion contract
 
@@ -205,7 +205,7 @@ Pending review.
 
 ## Implemented amendments
 
-*(none — moved here once the implementing PR ships.)*
+Implemented amendments are marked inline with `implemented in vX.Y.Z`.
 
 ## Rejected amendments
 

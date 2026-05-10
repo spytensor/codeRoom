@@ -16,6 +16,14 @@ items = [
 ]
 
 [[whats_new]]
+version = "0.1.12"
+items = [
+  "stop, refresh, Ctrl-C, and timeouts now tear down role subprocesses",
+  "@all, /host, cr role host, cr compact, and config get/set are live",
+  "bus replay, cost totals, and engine capability gaps are now explicit",
+]
+
+[[whats_new]]
 version = "0.1.11"
 items = [
   "OKLCH role palette: lavender host + jade/coral/rose/sky/blossom/honey/teal",

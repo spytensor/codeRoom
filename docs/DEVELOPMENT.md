@@ -22,7 +22,7 @@ sudo apt-get install -y jq shellcheck timeout
 Verify:
 
 ```bash
-cargo --version          # cargo 1.82+
+cargo --version          # cargo 1.85+
 claude --version         # 2.1.137+
 codex --version          # 0.128.0+
 gemini --version         # 0.32.1+
