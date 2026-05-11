@@ -266,10 +266,12 @@ Replace the layered diagram line "enforces hop-depth limit, inflight
 tracking" with "tracks inflight turns, supervises grounding gate".
 
 Internally, `send_and_drain` becomes a worklist over a FIFO queue of
-`(role, brief)` pairs. The originating turn's mentions push onto the
-queue; each dispatched turn's mentions push too. The loop ends when the
-queue drains, when a turn is interrupted (`drain` returns `None`), or
-when the user halts.
+`(role, brief)` pairs. The originating turn's explicit delegation blocks
+push onto the queue; each dispatched turn's delegation blocks push too.
+Plain prose mentions, tables, quotes, code fences, and pasted transcript
+lines are attribution/context only. The loop ends when the queue drains,
+when a turn is interrupted (`drain` returns `None`), or when the user
+halts.
 
 ### Migration impact
 

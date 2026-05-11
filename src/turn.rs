@@ -6,7 +6,7 @@
 //! - **`turn_id`** disambiguates events when one role has multiple turns
 //!   in flight (queued, parallel auto-route + manual user dispatch).
 //! - **`thread_id`** stays constant across the auto-routing chain so
-//!   per-thread invariants like the hop-depth limit can be computed
+//!   replay and future parallel fan-out surfaces can group related turns
 //!   without reconstructing the chain from `parent_turn_id` ancestry.
 //!
 //! v0.1-shaped events that predate the turn-id world serialize the

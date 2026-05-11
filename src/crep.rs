@@ -53,7 +53,8 @@ pub enum CrepEvent {
     /// so `cr show` and the renderer can mark queued state visibly.
     ///
     /// `parent_turn_id` is set when this turn was triggered by another
-    /// role's `@<peer>` mention (auto-routed); `queue_position` reports
+    /// role's explicit `@<peer>` delegation (auto-routed);
+    /// `queue_position` reports
     /// where this turn sits in the role's per-role queue at dispatch
     /// time (0 = will start immediately, 1 = one turn ahead, …).
     TurnDispatched {
@@ -461,8 +462,8 @@ mod tests {
     fn turn_dispatched_chain_preserves_thread_id_across_hops() {
         // Auto-routed chain T1 → T2 → T3 on one thread. parent_turn_id
         // ancestry plus a single shared thread_id is the v0.2 contract
-        // PR c's hop-depth check relies on; lock the shape now so a
-        // future refactor doesn't quietly drop a field.
+        // replay and future parallel fan-out rely on; lock the shape now
+        // so a future refactor doesn't quietly drop a field.
         let chain = [
             CrepEvent::TurnDispatched {
                 role: "host".into(),

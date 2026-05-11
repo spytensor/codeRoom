@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Auto-routing now distinguishes delegation from attribution.** Role
+  reports can mention peers in prose, risk tables, quotes, code blocks,
+  and pasted transcript snippets without spawning follow-up turns. The
+  router only dispatches explicit delegation blocks that begin at physical
+  line start (or a line-start Markdown list marker) with `@role`, and each
+  target receives that block instead of the parent role's whole reply.
+
 ## [0.4.1] - 2026-05-11
 
 ### Changed

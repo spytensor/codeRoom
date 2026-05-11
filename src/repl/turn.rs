@@ -20,7 +20,6 @@ use super::work::{self, TurnWork};
 #[derive(Debug, Clone)]
 pub(super) struct CapturedTurn {
     pub(super) text: String,
-    pub(super) mentions: Vec<String>,
     /// Tool-call activity observed during this drain. Used by
     /// `send_and_drain` to gate auto-routing — a turn whose tools were
     /// systematically denied probably produced an ungrounded reply, and
@@ -341,7 +340,6 @@ pub(super) async fn drain_one_turn(
                             };
                             captured = Some(CapturedTurn {
                                 text: cleaned.text.clone(),
-                                mentions: cleaned.mentions.clone(),
                                 activity: activity.clone(),
                             });
                             status.clear();
