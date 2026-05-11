@@ -298,6 +298,107 @@ on chatty Codex/Gemini roles should keep that in mind.
 
 *(pending review)*
 
+## A-006: Resume the prior session by default; `--fresh` opts out
+
+- **Status:** proposed
+- **Filed:** 2026-05-11
+- **Touches:** v0.1 implicit behaviour: each `cr start` was a fresh engine session per role. README "Quickstart" and "Useful commands". Adapter contract (`RoleConfig`).
+
+### Problem
+
+Every modern AI CLI ships a resume primitive: `claude --resume <id>` /
+`--continue`, `codex --resume`, `gemini` equivalents. CodeRoom does
+not. Each `cr start` spawns every role as a brand-new engine session
+loaded with priors but no conversation history; the user loses the
+context they built up the previous time they used the room. The
+session ids the wrapper *does* capture (the cc adapter parses them
+out of stream-json init events and emits them on `RoleStarted`) are
+discarded as soon as `cr start` exits.
+
+In practice this means:
+
+- Long-running projects can't accumulate working context per role
+- The grounding-gate, journal, and patch infrastructure all work
+  around the missing context instead of complementing it
+- New users are surprised: every other CLI they have on their
+  machine resumes; codeRoom alone forgets
+
+### Alternatives considered
+
+1. **Status quo (`fresh per start`).** Simple, predictable, every
+   user can re-issue from scratch. But it makes codeRoom strictly
+   worse than typing into the underlying CLI directly.
+2. **`cr resume` as an explicit alias for `cr start --resume`.**
+   Discoverable but means the default flow still forgets — users
+   have to know to type the extra command.
+3. **Default resume; explicit `--fresh` to opt out.** Matches every
+   other CLI's behaviour and matches user mental model ("of course
+   it picks up where I left off"). Accepted.
+
+### Proposed change
+
+Replace the implicit "each `cr start` is a fresh session" behaviour
+with explicit per-role session persistence:
+
+- The REPL's spawn path writes each role's session id (emitted on
+  `RoleStarted`) to `.coderoom/sessions/ids/<role>.id` (sibling of
+  the init wizard's `sessions/role-suggestions-dismissed` marker;
+  the `ids/` subdir keeps the two from colliding). Overwrites on
+  every new id (e.g. after a `/refresh @role`).
+- `cr` / `cr start` reads `.coderoom/sessions/ids/<role>.id` for
+  each role before spawn; when present, it is plumbed into the
+  `RoleConfig::resume_session_id` field and the adapter wires the
+  engine's native resume flag (`--resume <id>` on cc, codex /
+  gemini equivalents land in follow-up adapter work).
+- When the engine rejects a stored id (session cleaned up
+  locally, project moved disks) the REPL clears the stale id, logs
+  one warning, and retries the spawn with a fresh conversation —
+  the user never gets stuck in a "can't start" loop because of
+  resume state.
+- `cr start --fresh` (wired in PR-7) clears
+  `.coderoom/sessions/ids/` before spawning so every role starts a
+  brand-new conversation. The flag is the explicit escape hatch
+  for "I want to forget".
+- `/refresh @role` (PR-7 also extends this) clears that role's
+  session id alongside its reload — the refresh semantic is
+  "reload priors + start over", so its conversation history
+  should reset to match.
+
+Engines that do not support resume (or whose adapters haven't
+plumbed the flag yet) silently degrade to a fresh session and log
+a debug-level "resume not wired for engine X" line.
+
+### Migration impact
+
+User-facing: the next `cr start` after this amendment lands will
+behave like users already expect every modern CLI to behave. There
+is no migration step — first-run after upgrade has no
+`.coderoom/sessions/` entries, so the first session is fresh; from
+the second session onward, resume kicks in.
+
+Storage: `.coderoom/sessions/` is already in the default
+`.coderoom/.gitignore` shipped by `cr init` (it was earmarked for
+this earlier). Session ids are pointers into the engine's *local*
+storage at e.g. `~/.claude/projects/<hash>/sessions/` and don't
+survive across machines, so committing them would be misleading.
+**Caveat:** existing projects initialised before that gitignore
+entry shipped may not have the line; users running unbounded
+`git status` will see `sessions/ids/<role>.id` as untracked.
+They're one-line opaque strings — low risk to commit but
+recommended to add the gitignore line manually.
+
+CREP protocol: unchanged. `RoleStarted` already carries
+`session_id`; the wrapper just persists it now.
+
+Failure modes: a stale session id (engine cleaned it up, project
+moved disks) causes the engine to fail at spawn. The error surfaces
+as a normal "spawning role X" anyhow context; the user can recover
+with `cr start --fresh`.
+
+### Decision
+
+*(pending review)*
+
 ## Implemented amendments
 
 Implemented amendments are marked inline with `implemented in vX.Y.Z`.

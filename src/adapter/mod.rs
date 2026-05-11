@@ -197,6 +197,16 @@ pub struct RoleConfig {
     /// REPL has a live permission bridge listening; `None` for headless
     /// `cr show` / smoke tests where no user is available to prompt.
     pub permission_socket_path: Option<PathBuf>,
+    /// Optional prior-session id to resume. When set, the adapter wires
+    /// the engine-native resume flag (cc: `--resume <id>`; codex /
+    /// gemini equivalents added separately) so the role picks up its
+    /// previous conversation. `None` starts a fresh session.
+    ///
+    /// Per amendment A-006, the REPL populates this from
+    /// `.coderoom/sessions/ids/<role>.id` so `cr start` behaves like
+    /// `claude --continue` / `codex --resume` — the user does not lose
+    /// their working context between invocations.
+    pub resume_session_id: Option<String>,
 }
 
 /// Channel capacity for the per-role interrupt mailbox. Multiple

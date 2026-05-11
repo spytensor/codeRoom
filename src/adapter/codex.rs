@@ -1490,6 +1490,7 @@ mod tests {
                     permission_mode,
                     permission_policy_path: None,
                     permission_socket_path: None,
+                    resume_session_id: None,
                 })
                 .await
                 .expect_err("codex non-bypass should fail before spawn");

@@ -39,6 +39,7 @@ async fn gemini_smoke_says_hello() {
         permission_mode: PermissionMode::Bypass,
         permission_policy_path: None,
         permission_socket_path: None,
+        resume_session_id: None,
     };
 
     let mut handle = adapter.start(config).await.expect("start");

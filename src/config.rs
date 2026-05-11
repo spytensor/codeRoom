@@ -239,6 +239,10 @@ impl Config {
             permission_mode,
             permission_policy_path: None,
             permission_socket_path: None,
+            // Populated by the REPL spawn path after reading
+            // `.coderoom/sessions/ids/<role>.id`. The bare `Config`
+            // loader is engine-neutral and doesn't see session state.
+            resume_session_id: None,
         })
     }
 

@@ -119,6 +119,18 @@ impl EngineAdapter for CcAdapter {
                 "--append-system-prompt-file={}",
                 config.priors_path.display()
             ));
+        // Per amendment A-006: if the REPL handed us a session id
+        // saved by a previous `cr start`, ask cc to resume that
+        // conversation instead of opening a fresh one. cc tracks
+        // sessions under `~/.claude/projects/<hash>/sessions/`; a
+        // stale id (session deleted, project moved) makes cc fail to
+        // start the subprocess, which surfaces as a normal Spawn
+        // error and the user can recover with `cr start --fresh`.
+        if let Some(resume_id) = &config.resume_session_id {
+            if !resume_id.trim().is_empty() {
+                cmd.arg("--resume").arg(resume_id);
+            }
+        }
         if config.permission_mode != PermissionMode::Bypass {
             let settings = claude_hook_settings(
                 config.permission_mode,

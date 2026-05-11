@@ -17,7 +17,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{IsTerminal, Write as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -44,6 +44,7 @@ mod input;
 mod markdown;
 mod permission_prompt;
 mod render;
+mod sessions;
 mod show;
 mod splash;
 mod status;
@@ -1012,6 +1013,39 @@ async fn refresh_role(
 /// subprocess via the configured engine adapter, and wire its event
 /// stream into `bus`. Returns the [`RunningRole`] the REPL should
 /// keep alive.
+/// Engine-polymorphic spawn helper used by [`spawn_role`]. Returns
+/// any engine-specific error wrapped in `anyhow::Error` so the
+/// caller can match on `.root_cause()` for diagnostic messages.
+async fn try_start_role(
+    context: &SpawnContext<'_>,
+    name: &str,
+    role_cfg: &crate::adapter::RoleConfig,
+) -> Result<crate::adapter::RoleHandle> {
+    let cfg = role_cfg.clone();
+    match cfg.engine {
+        Engine::Cc => context
+            .adapters
+            .cc
+            .start(cfg)
+            .await
+            .map_err(anyhow::Error::from),
+        Engine::Codex => context
+            .adapters
+            .codex
+            .start(cfg)
+            .await
+            .map_err(anyhow::Error::from)
+            .with_context(|| format!("spawning role `{name}` (codex)")),
+        Engine::Gemini => context
+            .adapters
+            .gemini
+            .start(cfg)
+            .await
+            .map_err(anyhow::Error::from)
+            .with_context(|| format!("spawning role `{name}` (gemini)")),
+    }
+}
+
 async fn spawn_role(context: &SpawnContext<'_>, name: &str) -> Result<RunningRole> {
     let cfg = context.cfg;
     let coderoom_dir = context.coderoom_dir;
@@ -1034,26 +1068,39 @@ async fn spawn_role(context: &SpawnContext<'_>, name: &str) -> Result<RunningRol
     if let Some(mode) = context.permission_mode_override {
         role_cfg.permission_mode = mode;
     }
+    // Resume from the prior session if `.coderoom/sessions/ids/<role>.id`
+    // is present (amendment A-006). Engines that don't yet wire the
+    // resume flag (codex, gemini) simply ignore the value. If the
+    // engine rejects a stale id (session was cleaned up locally,
+    // project moved disks), the first spawn errors; we recover by
+    // clearing the stored id and retrying once with a fresh
+    // conversation — so a broken resume never blocks `cr start`.
+    let project_root = coderoom_dir
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    if let Ok(Some(prior)) = sessions::read_session_id(&project_root, name) {
+        role_cfg.resume_session_id = Some(prior);
+    }
 
-    let handle = match role_cfg.engine {
-        Engine::Cc => context
-            .adapters
-            .cc
-            .start(role_cfg)
-            .await
-            .with_context(|| format!("spawning role `{name}`"))?,
-        Engine::Codex => context
-            .adapters
-            .codex
-            .start(role_cfg)
-            .await
-            .with_context(|| format!("spawning role `{name}` (codex)"))?,
-        Engine::Gemini => context
-            .adapters
-            .gemini
-            .start(role_cfg)
-            .await
-            .with_context(|| format!("spawning role `{name}` (gemini)"))?,
+    let handle = match try_start_role(context, name, &role_cfg).await {
+        Ok(handle) => handle,
+        Err(err) if role_cfg.resume_session_id.is_some() => {
+            // Resume attempt failed. Drop the stale id and retry
+            // fresh. We print a hint so the user understands why
+            // the role lost its prior conversation.
+            output::warn(format!(
+                "@{name} could not resume prior session ({}); falling back to a fresh conversation",
+                err.root_cause()
+            ));
+            if let Err(clear_err) = sessions::clear_session_id(&project_root, name) {
+                debug!(role = %name, %clear_err, "failed to clear stale session id");
+            }
+            role_cfg.resume_session_id = None;
+            try_start_role(context, name, &role_cfg)
+                .await
+                .with_context(|| format!("spawning role `{name}` after resume fallback"))?
+        }
+        Err(err) => return Err(err.context(format!("spawning role `{name}`"))),
     };
 
     let parts = handle.into_parts();
@@ -1066,7 +1113,12 @@ async fn spawn_role(context: &SpawnContext<'_>, name: &str) -> Result<RunningRol
         interrupt_tx,
         tempfiles,
     } = parts;
-    spawn_event_forwarder(rname, rx_events, Arc::clone(context.bus));
+    spawn_event_forwarder(
+        rname,
+        project_root.clone(),
+        rx_events,
+        Arc::clone(context.bus),
+    );
     Ok(RunningRole {
         tx_user,
         stop_tx: Some(stop_tx),
@@ -1094,9 +1146,29 @@ fn writepriors_tempfile(role: &str, composed: &str) -> Result<NamedTempFile> {
 }
 
 /// Forward all events from a role's `rx_events` into the shared bus.
-fn spawn_event_forwarder(role: String, mut rx: mpsc::Receiver<CrepEvent>, bus: Arc<MessageBus>) {
+/// Side-effect: when a `RoleStarted` event flows through, persist its
+/// `session_id` into `.coderoom/sessions/ids/<role>.id` so the next `cr
+/// start` can resume the conversation (amendment A-006).
+fn spawn_event_forwarder(
+    role: String,
+    project_root: PathBuf,
+    mut rx: mpsc::Receiver<CrepEvent>,
+    bus: Arc<MessageBus>,
+) {
     tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
+            if let CrepEvent::RoleStarted { session_id, .. } = &event {
+                if !session_id.trim().is_empty() {
+                    if let Err(error) = sessions::write_session_id(&project_root, &role, session_id)
+                    {
+                        warn!(
+                            role,
+                            %error,
+                            "failed to persist session id for resume — next start will fresh-spawn this role"
+                        );
+                    }
+                }
+            }
             if let Err(error) = bus.publish(event).await {
                 warn!(role, %error, "failed to publish event to bus");
             }
