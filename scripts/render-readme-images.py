@@ -4,6 +4,11 @@
 The images are intentionally synthetic terminal compositions. They keep the
 README stable and reproducible without requiring a live TUI, VHS, freeze, or a
 particular desktop screenshot setup.
+
+The renderer keeps the layout code at the original 1× coordinate space and
+upscales every draw call by ``SCALE`` at the boundary — so the PNGs land at
+retina resolution (3600 × 1800 by default) and text stays crisp on modern
+displays without making every literal coordinate harder to read.
 """
 
 from __future__ import annotations
@@ -28,7 +33,14 @@ except ImportError as exc:
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "docs" / "images"
-CANVAS = (1800, 900)
+
+# Layout is authored at this base size; SCALE multiplies the actual pixel
+# output so the PNGs are crisp on retina displays. Layout helpers below
+# work in 1× coordinates and the `ScaledDraw` wrapper handles the
+# translation when calling Pillow.
+CANVAS_LOGICAL = (1800, 900)
+SCALE = 2
+CANVAS = (CANVAS_LOGICAL[0] * SCALE, CANVAS_LOGICAL[1] * SCALE)
 
 BG = (0, 7, 7)
 PANEL = (0, 12, 12)
@@ -48,10 +60,10 @@ RAIL_BG = (0, 10, 10)
 
 # Font candidate lists, checked in order. Linux paths first (CI + most
 # dev boxes), macOS system paths as fallback so contributors can
-# regenerate locally without installing a font package. If none match
-# Pillow drops to a default bitmap font that ignores the size argument
-# — the renderer prints a warning at startup when that happens so a
-# broken regeneration is loud rather than silent.
+# regenerate locally without installing a font package. If none match,
+# Pillow drops to a default bitmap font that ignores the size argument;
+# `load_font` prints a loud warning when that happens so a broken
+# regeneration is loud rather than silent.
 FONT_REGULAR = [
     "/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf",
     "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
@@ -76,13 +88,14 @@ FONT_ITALIC = [
 
 
 def load_font(candidates: Iterable[str], size: int) -> ImageFont.ImageFont:
+    """Load a truetype font at the *scaled* pixel size so retina output
+    is sharp. Layout code calls this with logical sizes; the SCALE
+    multiplication happens here."""
+    pixel_size = size * SCALE
     for candidate in candidates:
         path = Path(candidate)
         if path.exists():
-            return ImageFont.truetype(str(path), size=size)
-    # Default bitmap font ignores `size`; warn loudly so a contributor
-    # who rebuilt these images on an unsupported box knows the output
-    # will be broken rather than committing tiny illegible PNGs.
+            return ImageFont.truetype(str(path), size=pixel_size)
     print(
         "WARN: no matching truetype font found — output will use Pillow's "
         "default bitmap font and ignore size hints",
@@ -100,13 +113,52 @@ SMALL_BOLD = load_font(FONT_BOLD, 22)
 ITALIC = load_font(FONT_ITALIC, 24)
 
 
-def text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
+def _scale(value):
+    """Recursively multiply every numeric leaf in a Pillow coordinate
+    argument by SCALE. Handles scalars, tuples, and nested tuples."""
+    if isinstance(value, tuple):
+        return tuple(_scale(v) for v in value)
+    if isinstance(value, list):
+        return [_scale(v) for v in value]
+    if isinstance(value, (int, float)):
+        return value * SCALE
+    return value
+
+
+class ScaledDraw:
+    """Thin shim over `ImageDraw.ImageDraw` that scales every coordinate
+    argument by SCALE so the layout code can stay in logical pixels.
+    ``textbbox`` returns logical-space coordinates (the Pillow result
+    is divided back) so text-width math composes cleanly with the rest
+    of the layout."""
+
+    def __init__(self, draw: ImageDraw.ImageDraw) -> None:
+        self._draw = draw
+
+    def text(self, xy, *args, **kwargs):
+        return self._draw.text(_scale(xy), *args, **kwargs)
+
+    def line(self, xy, *args, **kwargs):
+        return self._draw.line(_scale(xy), *args, **kwargs)
+
+    def rectangle(self, xy, *args, **kwargs):
+        return self._draw.rectangle(_scale(xy), *args, **kwargs)
+
+    def ellipse(self, xy, *args, **kwargs):
+        return self._draw.ellipse(_scale(xy), *args, **kwargs)
+
+    def textbbox(self, xy, *args, **kwargs):
+        bbox = self._draw.textbbox(_scale(xy), *args, **kwargs)
+        return tuple(c // SCALE for c in bbox)
+
+
+def text_width(draw: ScaledDraw, text: str, font: ImageFont.ImageFont) -> int:
     left, _, right, _ = draw.textbbox((0, 0), text, font=font)
     return right - left
 
 
 def fit_text(
-    draw: ImageDraw.ImageDraw, text: str, max_width: int, font: ImageFont.ImageFont
+    draw: ScaledDraw, text: str, max_width: int, font: ImageFont.ImageFont
 ) -> str:
     if text_width(draw, text, font) <= max_width:
         return text
@@ -121,7 +173,7 @@ def fit_text(
 
 
 def draw_text(
-    draw: ImageDraw.ImageDraw,
+    draw: ScaledDraw,
     xy: tuple[int, int],
     text: str,
     color: tuple[int, int, int] = WHITE,
@@ -149,17 +201,17 @@ def splash_copy(version: str) -> tuple[list[str], str, list[str]]:
     return tips, str(chosen.get("version", version)), list(chosen.get("items", []))
 
 
-def new_canvas() -> tuple[Image.Image, ImageDraw.ImageDraw]:
+def new_canvas() -> tuple[Image.Image, ScaledDraw]:
     image = Image.new("RGB", CANVAS, BG)
-    draw = ImageDraw.Draw(image)
+    draw = ScaledDraw(ImageDraw.Draw(image))
     return image, draw
 
 
-def bullet(draw: ImageDraw.ImageDraw, x: int, y: int, color: tuple[int, int, int]) -> None:
+def bullet(draw: ScaledDraw, x: int, y: int, color: tuple[int, int, int]) -> None:
     draw.ellipse((x, y, x + 14, y + 14), fill=color)
 
 
-def prompt(draw: ImageDraw.ImageDraw, x: int, y: int, body: str) -> None:
+def prompt(draw: ScaledDraw, x: int, y: int, body: str) -> None:
     draw_text(draw, (x, y), "⚡", YELLOW, BOLD)
     draw_text(draw, (x + 36, y), "cr", CYAN, BOLD)
     draw_text(draw, (x + 89, y), "›", GREEN, BOLD)
@@ -222,7 +274,7 @@ def render_boot_dashboard() -> None:
     image.save(OUT_DIR / "boot-dashboard.png")
 
 
-def status_line(draw: ImageDraw.ImageDraw, y: int, role: str) -> None:
+def status_line(draw: ScaledDraw, y: int, role: str) -> None:
     draw_text(
         draw,
         (86, y),
@@ -233,7 +285,7 @@ def status_line(draw: ImageDraw.ImageDraw, y: int, role: str) -> None:
 
 
 def work_card(
-    draw: ImageDraw.ImageDraw,
+    draw: ScaledDraw,
     y: int,
     role: str,
     title: str,
@@ -252,7 +304,7 @@ def work_card(
 
 
 def chat_line(
-    draw: ImageDraw.ImageDraw,
+    draw: ScaledDraw,
     y: int,
     role: str,
     text: str,
@@ -265,7 +317,7 @@ def chat_line(
 
 
 def reply_quote(
-    draw: ImageDraw.ImageDraw,
+    draw: ScaledDraw,
     y: int,
     child_role: str,
     parent_role: str,
@@ -274,10 +326,10 @@ def reply_quote(
     parent_color: tuple[int, int, int],
 ) -> None:
     """Two-line Slack-style reply pointer printed before an auto-routed
-    turn — mirrors `format_reply_quote` in src/repl/render.rs. The gutter
-    belongs to the child (it sits directly above the child's output);
-    the parent role label keeps its own role color so the eye links the
-    quote back to that role's earlier reply."""
+    turn — mirrors `format_reply_quote` in src/repl/render.rs. The
+    gutter belongs to the child (it sits directly above the child's
+    output); the parent role label keeps its own role color so the eye
+    links the quote back to that role's earlier reply."""
     draw.line((80, y - 3, 80, y + 29), fill=child_color, width=4)
     draw_text(draw, (111, y), child_role, child_color, BOLD)
     arrow_x = 111 + text_width(draw, child_role, BOLD) + 14
@@ -295,7 +347,7 @@ def reply_quote(
 
 
 def handoff_banner(
-    draw: ImageDraw.ImageDraw,
+    draw: ScaledDraw,
     y: int,
     role: str,
     color: tuple[int, int, int],
@@ -308,12 +360,16 @@ def handoff_banner(
     dash_start = 111 + text_width(draw, role, BOLD) + 14
     dash_end = 1144
     mid_y = y + 15
-    draw.line((dash_start, mid_y, dash_end - text_width(draw, " starting", FONT) - 12, mid_y), fill=DIM, width=1)
+    draw.line(
+        (dash_start, mid_y, dash_end - text_width(draw, " starting", FONT) - 12, mid_y),
+        fill=DIM,
+        width=1,
+    )
     status_x = dash_end - text_width(draw, "starting", FONT)
     draw_text(draw, (status_x, y), "starting", MUTED, FONT)
 
 
-def right_rail(draw: ImageDraw.ImageDraw) -> None:
+def right_rail(draw: ScaledDraw) -> None:
     x = 1244
     draw.rectangle((1204, 128, 1726, 764), fill=RAIL_BG)
     draw_text(draw, (x, 149), "engine trace modes", YELLOW, TITLE)
@@ -341,8 +397,8 @@ def render_work_cards() -> None:
     work_card(draw, 208, "@security", "Audit permission boundaries", "4m49s", 33, (10, 118, 108))
     chat_line(draw, 291, "@security", "Findings: bypass defaults, role paths, session scope.", SECURITY)
 
-    # Cross-role auto-route: reply pointer (#99) then handoff banner (#98)
-    # before @backend's work surfaces.
+    # Cross-role auto-route: reply pointer (#99) then handoff banner
+    # (#98) before @backend's work surfaces.
     reply_quote(
         draw,
         340,

@@ -12,7 +12,7 @@
 
 ![CodeRoom role work cards](docs/images/work-cards.png)
 
-> **Status: v0.2.1 — user-runnable, still pre-1.0.** Claude Code,
+> **Status: v0.2.2 — user-runnable, still pre-1.0.** Claude Code,
 > Codex, and Gemini adapters are wired up; bare `cr` opens CodeRoom
 > directly, guides setup when `.coderoom/` is missing, and shows the
 > effective role / engine / model configuration on entry. **v0.2**
@@ -20,8 +20,12 @@
 > trusts each engine to self-terminate), adds `/halt` and two-press
 > Ctrl-C for clean cancellation, renders role replies with markdown-lite
 > formatting, streams Codex/Gemini output as it arrives, and refreshes
-> WorkCard progress visibility. Per semver,
-> 0.x.y means the public API is not yet stable.
+> WorkCard progress visibility. **v0.2.2** lands the chat-room UX
+> polish: per-tool trace lines fold into the WorkCard, `@`/`/` tokens
+> get a dropdown completion menu, cross-role auto-routes show a
+> Slack-style quote of the parent reply, turn handoffs render as a
+> full-width banner, and permission prompts collapse to a single line.
+> Per semver, 0.x.y means the public API is not yet stable.
 
 ## Why
 
@@ -65,6 +69,7 @@ reply.
 | v0.1 | Multi-engine REPL, role priors, `@` routing, patch / refresh / journal / show / cost, npm install |
 | v0.1.x | First-run UI polish, config layering, updater, release hardening |
 | **v0.2** (shipped) | Trust + interrupt: deleted wall-clock per-turn kill; `/halt` + Ctrl-C two-press; codex stdio idle watchdog; WorkCard polish (filled/open glyphs + per-tool accent colors); richer status line |
+| **v0.2.2** (shipped) | Chat-room UX polish: folded per-tool traces, `@`/`/` dropdown completion menu, cross-role quote/reply block, full-width handoff banner, compact one-line permission prompts |
 | v0.2.x | Concurrent typing during a turn + multi-role parallel dispatch + multi-slot status region |
 | v0.3 | `cr review` (patch clustering), `cr verify` (journal fact-check) |
 | v0.x | Team mode (per-role human owners), auto-router (opt-in), replay viewer |
@@ -109,7 +114,7 @@ Disable that with `CODEROOM_NO_UPDATE_CHECK=1` or
 <summary>Don't have npm? Direct binary install.</summary>
 
 ```bash
-TAG=v0.2.1
+TAG=v0.2.2
 ARCH=$(uname -m); case "$ARCH" in arm64|aarch64) ARCH=aarch64 ;; *) ARCH=x86_64 ;; esac
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 curl -fsSL "https://github.com/spytensor/codeRoom/releases/download/${TAG}/cr-${TAG}-${OS}-${ARCH}.tar.gz" \
