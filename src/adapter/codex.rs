@@ -121,6 +121,22 @@ impl EngineAdapter for CodexAdapter {
             });
         }
 
+        // `codex mcp-server` (the stdio mode codeRoom drives) does not
+        // accept a session-id resume flag — `codex resume <id>` is a
+        // separate interactive subcommand. So when the wrapper passes
+        // `resume_session_id` for a codex role we log it and continue
+        // with a fresh session, instead of silently dropping it. The
+        // user-facing hint at `spawn_role` already warns about this so
+        // they aren't surprised when context isn't carried forward.
+        // Tracked as a follow-up — see `docs/proposed-amendments.md`
+        // A-006 "codex/gemini resume parity is deferred".
+        if config.resume_session_id.is_some() {
+            tracing::debug!(
+                role = %config.name,
+                "ignoring resume_session_id: codex mcp-server has no resume flag"
+            );
+        }
+
         let priors_text = tokio::fs::read_to_string(&config.priors_path)
             .await
             .map_err(|source| AdapterError::PriorsRead {

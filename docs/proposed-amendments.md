@@ -365,8 +365,21 @@ with explicit per-role session persistence:
   should reset to match.
 
 Engines that do not support resume (or whose adapters haven't
-plumbed the flag yet) silently degrade to a fresh session and log
-a debug-level "resume not wired for engine X" line.
+plumbed the flag yet) silently degrade to a fresh session at the
+engine layer; the REPL prints one user-visible hint at `cr start`
+so the user knows their codex / gemini roles will start clean
+even though their cc roles resume.
+
+Currently wired:
+
+- **cc**: `--resume <session-id>`. Sessions live under
+  `~/.claude/projects/<hash>/sessions/`.
+- **codex**: NOT wired. `codex mcp-server` (the stdio mode codeRoom
+  drives) has no `--resume` flag; `codex resume <id>` is a separate
+  interactive subcommand. Tracked at #120.
+- **gemini**: NOT wired. `gemini --resume <index>` uses session
+  *indexes*, not UUIDs; the synthetic `gemini-<role>` id codeRoom
+  emits is not a resumable identifier. Tracked at #121.
 
 ### Migration impact
 
