@@ -416,8 +416,9 @@ impl LineEditor {
 
     /// All slash commands whose name starts with `prefix` (case-insensitive).
     /// Returned in [`SLASH_COMMANDS`] declaration order (alphabetical), so
-    /// the Tab cycle is stable.
-    fn matching_slash_commands(&self, prefix: &str) -> Vec<&'static SlashCommand> {
+    /// the Tab cycle is stable. Associated function — the source is a
+    /// static table, no editor state is involved.
+    fn matching_slash_commands(prefix: &str) -> Vec<&'static SlashCommand> {
         let needle = prefix.to_ascii_lowercase();
         SLASH_COMMANDS
             .iter()
@@ -443,7 +444,7 @@ impl LineEditor {
             return Some(pick[prefix.len()..].to_owned());
         }
         if let Some(prefix) = self.slash_token() {
-            let matches = self.matching_slash_commands(&prefix);
+            let matches = Self::matching_slash_commands(&prefix);
             if matches.is_empty() {
                 return None;
             }
@@ -472,7 +473,7 @@ impl LineEditor {
             (key, self.matching_roles(&prefix).len())
         } else if let Some(prefix) = self.slash_token() {
             let key = format!("/{}", prefix.to_ascii_lowercase());
-            (key, self.matching_slash_commands(&prefix).len())
+            (key, Self::matching_slash_commands(&prefix).len())
         } else {
             return false;
         };
@@ -517,7 +518,7 @@ impl LineEditor {
             return true;
         }
         if let Some(prefix) = self.slash_token() {
-            let matches = self.matching_slash_commands(&prefix);
+            let matches = Self::matching_slash_commands(&prefix);
             if matches.is_empty() {
                 return false;
             }
