@@ -16,6 +16,14 @@ items = [
 ]
 
 [[whats_new]]
+version = "0.4.0"
+items = [
+  "calm CLI surface: progress first, raw trace on demand",
+  "allow approvals disappear from chat",
+  "completed WorkCards collapse to one quiet summary line",
+]
+
+[[whats_new]]
 version = "0.3.0"
 items = [
   "cr start resumes prior role sessions by default; use --fresh to forget",

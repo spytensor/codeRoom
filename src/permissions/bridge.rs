@@ -319,7 +319,9 @@ pub async fn request_decision_async(
 
     let mut stream = tokio::net::UnixStream::connect(socket_path)
         .await
-        .map_err(|error| BridgeError::Io(format!("connecting {socket_path:?}: {error}")))?;
+        .map_err(|error| {
+            BridgeError::Io(format!("connecting {}: {error}", socket_path.display()))
+        })?;
 
     let request = BridgeRequest {
         v: PROTOCOL_VERSION,
@@ -385,8 +387,9 @@ pub fn request_decision_blocking(
         _ => return Err(BridgeError::NoSocket),
     };
 
-    let stream = UnixStream::connect(&socket_path)
-        .map_err(|error| BridgeError::Io(format!("connecting {socket_path:?}: {error}")))?;
+    let stream = UnixStream::connect(&socket_path).map_err(|error| {
+        BridgeError::Io(format!("connecting {}: {error}", socket_path.display()))
+    })?;
     stream
         .set_read_timeout(Some(READ_TIMEOUT))
         .map_err(|error| BridgeError::Io(format!("setting read timeout: {error}")))?;

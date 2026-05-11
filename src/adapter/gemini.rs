@@ -559,22 +559,22 @@ async fn process_gemini_stream_line(
         return;
     };
     match value.get("type").and_then(serde_json::Value::as_str) {
-        Some("message") => {
-            if value.get("role").and_then(serde_json::Value::as_str) == Some("assistant") {
-                if let Some(content) = value.get("content").and_then(serde_json::Value::as_str) {
-                    assistant_text.lock().await.push_str(content);
-                    *delta_sequence = value
-                        .get("sequence")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or_else(|| (*delta_sequence).saturating_add(1));
-                    let _ = events.try_send(CrepEvent::RoleOutputDelta {
-                        role: role.to_owned(),
-                        text_delta: content.to_owned(),
-                        sequence: *delta_sequence,
-                        turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-                        thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-                    });
-                }
+        Some("message")
+            if value.get("role").and_then(serde_json::Value::as_str) == Some("assistant") =>
+        {
+            if let Some(content) = value.get("content").and_then(serde_json::Value::as_str) {
+                assistant_text.lock().await.push_str(content);
+                *delta_sequence = value
+                    .get("sequence")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or_else(|| (*delta_sequence).saturating_add(1));
+                let _ = events.try_send(CrepEvent::RoleOutputDelta {
+                    role: role.to_owned(),
+                    text_delta: content.to_owned(),
+                    sequence: *delta_sequence,
+                    turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                    thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                });
             }
         }
         Some("tool_use") => {

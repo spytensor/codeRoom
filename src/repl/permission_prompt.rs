@@ -12,11 +12,12 @@
 //!   ▎ @backend wants Bash `cargo test --no-run` — [a]llow once · [s]ession · [d]eny · [n]ever
 //! ```
 //!
-//! After a keypress the prompt row is overwritten in place with a
-//! single-line outcome:
+//! After a successful allow decision the prompt row is cleared with no
+//! durable live echo. "Allowed" is not useful progress; it is the absence
+//! of a problem. Denials still render because they change the task result:
 //!
 //! ```text
-//!   ▎ ✓ @backend allowed (session)
+//!   ▎ ⊘ @backend denied (once)
 //! ```
 //!
 //! The `▎` left gutter is painted in the role's stable color so the
@@ -177,37 +178,40 @@ fn format_prompt_line(request: &BridgeRequest, host_role: &str, width: usize) ->
 }
 
 fn paint_outcome(role: &str, host_role: &str, response: &BridgeResponse) {
-    // `\r\x1b[2K` returns to col 0 and clears the prompt line; the
-    // outcome then writes over it and the trailing newline (`println!`)
-    // advances to the next row, ready for whatever comes next.
-    println!(
-        "\r\x1b[2K{}",
-        format_outcome_line(role, host_role, response)
-    );
+    if let Some(line) = format_outcome_line(role, host_role, response) {
+        // `\r\x1b[2K` returns to col 0 and clears the prompt line;
+        // denials then write a self-attributing event and advance.
+        println!("\r\x1b[2K{line}");
+    } else {
+        // Allow decisions are deliberately silent in the live stream.
+        // Clear the pending prompt row and let the surrounding status
+        // repaint fill the line if a role is still working.
+        print!("\r\x1b[2K");
+        let _ = std::io::stdout().flush();
+    }
 }
 
 /// Pure formatter for the one-line outcome echo — same testability
-/// rationale as [`format_prompt_line`]. Even though the outcome
-/// replaces the prompt in place, the role label is preserved so the
-/// line is self-attributing in plain-text capture (`cr ... | tee`)
+/// rationale as [`format_prompt_line`]. Successful allow decisions return
+/// `None` because the default live surface keeps them audit-only; denials
+/// remain visible and self-attributing in plain-text capture (`cr ... | tee`)
 /// and on terminals without truecolor.
-fn format_outcome_line(role: &str, host_role: &str, response: &BridgeResponse) -> String {
+fn format_outcome_line(role: &str, host_role: &str, response: &BridgeResponse) -> Option<String> {
+    if response.decision == PermissionDecision::Allow {
+        return None;
+    }
     let role_paint = output::role_color(role, host_role);
     let gutter = "▎".with(role_paint);
     let role_label = format!("@{role}").with(role_paint).bold();
-    let (glyph, label, color) = match response.decision {
-        PermissionDecision::Allow => ("✓", "allowed", output::OK),
-        PermissionDecision::Deny => ("⊘", "denied", output::BAD),
-    };
     let scope_label = match response.scope {
         DecisionScope::Once => "once",
         DecisionScope::Session => "session",
     };
-    format!(
+    Some(format!(
         "{gutter} {glyph_styled} {role_label} {action} ({scope_label})",
-        glyph_styled = glyph.with(color).bold(),
-        action = label.with(color),
-    )
+        glyph_styled = "⊘".with(output::BAD).bold(),
+        action = "denied".with(output::BAD),
+    ))
 }
 
 /// Char-count truncation with an ellipsis suffix — purpose-built for
@@ -524,15 +528,14 @@ mod tests {
     }
 
     #[test]
-    fn outcome_line_includes_role_label_and_glyph() {
+    fn allow_outcome_is_silent() {
         let response = BridgeResponse {
             v: 1,
             decision: PermissionDecision::Allow,
             scope: DecisionScope::Session,
             reason: "user allowed (session)".to_owned(),
         };
-        let line = strip_ansi(&format_outcome_line("backend", "host", &response));
-        assert_eq!(line, "▎ ✓ @backend allowed (session)");
+        assert!(format_outcome_line("backend", "host", &response).is_none());
     }
 
     #[test]
@@ -543,7 +546,8 @@ mod tests {
             scope: DecisionScope::Once,
             reason: "user denied (once)".to_owned(),
         };
-        let line = strip_ansi(&format_outcome_line("backend", "host", &response));
+        let line =
+            strip_ansi(&format_outcome_line("backend", "host", &response).expect("denial renders"));
         assert_eq!(line, "▎ ⊘ @backend denied (once)");
     }
 

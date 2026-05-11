@@ -275,32 +275,74 @@ def render_boot_dashboard() -> None:
 
 
 def status_line(draw: ScaledDraw, y: int, role: str) -> None:
-    draw_text(
-        draw,
-        (86, y),
-        f"│ 1 role working · {role} · 33s · 4 tools · running Read Cargo.toml",
-        MUTED,
-        FONT,
-    )
+    _ = role
+    line = "│ 2 working · @security checking permissions · @backend waiting approval"
+    draw_text(draw, (86, y), fit_text(draw, line, 1050, FONT), MUTED, FONT)
 
 
-def work_card(
+def active_card(
     draw: ScaledDraw,
     y: int,
     role: str,
     title: str,
-    duration: str,
+    state: str,
+    rows: list[tuple[str, tuple[int, int, int], str]],
+    color: tuple[int, int, int],
+) -> None:
+    left, right = 90, 1148
+    height = 86 + 37 * len(rows)
+    draw.line((left, y, right, y), fill=color, width=2)
+    draw.line((left, y, left, y + height), fill=color, width=2)
+    draw.line((right, y, right, y + height), fill=color, width=2)
+    draw.line((left, y + height, right, y + height), fill=color, width=2)
+
+    label = f" {role} working · {title} "
+    draw.rectangle(
+        (left + 24, y - 15, left + 24 + text_width(draw, label, FONT), y + 16),
+        fill=BG,
+    )
+    draw_text(draw, (left + 27, y - 17), label, color, FONT)
+    draw_text(draw, (left + 42, y + 34), state, WHITE, FONT)
+
+    row_y = y + 75
+    for glyph, glyph_color, text in rows:
+        draw_text(draw, (left + 42, row_y), glyph, glyph_color, BOLD)
+        draw_text(draw, (left + 77, row_y), fit_text(draw, text, right - left - 120, FONT), MUTED, FONT)
+        row_y += 37
+
+
+def permission_card(
+    draw: ScaledDraw,
+    y: int,
+    role: str,
+    title: str,
+    color: tuple[int, int, int],
+) -> None:
+    active_card(
+        draw,
+        y,
+        role,
+        title,
+        "waiting for your approval",
+        [
+            ("✓", GREEN, "read src/adapter/cc.rs"),
+            ("?", YELLOW, "wants Bash `cargo test --workspace` — [a]llow · [s]ession · [d]eny"),
+        ],
+        color,
+    )
+
+
+def done_summary(
+    draw: ScaledDraw,
+    y: int,
+    role: str,
+    title: str,
+    elapsed: str,
     steps: int,
     color: tuple[int, int, int],
 ) -> None:
-    left, right = 90, 1144
-    draw.line((left, y, right, y), fill=color, width=2)
-    draw.line((left, y, left, y + 31), fill=color, width=2)
-    draw.line((right, y, right, y + 31), fill=color, width=2)
-    draw.line((left, y + 31, right, y + 31), fill=color, width=2)
-    label = f" {role} · {title} · done in {duration} · {steps} steps "
-    draw.rectangle((left + 24, y - 15, left + 24 + text_width(draw, label, FONT), y + 16), fill=BG)
-    draw_text(draw, (left + 27, y - 17), label, color, FONT)
+    draw.line((80, y - 3, 80, y + 29), fill=color, width=4)
+    draw_text(draw, (111, y), fit_text(draw, f"{role} done · {title} · {elapsed} · {steps} steps", 1040, FONT), MUTED, FONT)
 
 
 def chat_line(
@@ -372,51 +414,60 @@ def handoff_banner(
 def right_rail(draw: ScaledDraw) -> None:
     x = 1244
     draw.rectangle((1204, 128, 1726, 764), fill=RAIL_BG)
-    draw_text(draw, (x, 149), "engine trace modes", YELLOW, TITLE)
-    draw_text(draw, (x, 197), "@claude", BLUE, BOLD)
-    draw_text(draw, (x + 26, 230), "live tools", WHITE, FONT)
-    draw_text(draw, (x + 26, 264), "cr-task + assistant text", MUTED, SMALL)
-    draw_text(draw, (x, 309), "@codex", SECURITY, BOLD)
-    draw_text(draw, (x + 26, 342), "streaming text", WHITE, FONT)
-    draw_text(draw, (x + 26, 376), "MCP deltas + tool progress", MUTED, SMALL)
-    draw_text(draw, (x, 421), "@gemini", PURPLE, BOLD)
-    draw_text(draw, (x + 26, 454), "streaming json", WHITE, FONT)
-    draw_text(draw, (x + 26, 488), "assistant text + tool events", MUTED, SMALL)
+    draw_text(draw, (x, 149), "default surface", YELLOW, TITLE)
+    draw_text(draw, (x, 197), "show", WHITE, FONT)
+    draw_text(draw, (x + 26, 230), "user asks + final replies", MUTED, SMALL)
+    draw_text(draw, (x + 26, 264), "active progress + blockers", MUTED, SMALL)
+    draw_text(draw, (x, 319), "summarize", WHITE, FONT)
+    draw_text(draw, (x + 26, 352), "tool count + current step", MUTED, SMALL)
+    draw_text(draw, (x + 26, 386), "done in one quiet line", MUTED, SMALL)
+    draw_text(draw, (x, 441), "hide", WHITE, FONT)
+    draw_text(draw, (x + 26, 474), "allowed once/session", MUTED, SMALL)
+    draw_text(draw, (x + 26, 508), "raw tool input/output", MUTED, SMALL)
 
-    draw_text(draw, (x, 566), "visual rule", YELLOW, TITLE)
-    draw_text(draw, (x, 613), "work is framed", WHITE, FONT)
-    draw_text(draw, (x, 648), "chat is markdown-lite", MUTED, FONT)
-    draw_text(draw, (x, 699), "deltas are live-only", WHITE, FONT)
-    draw_text(draw, (x, 734), "history keeps final replies", MUTED, FONT)
+    draw_text(draw, (x, 586), "audit surface", YELLOW, TITLE)
+    draw_text(draw, (x, 633), "cr show", WHITE, FONT)
+    draw_text(draw, (x + 26, 668), "full CREP event log", MUTED, FONT)
+    draw_text(draw, (x, 719), "verbose tools", WHITE, FONT)
+    draw_text(draw, (x + 26, 754), "opt-in live trace", MUTED, FONT)
 
 
 def render_work_cards() -> None:
     image, draw = new_canvas()
-    prompt(draw, 82, 84, "@security scan project security and explain findings")
+    prompt(draw, 82, 84, "@security @backend review README claims and tighten the UI")
     status_line(draw, 134, "@security")
-    work_card(draw, 208, "@security", "Audit permission boundaries", "4m49s", 33, (10, 118, 108))
-    chat_line(draw, 291, "@security", "Findings: bypass defaults, role paths, session scope.", SECURITY)
-
-    # Cross-role auto-route: reply pointer (#99) then handoff banner
-    # (#98) before @backend's work surfaces.
-    reply_quote(
+    active_card(
         draw,
-        340,
-        "@backend",
+        208,
         "@security",
-        "Findings: bypass defaults, role paths, session scope.",
-        BLUE,
-        SECURITY,
+        "audit permission and routing claims",
+        "checking permission boundaries",
+        [
+            ("✓", GREEN, "read README.md"),
+            ("✓", GREEN, "grep permission_mode in src/"),
+            ("…", WHITE, "reading src/permissions/mod.rs"),
+        ],
+        (10, 118, 108),
     )
-    handoff_banner(draw, 410, "@backend", BLUE)
 
-    status_line(draw, 454, "@backend")
-    work_card(draw, 522, "@backend", "Implement observable role output", "52s", 7, (30, 110, 178))
-    chat_line(draw, 606, "@backend", "Done: markdown replies, live deltas, WorkCard previews.", BLUE)
+    permission_card(
+        draw,
+        430,
+        "@backend",
+        "verify implementation details",
+        BLUE,
+    )
 
-    prompt(draw, 82, 678, "@ci run focused regression tests")
-    status_line(draw, 728, "@ci")
-    work_card(draw, 796, "@ci", "Run focused regression tests", "21s", 5, (30, 142, 107))
+    done_summary(draw, 646, "@qa", "audit README testability claims", "52s", 5, YELLOW)
+    chat_line(
+        draw,
+        706,
+        "@qa",
+        'README says "fully tested"; src/turn.rs still lacks unit coverage.',
+        YELLOW,
+    )
+
+    done_summary(draw, 796, "@security", "audit permission and routing claims", "2m41s", 9, SECURITY)
     right_rail(draw)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)

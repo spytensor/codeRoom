@@ -161,10 +161,10 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
     }
 
     let mut cfg = Config::load(project_root)
-        .with_context(|| format!("loading config in {project_root:?}"))?;
+        .with_context(|| format!("loading config in {}", project_root.display()))?;
     if crate::init::offer_role_expansion(project_root, &cfg)? {
         cfg = Config::load(project_root)
-            .with_context(|| format!("reloading config in {project_root:?}"))?;
+            .with_context(|| format!("reloading config in {}", project_root.display()))?;
         println!();
     }
 
@@ -375,14 +375,13 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
             }
         };
         match parse_line(&line) {
-            Command::Empty => continue,
+            Command::Empty => {}
             Command::Exit => {
                 shutdown_all_roles(&mut roles, StopReason::Completed);
                 break;
             }
             Command::Help => {
                 print_help(&cfg);
-                continue;
             }
             Command::Stop(role) => {
                 if let Some(running) = roles.remove(&role) {
@@ -771,7 +770,7 @@ fn filter_routable_mentions(
     mentions
         .iter()
         .filter(|m| m.as_str() != current_role)
-        .filter(|m| known_roles.iter().any(|k| *k == m.as_str()))
+        .filter(|m| known_roles.contains(&m.as_str()))
         .cloned()
         .collect()
 }

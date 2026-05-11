@@ -282,7 +282,7 @@ pub(super) fn format_reply_quote(
     let snippet_oneline = one_line(parent_text);
     let snippet = truncate_inline(&snippet_oneline, snippet_budget);
     let quote_text = format!("\"{snippet}\"").with(output::DIM).to_string();
-    let quote = format!("{gutter} {sep} {quote_text}", sep = "│".with(output::RULE),);
+    let quote = format!("{gutter} {sep} {quote_text}", sep = "│".with(output::RULE));
 
     format!("{header}\n{quote}")
 }

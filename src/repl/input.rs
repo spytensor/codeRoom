@@ -126,20 +126,16 @@ fn read_tty_line_blocking(
                 editor.clear();
                 editor.redraw(&mut stdout)?;
             }
-            KeyCode::Tab | KeyCode::Down => {
+            KeyCode::Tab | KeyCode::Down if editor.cycle_completion() => {
                 // Tab and Down advance the selection in the menu /
                 // ghost cycle. Down feels natural when the dropdown is
                 // visible; Tab is the long-standing convention.
-                if editor.cycle_completion() {
-                    editor.redraw(&mut stdout)?;
-                }
+                editor.redraw(&mut stdout)?;
             }
-            KeyCode::Up => {
+            KeyCode::Up if editor.cycle_completion_back() => {
                 // Up moves the menu selection backwards. Falls through
                 // silently when there is no active completion.
-                if editor.cycle_completion_back() {
-                    editor.redraw(&mut stdout)?;
-                }
+                editor.redraw(&mut stdout)?;
             }
             KeyCode::Right | KeyCode::Char('f')
                 if matches!(key.code, KeyCode::Right)
@@ -155,13 +151,11 @@ fn read_tty_line_blocking(
                     editor.redraw(&mut stdout)?;
                 }
             }
-            KeyCode::Esc => {
+            KeyCode::Esc if editor.dismiss_completion() => {
                 // Esc clears the active completion cycle but does NOT
                 // dismiss the editor. Lets users explicitly say "no, I
                 // wanted to type @b literally."
-                if editor.dismiss_completion() {
-                    editor.redraw(&mut stdout)?;
-                }
+                editor.redraw(&mut stdout)?;
             }
             KeyCode::Char(' ')
                 if !key
@@ -184,30 +178,20 @@ fn read_tty_line_blocking(
                 editor.insert(ch);
                 editor.redraw(&mut stdout)?;
             }
-            KeyCode::Backspace => {
-                if editor.backspace() {
-                    editor.redraw(&mut stdout)?;
-                }
+            KeyCode::Backspace if editor.backspace() => {
+                editor.redraw(&mut stdout)?;
             }
-            KeyCode::Delete => {
-                if editor.delete() {
-                    editor.redraw(&mut stdout)?;
-                }
+            KeyCode::Delete if editor.delete() => {
+                editor.redraw(&mut stdout)?;
             }
-            KeyCode::Left => {
-                if editor.move_left() {
-                    editor.redraw(&mut stdout)?;
-                }
+            KeyCode::Left if editor.move_left() => {
+                editor.redraw(&mut stdout)?;
             }
-            KeyCode::Home => {
-                if editor.move_home() {
-                    editor.redraw(&mut stdout)?;
-                }
+            KeyCode::Home if editor.move_home() => {
+                editor.redraw(&mut stdout)?;
             }
-            KeyCode::End => {
-                if editor.move_end() {
-                    editor.redraw(&mut stdout)?;
-                }
+            KeyCode::End if editor.move_end() => {
+                editor.redraw(&mut stdout)?;
             }
             KeyCode::Enter => {
                 // Accept any visible ghost first so `@b\n` becomes

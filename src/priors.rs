@@ -12,6 +12,7 @@
 //! tell at a glance which knowledge came from where. The composed string
 //! is what we hand to the engine via its system-prompt mechanism.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -112,7 +113,7 @@ pub fn compose_for(coderoom_dir: &Path, role_name: &str) -> Result<String> {
             if trimmed.is_empty() {
                 continue;
             }
-            out.push_str(&format!("### {date}\n\n"));
+            let _ = write!(out, "### {date}\n\n");
             out.push_str(trimmed);
             out.push_str("\n\n");
         }
@@ -153,7 +154,7 @@ fn team_roster(coderoom_dir: &Path, role_name: &str) -> Result<String> {
     for (name, path) in roles {
         let summary = role_summary(&path)?;
         let host_marker = if name == host_role { " (host)" } else { "" };
-        out.push_str(&format!("- @{name}{host_marker}: {summary}\n"));
+        let _ = writeln!(out, "- @{name}{host_marker}: {summary}");
     }
     Ok(out.trim_end().to_owned())
 }
@@ -317,22 +318,14 @@ fn compact_summary(coderoom_dir: &Path, role_name: &str) -> Result<String> {
         patches.sort();
         for path in patches {
             let excerpt = first_content_line(&path)?;
-            out.push_str(&format!(
-                "- Archived patch `{}`: {}\n",
-                path.display(),
-                excerpt
-            ));
+            let _ = writeln!(out, "- Archived patch `{}`: {}", path.display(), excerpt);
         }
     }
 
     let journals = old_journals(coderoom_dir, role_name, JOURNAL_WINDOW_DAYS)?;
     for (date, path) in journals {
         let excerpt = first_content_line(&path)?;
-        out.push_str(&format!(
-            "- Journal {date} `{}`: {}\n",
-            path.display(),
-            excerpt
-        ));
+        let _ = writeln!(out, "- Journal {date} `{}`: {}", path.display(), excerpt);
     }
     Ok(out)
 }
@@ -536,10 +529,8 @@ fn ordered_patches(coderoom_dir: &Path, role_name: &str) -> Result<Vec<PathBuf>>
 #[must_use]
 pub fn estimate_role_tokens(coderoom_dir: &Path, role_name: &str) -> u64 {
     let role_path = coderoom_dir.join(ROLES_DIR).join(format!("{role_name}.md"));
-    let role_bytes = std::fs::metadata(&role_path).map(|m| m.len()).unwrap_or(0);
-    let shared_bytes = std::fs::metadata(coderoom_dir.join(SHARED_FILE))
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let role_bytes = std::fs::metadata(&role_path).map_or(0, |m| m.len());
+    let shared_bytes = std::fs::metadata(coderoom_dir.join(SHARED_FILE)).map_or(0, |m| m.len());
     (role_bytes + shared_bytes) / 4
 }
 

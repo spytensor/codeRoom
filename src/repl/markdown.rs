@@ -206,9 +206,7 @@ fn is_horizontal_rule(line: &str) -> bool {
         for c in line.chars() {
             if c == marker {
                 count += 1;
-            } else if c.is_whitespace() {
-                continue;
-            } else {
+            } else if !c.is_whitespace() {
                 ok = false;
                 break;
             }

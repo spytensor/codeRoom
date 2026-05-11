@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-11
+
+### Added
+
+- **Calm CLI UI contract.** Added `docs/v0.4-calm-cli-ui.md` to lock the
+  default live-surface rule: beautiful and calm first, progress second,
+  raw information third. Tool details, allow history, and adapter trace
+  remain available through `cr show` / verbose mode instead of flooding
+  the chat stream.
+
+### Changed
+
+- **Permission allows are silent by default.** Interactive approval prompts
+  still appear while the user needs to decide, and denials still render
+  because they change task outcome. Successful allow decisions now clear
+  the prompt row without printing `allowed once` / `allowed session`
+  noise into the live chat.
+- **Done WorkCards collapse to one line.** A completed turn now renders as
+  a quiet summary with role, task title, elapsed time, and step count.
+  Detailed tool steps stay in the event log and expanded/audit surfaces.
+- **Status lines can represent approval waits.** The active status region
+  now tracks `waiting approval · <tool>` while the engine is blocked on a
+  permission decision, then returns to normal progress once the prompt is
+  handled.
+- **README images regenerated for the v0.4 surface.** The synthetic Pillow
+  renderer now shows the quieter WorkCard summaries and inline permission
+  prompt semantics.
+
 ## [0.3.0] - 2026-05-11
 
 ### Added
@@ -874,7 +902,12 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/spytensor/codeRoom/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/spytensor/codeRoom/compare/v0.2.4...v0.3.0
+[0.2.4]: https://github.com/spytensor/codeRoom/compare/v0.2.3...v0.2.4
+[0.2.3]: https://github.com/spytensor/codeRoom/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/spytensor/codeRoom/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/spytensor/codeRoom/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/spytensor/codeRoom/compare/v0.1.18...v0.2.0
 [0.1.18]: https://github.com/spytensor/codeRoom/releases/tag/v0.1.18

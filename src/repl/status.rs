@@ -99,6 +99,36 @@ impl StatusRegion {
         }
     }
 
+    pub(super) fn mark_waiting_approval(
+        &mut self,
+        role: &str,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+    ) {
+        let Some(slot) = self.slots.iter_mut().find(|slot| slot.role == role) else {
+            return;
+        };
+        let summary = summarize_tool_input(tool_input);
+        slot.current_state = Some(if summary.trim().is_empty() {
+            format!("waiting approval · {tool_name}")
+        } else {
+            format!("waiting approval · {tool_name} {summary}")
+        });
+    }
+
+    pub(super) fn clear_waiting_approval(&mut self, role: &str) {
+        let Some(slot) = self.slots.iter_mut().find(|slot| slot.role == role) else {
+            return;
+        };
+        if slot
+            .current_state
+            .as_deref()
+            .is_some_and(|state| state.starts_with("waiting approval"))
+        {
+            slot.current_state = Some("thinking".to_owned());
+        }
+    }
+
     fn paint(&mut self) {
         if !self.is_tty {
             return;

@@ -43,7 +43,7 @@ pub fn add(
     validate_name(name)?;
     let coderoom_dir = project_root.join(CODEROOM_DIR);
     if !coderoom_dir.is_dir() {
-        bail!("{} not found — run `cr init` first", coderoom_dir.display(),);
+        bail!("{} not found — run `cr init` first", coderoom_dir.display());
     }
 
     let mut raw = read_project_raw(&coderoom_dir)?;
@@ -95,7 +95,7 @@ pub fn add(
 pub(crate) fn add_many(project_root: &Path, additions: &[RoleAddition]) -> Result<usize> {
     let coderoom_dir = project_root.join(CODEROOM_DIR);
     if !coderoom_dir.is_dir() {
-        bail!("{} not found — run `cr init` first", coderoom_dir.display(),);
+        bail!("{} not found — run `cr init` first", coderoom_dir.display());
     }
 
     let raw = read_project_raw(&coderoom_dir)?;

@@ -533,17 +533,17 @@ fn snapshot_boot_dashboard_at_80() {
     .trim_start_matches('\n')
     .to_owned();
     insta::assert_snapshot!(rendered, @r"
-┌─ codeRoom v0.3.0 ────────────────────────────────────────────────────────────┐
+┌─ codeRoom v0.4.0 ────────────────────────────────────────────────────────────┐
 │                                                                              │
 │ welcome back, Ada              tips for getting started                      │
 │                                • type @role to send a task to a specific ro… │
 │ ● @backend   cc     · 1M       • /halt @role interrupts a turn; Ctrl-C twic… │
 │ ● @host      cc     · 1M       • /journal <role> captures today's lessons-l… │
 │ ● @security  codex  · default                                                │
-│                                what's new in 0.3.0                           │
-│  0  base tokens loaded         • cr start resumes prior role sessions by de… │
-│ /repo/codeRoom                 • auto-routing chains run to completion — ho… │
-│                                • streaming output no longer reprints the ro… │
+│                                what's new in 0.4.0                           │
+│  0  base tokens loaded         • calm CLI surface: progress first, raw trac… │
+│ /repo/codeRoom                 • allow approvals disappear from chat         │
+│                                • completed WorkCards collapse to one quiet … │
 │                                                                              │
 │                                /help for commands                            │
 │                                                                              │
@@ -1122,6 +1122,27 @@ fn status_region_tracks_tool_count_and_state_from_events() {
     });
     let rendered = strip_ansi(&s.render_line_at_width(80));
     assert!(rendered.contains("· 2 tools · "), "rendered: {rendered}");
+}
+
+#[test]
+fn status_region_marks_and_clears_waiting_approval() {
+    let mut s = StatusRegion {
+        slots: vec![fixed_slot("security")],
+        is_painted: false,
+        is_tty: false,
+    };
+    s.mark_waiting_approval(
+        "security",
+        "Bash",
+        &serde_json::json!({"command": "cargo test --workspace"}),
+    );
+    let rendered = strip_ansi(&s.render_line_at_width(120));
+    assert!(rendered.contains("waiting approval · Bash `cargo test --workspace`"));
+
+    s.clear_waiting_approval("security");
+    let rendered = strip_ansi(&s.render_line_at_width(120));
+    assert!(rendered.contains("thinking"));
+    assert!(!rendered.contains("waiting approval"));
 }
 
 #[test]

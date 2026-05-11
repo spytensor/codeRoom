@@ -92,26 +92,27 @@ impl WorkCard {
     }
 
     fn render_done_collapsed(&self, width: usize) -> String {
-        let label = format!(
-            "@{} · {} · {}",
-            self.role,
-            self.title,
-            self.status_summary()
-        );
-        let mut lines = vec![top_line(&label, width, self.border_color())];
-        for step in self.steps.iter().take(3) {
-            lines.push(content_line(&format_step(step), width, self.border_color()));
-        }
-        let hidden = self.steps.len().saturating_sub(3);
-        if hidden > 0 {
-            lines.push(content_line(
-                &format!("· +{hidden} more steps"),
-                width,
-                self.border_color(),
-            ));
-        }
-        lines.push(bottom_line(width, self.border_color()));
-        lines.join("\n")
+        let summary = match &self.status {
+            WorkStatus::Done {
+                duration,
+                steps_count,
+            } => format!(
+                "@{} done · {} · {} · {} {}",
+                self.role,
+                self.title,
+                format_duration(*duration),
+                steps_count,
+                if *steps_count == 1 { "step" } else { "steps" }
+            ),
+            _ => format!(
+                "@{} · {} · {}",
+                self.role,
+                self.title,
+                self.status_summary()
+            ),
+        };
+        let content = truncate_cells(&summary, width.saturating_sub(2));
+        format!("{} {}", "▎".with(self.border_color()), content.with(FADE))
     }
 
     fn render_working(&self, width: usize) -> String {
@@ -135,11 +136,16 @@ impl WorkCard {
                 self.border_color(),
             ));
         }
-        for step in self.steps.iter().take(5) {
+        for step in self.steps.iter().take(4) {
             lines.push(content_line(&format_step(step), width, self.border_color()));
         }
-        while lines.len() < 4 {
-            lines.push(content_line("", width, self.border_color()));
+        let hidden = self.steps.len().saturating_sub(4);
+        if hidden > 0 {
+            lines.push(content_line(
+                &format!("· +{hidden} more in trace"),
+                width,
+                self.border_color(),
+            ));
         }
         lines.push(bottom_line(width, self.border_color()));
         lines.join("\n")
@@ -245,9 +251,9 @@ fn content_line(text: &str, width: usize, color: Color) -> String {
 
 fn format_step(step: &Step) -> String {
     let glyph = match step.kind {
-        StepKind::Done => "●",    // filled circle — "this is done"
-        StepKind::Active => "○",  // open circle — "still working"
-        StepKind::Planned => "·", // small dot — "queued, not started"
+        StepKind::Done => "✓",
+        StepKind::Active => "…",
+        StepKind::Planned => "·",
     };
     match &step.time {
         Some(time) => format!("{glyph} [{time}] {}", step.text),
@@ -271,11 +277,11 @@ fn style_content(text: &str) -> String {
 }
 
 /// Tri-state glyph color for a step line. Returns `None` when the
-/// text isn't shaped like a step (no leading `●` / `○` / `·`).
+/// text isn't shaped like a step (no leading `✓` / `…` / `·`).
 fn step_glyph_color(text: &str) -> Option<Color> {
-    if text.starts_with('●') {
+    if text.starts_with('✓') {
         Some(OK)
-    } else if text.starts_with('○') {
+    } else if text.starts_with('…') {
         Some(EM)
     } else if text.starts_with('·') {
         Some(FADE)
@@ -488,16 +494,17 @@ mod tests {
     }
 
     #[test]
-    fn done_collapsed_previews_steps() {
+    fn done_collapsed_is_one_line_summary() {
         let mut card = sample_card();
         card.collapsed = true;
         let rendered = strip_ansi(&card.render(80));
         let lines: Vec<&str> = rendered.lines().collect();
-        assert_eq!(lines.len(), 5);
-        assert!(lines[0].contains("@security"));
-        assert!(lines[0].contains("done in 12s"));
-        assert!(rendered.contains("Read Cargo.toml"));
-        assert!(rendered.contains("Run cargo test"));
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            lines[0],
+            "▎ @security done · Scan repository permissions and adapters · 12s · 3 steps"
+        );
+        assert!(!rendered.contains("Read Cargo.toml"));
     }
 
     #[test]
@@ -506,8 +513,8 @@ mod tests {
         insta::assert_snapshot!(rendered, @r"
 ╭─ @security · Scan repository permissions and adapters ───────────────────────╮
 │ done in 12s · 3 steps                                                        │
-│ ● Read Cargo.toml                                                            │
-│ ● Run cargo test                                                             │
+│ ✓ Read Cargo.toml                                                            │
+│ ✓ Run cargo test                                                             │
 │ · Follow up on Claude subagent hooks                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ");
@@ -603,8 +610,8 @@ mod tests {
         assert!(step_glyph_color("interrupted · halt").is_none());
         assert!(step_glyph_color("working · reading README.md").is_none());
         assert!(step_glyph_color("done in 12s · 3 steps").is_none());
-        assert!(step_glyph_color("● Bash ls").is_some());
-        assert!(step_glyph_color("○ Read Cargo.toml").is_some());
+        assert!(step_glyph_color("✓ Bash ls").is_some());
+        assert!(step_glyph_color("… Read Cargo.toml").is_some());
         assert!(step_glyph_color("· planned").is_some());
     }
 }

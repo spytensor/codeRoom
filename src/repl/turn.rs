@@ -233,10 +233,15 @@ pub(super) async fn drain_one_turn(
             // not after the next tool trace flushes.
             request = bridge_rx.recv() => {
                 let Some(sink) = request else { continue };
+                let request_role = sink.request.role.clone();
+                let request_tool = sink.request.tool.clone();
+                let request_input = sink.request.input.clone();
+                status.mark_waiting_approval(&request_role, &request_tool, &request_input);
                 status.clear();
                 if let Err(error) = permission_prompt::handle_request(sink, host_role).await {
                     output::bad(format!("permission prompt failed: {error:#}"));
                 }
+                status.clear_waiting_approval(&request_role);
                 status.repaint();
             }
             recv = live_rx.recv() => match recv {
