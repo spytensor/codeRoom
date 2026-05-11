@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dropdown completion menu for `@` and `/` tokens.** When the active
+  token has two or more candidate matches, a compact list now renders
+  below the prompt with the selected row highlighted; ↑/↓ navigates,
+  Tab also cycles forward, and Enter / Tab / Right-arrow accept. Up to
+  six entries show at a time with a `+N more (continue typing)` footer
+  for overflow. The menu is dismissed with Esc and stays dismissed for
+  the current prefix; the inline ghost continues to show the top match.
+  On terminals too short to fit the menu without scrolling the prompt
+  off-screen, the menu silently degrades to the ghost-only behavior.
+  (#97)
 - **Slash-command autocomplete in the REPL prompt.** Typing `/` and a
   hint character (e.g. `/h`) now shows ghost-text completion for slash
   commands the same way `@`-mentions complete role names — Tab cycles

@@ -20,6 +20,12 @@ use super::permission_prompt;
 /// prompt within one frame; long enough that the loop isn't a busy-wait.
 const BRIDGE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Maximum number of candidate rows the dropdown menu paints. Anything
+/// beyond this prints a footer (`+N more (continue typing)`) so the
+/// total visible height stays bounded — terminal heights as small as
+/// 12 rows can still see the menu without scrolling the prompt off.
+const MENU_MAX_VISIBLE: usize = 6;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum InputLine {
     Line(String),
@@ -101,11 +107,18 @@ fn read_tty_line_blocking(
                 editor.clear();
                 editor.redraw(&mut stdout)?;
             }
-            KeyCode::Tab => {
-                // First Tab: open the suggestion cycle. Subsequent
-                // Tabs cycle the visible ghost. Right Arrow / Ctrl-F
-                // accept the visible ghost; Enter accepts then submits.
+            KeyCode::Tab | KeyCode::Down => {
+                // Tab and Down advance the selection in the menu /
+                // ghost cycle. Down feels natural when the dropdown is
+                // visible; Tab is the long-standing convention.
                 if editor.cycle_completion() {
+                    editor.redraw(&mut stdout)?;
+                }
+            }
+            KeyCode::Up => {
+                // Up moves the menu selection backwards. Falls through
+                // silently when there is no active completion.
+                if editor.cycle_completion_back() {
                     editor.redraw(&mut stdout)?;
                 }
             }
@@ -226,13 +239,23 @@ struct LineEditor {
     columns: usize,
     /// Sorted role names available for `@` autocomplete.
     roles: Vec<String>,
-    /// Index into [`Self::matching_roles`] used to cycle suggestions
-    /// when the user presses Tab repeatedly. Reset every time the
-    /// prefix changes.
+    /// Index into the active candidate list (roles or slash commands)
+    /// used to cycle suggestions when the user presses Tab, Up, or
+    /// Down. Reset every time the prefix changes.
     completion_index: usize,
-    /// Buffer prefix (lower-cased) that produced [`Self::completion_index`].
-    /// `None` means there is no active completion context yet.
+    /// Buffer prefix (namespaced as `@<prefix>` or `/<prefix>`) that
+    /// produced [`Self::completion_index`]. `None` means there is no
+    /// active completion context yet.
     completion_anchor: Option<String>,
+    /// Number of dropdown-menu rows currently painted below the input.
+    /// Tracked separately from `painted_ghost_width` because menu rows
+    /// live in independent screen rows; redraw / suspend / finish all
+    /// need to wipe these explicitly.
+    painted_menu_rows: usize,
+    /// `true` while the user has Esc-dismissed the menu for the current
+    /// completion anchor. Cleared the next time the prefix changes so
+    /// the dismissal is anchor-scoped, not editor-global.
+    menu_dismissed: bool,
 }
 
 impl LineEditor {
@@ -252,6 +275,8 @@ impl LineEditor {
             roles,
             completion_index: 0,
             completion_anchor: None,
+            painted_menu_rows: 0,
+            menu_dismissed: false,
         }
     }
 
@@ -333,26 +358,59 @@ impl LineEditor {
     fn invalidate_completion(&mut self) {
         self.completion_anchor = None;
         self.completion_index = 0;
+        // The dismissal is scoped to one completion anchor — once the
+        // user changes the prefix they probably want fresh suggestions.
+        self.menu_dismissed = false;
     }
 
     /// Explicitly dismiss the active completion (e.g. on Esc / Space).
-    /// Returns `true` if the visible state changed so callers know to
-    /// trigger a redraw.
+    /// Resets the cycle and hides the dropdown menu for the current
+    /// prefix; the ghost stays as a hint of the top match. The
+    /// dismissal persists until the prefix changes (insert / backspace
+    /// / delete), so a follow-up Tab does not surprise the user by
+    /// re-opening the menu they just closed.
+    ///
+    /// Returns `true` when the visible state changed so callers know
+    /// to trigger a redraw.
     fn dismiss_completion(&mut self) -> bool {
-        let was_active = self.completion_anchor.is_some() || self.painted_ghost_width > 0;
-        self.invalidate_completion();
+        // "Was anything to dismiss?" — checked from the conceptual
+        // completion state so the answer is correct even before the
+        // first redraw paints `painted_ghost_width` / `painted_menu_rows`.
+        let was_active = self.completion_anchor.is_some() || self.ghost_suffix().is_some() || {
+            let at = self
+                .at_token()
+                .is_some_and(|(_, prefix)| self.matching_roles(&prefix).len() >= 2);
+            let slash = self
+                .slash_token()
+                .is_some_and(|prefix| Self::matching_slash_commands(&prefix).len() >= 2);
+            (at || slash) && !self.menu_dismissed
+        };
+        self.completion_anchor = None;
+        self.completion_index = 0;
+        self.menu_dismissed = true;
         was_active
     }
 
-    /// Erase the editor's painted text from the terminal so a
-    /// permission prompt can paint over it cleanly. The cursor is left
-    /// at the prompt-start position; a follow-up `redraw` repaints.
+    /// Erase the editor's painted text (including any dropdown menu
+    /// below the input) from the terminal so a permission prompt can
+    /// paint over it cleanly. The cursor is left at the prompt-start
+    /// position; a follow-up `redraw` repaints.
     fn suspend(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
+        self.clear_painted_area(stdout)?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    /// Move cursor to the prompt's first column on the first row and
+    /// clear everything below. Used by [`Self::suspend`], at the start
+    /// of [`Self::redraw`], and by [`Self::finish`] so the input area
+    /// and any dropdown menu rows beneath it are wiped in one step.
+    fn clear_painted_area(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
         self.move_from_width_to_prompt_start(stdout, self.painted_cursor_width)?;
         queue!(stdout, Clear(ClearType::FromCursorDown))?;
         self.painted_cursor_width = 0;
         self.painted_ghost_width = 0;
-        stdout.flush()?;
+        self.painted_menu_rows = 0;
         Ok(())
     }
 
@@ -426,6 +484,101 @@ impl LineEditor {
             .collect()
     }
 
+    /// Rows to paint below the input as a dropdown menu. Empty when
+    /// the active token (if any) has fewer than two candidates, when
+    /// no token is active, or when the user has Esc-dismissed the menu
+    /// for the current prefix.
+    ///
+    /// The selected row uses an emphasis color + `▎` leader. Up to
+    /// [`MENU_MAX_VISIBLE`] rows render; an overflow footer of the form
+    /// `+N more (continue typing)` is appended when the candidate
+    /// list is longer.
+    fn menu_rows(&self) -> Vec<String> {
+        if self.menu_dismissed {
+            return Vec::new();
+        }
+        // Cap visible rows at the terminal's height-budget so the
+        // dropdown can never push the prompt off-screen on tiny
+        // terminals. A budget below 2 disables the menu entirely —
+        // the inline ghost is still shown.
+        let budget = self.menu_height_budget();
+        if budget < 2 {
+            return Vec::new();
+        }
+        let max_visible = MENU_MAX_VISIBLE.min(budget);
+        if let Some((_, prefix)) = self.at_token() {
+            let matches = self.matching_roles(&prefix);
+            if matches.len() < 2 {
+                return Vec::new();
+            }
+            let items: Vec<(String, String)> = matches
+                .iter()
+                .map(|name| ((*name).to_owned(), String::new()))
+                .collect();
+            return self.format_menu_rows(items, max_visible);
+        }
+        if let Some(prefix) = self.slash_token() {
+            let matches = Self::matching_slash_commands(&prefix);
+            if matches.len() < 2 {
+                return Vec::new();
+            }
+            let items: Vec<(String, String)> = matches
+                .iter()
+                .map(|cmd| (format!("/{}", cmd.name), cmd.description.to_owned()))
+                .collect();
+            return self.format_menu_rows(items, max_visible);
+        }
+        Vec::new()
+    }
+
+    /// How many menu rows the terminal can show without scrolling the
+    /// prompt off-screen. Reserves 2 rows for the input line + a bit
+    /// of breathing room. Returns a generous default when terminal
+    /// size can't be queried (non-TTY, in tests).
+    fn menu_height_budget(&self) -> usize {
+        let terminal_height = terminal::size().map_or(usize::MAX, |(_, rows)| usize::from(rows));
+        terminal_height.saturating_sub(2)
+    }
+
+    /// Render the candidate list into styled terminal rows. Splits the
+    /// name and description into two columns padded to the longest
+    /// visible name. `max_visible` caps the rendered row count; any
+    /// overflow becomes a `+N more (continue typing)` footer.
+    fn format_menu_rows(&self, items: Vec<(String, String)>, max_visible: usize) -> Vec<String> {
+        let total = items.len();
+        let visible = total.min(max_visible);
+        let selected = self.completion_index % total;
+        let name_width = items
+            .iter()
+            .take(visible)
+            .map(|(name, _)| UnicodeWidthStr::width(name.as_str()))
+            .max()
+            .unwrap_or(0);
+
+        let mut rows = Vec::with_capacity(visible + 1);
+        for (idx, (name, description)) in items.iter().take(visible).enumerate() {
+            let is_selected = idx == selected;
+            let leader = if is_selected { "▎ " } else { "  " };
+            let pad = name_width.saturating_sub(UnicodeWidthStr::width(name.as_str()));
+            let body = if description.is_empty() {
+                name.clone()
+            } else {
+                format!("{name}{}  {description}", " ".repeat(pad))
+            };
+            let styled = if is_selected {
+                format!("{leader}{body}").with(output::EM).to_string()
+            } else {
+                format!("{leader}{body}").with(output::DIM).to_string()
+            };
+            rows.push(styled);
+        }
+        if total > visible {
+            let footer = format!("  +{} more (continue typing)", total - visible);
+            rows.push(footer.with(output::FADE).italic().to_string());
+        }
+        rows
+    }
+
     /// Currently displayed ghost-text completion, if any. Returns the
     /// suffix that would be appended to the active token if the user
     /// pressed Tab — e.g. buffer `cr › @ba` against role `backend`
@@ -466,6 +619,17 @@ impl LineEditor {
     /// wrap around. Typing more characters resets the cycle via
     /// [`Self::invalidate_completion`].
     fn cycle_completion(&mut self) -> bool {
+        self.cycle_completion_step(1)
+    }
+
+    /// Cycle backwards through the candidate list — Up-arrow handler.
+    fn cycle_completion_back(&mut self) -> bool {
+        self.cycle_completion_step(-1)
+    }
+
+    /// Shared cycle implementation. `delta` is +1 for forward (Tab /
+    /// Down) and -1 for backward (Up).
+    fn cycle_completion_step(&mut self, delta: i32) -> bool {
         let (prefix_key, match_count) = if let Some((_, prefix)) = self.at_token() {
             // `@`-prefixed key so the at-anchor and slash-anchor never
             // collide if both could match the same prefix string.
@@ -480,13 +644,17 @@ impl LineEditor {
         if match_count == 0 {
             return false;
         }
+        let count_i32 = i32::try_from(match_count).unwrap_or(i32::MAX);
         if self.completion_anchor.as_deref() == Some(prefix_key.as_str()) {
-            self.completion_index = (self.completion_index + 1) % match_count;
+            let next =
+                (i32::try_from(self.completion_index).unwrap_or(0) + delta).rem_euclid(count_i32);
+            self.completion_index = usize::try_from(next).unwrap_or(0);
         } else {
             self.completion_anchor = Some(prefix_key);
-            // Lock and advance in the same step so a single Tab moves
-            // off the index-0 ghost the user already sees.
-            self.completion_index = 1 % match_count;
+            // Lock and advance in the same step so a single keypress
+            // moves off the index-0 selection the user already sees.
+            let start = delta.rem_euclid(count_i32);
+            self.completion_index = usize::try_from(start).unwrap_or(0);
         }
         true
     }
@@ -544,36 +712,67 @@ impl LineEditor {
     }
 
     fn redraw(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
-        self.move_from_width_to_prompt_start(stdout, self.painted_cursor_width)?;
-        queue!(stdout, Clear(ClearType::FromCursorDown))?;
+        self.clear_painted_area(stdout)?;
         write!(stdout, "{}{}", self.prompt, self.input())?;
         let ghost = self.ghost_suffix().unwrap_or_default();
         let ghost_width = UnicodeWidthStr::width(ghost.as_str());
         if !ghost.is_empty() {
             write!(stdout, "{}", ghost.as_str().with(output::DIM))?;
         }
-        let cursor_width = self.cursor_width();
         self.painted_ghost_width = ghost_width;
+        let cursor_width = self.cursor_width();
+
+        // Paint the dropdown menu beneath the input. Each `\r\n` jumps
+        // to column 0 of the next row, then we write the row content;
+        // the cursor ends at the end of the final menu row.
+        let menu_rows = self.menu_rows();
+        let menu_height = menu_rows.len();
+        for row in &menu_rows {
+            write!(stdout, "\r\n{row}")?;
+        }
+        self.painted_menu_rows = menu_height;
+
         // Cursor lands at the end of the user-visible buffer (before
-        // the ghost suffix). The ghost is painted after but not
-        // selectable.
-        self.move_from_line_end_to_width(stdout, cursor_width)?;
+        // the ghost suffix and any menu rows). The ghost is painted
+        // after but not selectable; the menu lives in its own rows.
+        self.move_from_painted_end_to_width(stdout, cursor_width)?;
         self.painted_cursor_width = cursor_width;
         stdout.flush()?;
         Ok(())
     }
 
     fn finish(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
-        self.move_from_width_to_prompt_start(stdout, self.painted_cursor_width)?;
-        // Wipe any pending ghost text before laying down the final line
-        // so a leftover suggestion isn't echoed back to the user's terminal.
+        // Wipe the input area plus any dropdown menu before laying
+        // down the final committed line so leftover suggestions aren't
+        // echoed back to the user's terminal.
+        self.clear_painted_area(stdout)?;
         write!(stdout, "{}{}", self.prompt, self.input())?;
-        queue!(stdout, Clear(ClearType::UntilNewLine))?;
-        let total_width = self.total_width();
-        self.move_from_line_end_to_width(stdout, total_width)?;
-        self.painted_cursor_width = total_width;
-        self.painted_ghost_width = 0;
+        let buffer_width = self.prompt_width + self.buffer_width_until(self.buffer.len());
+        self.painted_cursor_width = buffer_width;
         stdout.flush()?;
+        Ok(())
+    }
+
+    /// Move the cursor from "end of the painted area" (last menu row
+    /// when the menu is open; end of input + ghost otherwise) back
+    /// into the input line at the given visual column. Mirrors the
+    /// pre-menu helper but adds `painted_menu_rows` to the start row.
+    fn move_from_painted_end_to_width(
+        &self,
+        stdout: &mut std::io::Stdout,
+        width: usize,
+    ) -> Result<()> {
+        let (input_end_row, _) = self.visual_position(self.total_width());
+        let total_end_row = input_end_row + self.painted_menu_rows;
+        let (target_row, target_col) = self.visual_position(width);
+        queue!(stdout, MoveToColumn(0))?;
+        if total_end_row > 0 {
+            queue!(stdout, MoveUp(saturating_u16(total_end_row)))?;
+        }
+        if target_row > 0 {
+            queue!(stdout, MoveDown(saturating_u16(target_row)))?;
+        }
+        queue!(stdout, MoveToColumn(saturating_u16(target_col)))?;
         Ok(())
     }
 
@@ -587,24 +786,6 @@ impl LineEditor {
         if row > 0 {
             queue!(stdout, MoveUp(saturating_u16(row)))?;
         }
-        Ok(())
-    }
-
-    fn move_from_line_end_to_width(
-        &self,
-        stdout: &mut std::io::Stdout,
-        width: usize,
-    ) -> Result<()> {
-        let (end_row, _) = self.visual_position(self.total_width());
-        let (target_row, target_col) = self.visual_position(width);
-        queue!(stdout, MoveToColumn(0))?;
-        if end_row > 0 {
-            queue!(stdout, MoveUp(saturating_u16(end_row)))?;
-        }
-        if target_row > 0 {
-            queue!(stdout, MoveDown(saturating_u16(target_row)))?;
-        }
-        queue!(stdout, MoveToColumn(saturating_u16(target_col)))?;
         Ok(())
     }
 
@@ -895,5 +1076,153 @@ mod tests {
         }
         assert!(editor.ghost_suffix().is_none());
         assert!(!editor.accept_completion());
+    }
+
+    // ---- dropdown menu ------------------------------------------------
+
+    fn menu_editor() -> LineEditor {
+        // Three roles with overlapping prefixes for `@b`.
+        LineEditor::new(
+            80,
+            vec!["backend".into(), "backstage".into(), "batch".into()],
+        )
+    }
+
+    /// Strip ANSI escape sequences for content-based assertions on
+    /// styled menu rows.
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                for inner in chars.by_ref() {
+                    if inner.is_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn menu_hidden_when_fewer_than_two_matches() {
+        let mut editor = menu_editor();
+        for ch in "@bac".chars() {
+            editor.insert(ch);
+        }
+        // `bac` still matches `backend` and `backstage` — two matches,
+        // menu opens. Confirm count.
+        assert_eq!(editor.menu_rows().len(), 2);
+        editor.insert('k');
+        // `back` still matches both.
+        assert_eq!(editor.menu_rows().len(), 2);
+        editor.insert('e');
+        // `backe` only matches `backend` → menu closes, ghost only.
+        assert!(editor.menu_rows().is_empty());
+        assert!(editor.ghost_suffix().is_some());
+    }
+
+    #[test]
+    fn menu_marks_selected_row_with_leader() {
+        let mut editor = menu_editor();
+        editor.insert('@');
+        editor.insert('b');
+        // 3 matches: backend (selected, idx 0), backstage, batch.
+        let rows = editor.menu_rows();
+        assert_eq!(rows.len(), 3);
+        let plain: Vec<String> = rows.iter().map(|r| strip_ansi(r)).collect();
+        assert!(plain[0].starts_with("▎ "));
+        assert!(plain[0].contains("backend"));
+        assert!(plain[1].starts_with("  "));
+        assert!(plain[1].contains("backstage"));
+    }
+
+    #[test]
+    fn down_arrow_advances_selection_and_up_arrow_reverses() {
+        let mut editor = menu_editor();
+        editor.insert('@');
+        editor.insert('b');
+        // First down: index 0 -> 1 (backstage).
+        assert!(editor.cycle_completion());
+        let after_down = strip_ansi(&editor.menu_rows()[1]);
+        assert!(after_down.starts_with("▎ "));
+        // Up should walk back to index 0 (backend).
+        assert!(editor.cycle_completion_back());
+        let after_up = strip_ansi(&editor.menu_rows()[0]);
+        assert!(after_up.starts_with("▎ "));
+    }
+
+    #[test]
+    fn up_arrow_wraps_around_at_top() {
+        let mut editor = menu_editor();
+        editor.insert('@');
+        editor.insert('b');
+        // From the freshly opened cycle, Up should wrap to the last
+        // candidate (index 2 = batch).
+        assert!(editor.cycle_completion_back());
+        let rows = editor.menu_rows();
+        let plain: Vec<String> = rows.iter().map(|r| strip_ansi(r)).collect();
+        assert!(plain[2].starts_with("▎ "));
+        assert!(plain[2].contains("batch"));
+    }
+
+    #[test]
+    fn esc_hides_menu_until_prefix_changes() {
+        let mut editor = menu_editor();
+        editor.insert('@');
+        editor.insert('b');
+        assert_eq!(editor.menu_rows().len(), 3);
+        // Esc hides the menu for this prefix; the ghost stays.
+        assert!(editor.dismiss_completion());
+        assert!(editor.menu_rows().is_empty());
+        // Tab should NOT bring the menu back — the user just said no.
+        editor.cycle_completion();
+        assert!(editor.menu_rows().is_empty());
+        // Typing a new character resets the dismissal because the
+        // prefix changed; the menu re-opens with the new candidate set.
+        editor.insert('a');
+        // `@ba` matches backend, backstage, batch — still 3.
+        assert_eq!(editor.menu_rows().len(), 3);
+    }
+
+    #[test]
+    fn slash_menu_shows_description_column() {
+        let mut editor = LineEditor::new(80, Vec::new());
+        editor.insert('/');
+        editor.insert('h');
+        // /h matches /halt, /help, /host — three rows.
+        let rows = editor.menu_rows();
+        assert_eq!(rows.len(), 3);
+        let plain: Vec<String> = rows.iter().map(|r| strip_ansi(r)).collect();
+        assert!(plain[0].contains("/halt"));
+        // Description column reproduces the table entry verbatim.
+        assert!(plain[0].contains("interrupt the current turn"));
+    }
+
+    #[test]
+    fn menu_overflow_footer_when_more_than_max_visible() {
+        // Spin up enough roles to overflow MENU_MAX_VISIBLE.
+        let names: Vec<String> = (0..MENU_MAX_VISIBLE + 3)
+            .map(|i| format!("alpha{i:02}"))
+            .collect();
+        let mut editor = LineEditor::new(80, names);
+        editor.insert('@');
+        editor.insert('a');
+        let rows = editor.menu_rows();
+        assert_eq!(rows.len(), MENU_MAX_VISIBLE + 1);
+        let footer = strip_ansi(rows.last().unwrap());
+        assert!(footer.contains("+3 more"));
+    }
+
+    #[test]
+    fn menu_hidden_when_no_active_token() {
+        let mut editor = menu_editor();
+        for ch in "plain text".chars() {
+            editor.insert(ch);
+        }
+        assert!(editor.menu_rows().is_empty());
     }
 }
