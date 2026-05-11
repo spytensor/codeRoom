@@ -1,3 +1,160 @@
+/// Static metadata for a slash command, used by the input line editor
+/// to offer autocomplete (ghost text + Tab cycle) and — eventually — a
+/// dropdown menu. The list is the single source of truth for
+/// discoverable commands; [`parse_line`] still owns the dispatch logic.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SlashCommand {
+    /// Bare command name, no leading `/`. Used for prefix matching.
+    pub(crate) name: &'static str,
+    /// One-line description shown in completion menus. Read by the
+    /// dropdown menu work in #97 — silenced here because the slash
+    /// table is loaded at compile-time and the only consumer of the
+    /// description today is the `slash_commands_have_descriptions`
+    /// test that guards the data invariant.
+    #[allow(dead_code, reason = "consumed by the dropdown menu in #97")]
+    pub(crate) description: &'static str,
+    /// Whether the command takes any argument. Completion inserts a
+    /// trailing space when `true` so the cursor lands ready for the
+    /// argument; arg-less commands accept with no trailing whitespace.
+    /// `/halt` counts as taking an argument even though the arg is
+    /// optional — typing `/halt` then Enter still works because the
+    /// parser trims the trailing space.
+    pub(crate) takes_args: bool,
+}
+
+/// Slash commands available in the REPL, sorted alphabetically for
+/// stable Tab-cycle order. Mirrors the dispatch arms in [`parse_line`];
+/// the two must stay in sync.
+pub(crate) const SLASH_COMMANDS: &[SlashCommand] = &[
+    SlashCommand {
+        name: "allow",
+        description: "allow a tool for the session",
+        takes_args: true,
+    },
+    SlashCommand {
+        name: "deny",
+        description: "deny a tool for the session",
+        takes_args: true,
+    },
+    SlashCommand {
+        name: "exit",
+        description: "leave the REPL",
+        takes_args: false,
+    },
+    SlashCommand {
+        name: "halt",
+        description: "interrupt the current turn (optionally @role)",
+        // Bare `/halt` (halt every running role) is the common path;
+        // `/halt @role` is a refinement the user types out explicitly.
+        // Accepting without a trailing space lets the user hit Enter
+        // immediately for the unscoped halt.
+        takes_args: false,
+    },
+    SlashCommand {
+        name: "help",
+        description: "show help",
+        takes_args: false,
+    },
+    SlashCommand {
+        name: "host",
+        description: "swap host role for this session",
+        takes_args: true,
+    },
+    SlashCommand {
+        name: "journal",
+        description: "ask a role to write a journal entry",
+        takes_args: true,
+    },
+    SlashCommand {
+        name: "patch",
+        description: "save a session-time correction to a role's priors",
+        takes_args: true,
+    },
+    SlashCommand {
+        name: "quit",
+        description: "leave the REPL (alias for /exit)",
+        takes_args: false,
+    },
+    SlashCommand {
+        name: "refresh",
+        description: "re-instantiate a role with latest priors",
+        takes_args: true,
+    },
+    SlashCommand {
+        name: "stop",
+        description: "terminate a role's subprocess",
+        takes_args: true,
+    },
+    SlashCommand {
+        name: "transcript",
+        description: "show recent transcript for a role",
+        takes_args: true,
+    },
+    SlashCommand {
+        name: "welcome",
+        description: "re-show the first-run welcome card",
+        takes_args: false,
+    },
+];
+
+#[cfg(test)]
+mod slash_table_tests {
+    use super::{parse_line, Command, SLASH_COMMANDS};
+
+    #[test]
+    fn slash_commands_sorted_alphabetically() {
+        // The Tab-cycle order is the declaration order. Sorting
+        // alphabetically gives users a predictable scan.
+        let names: Vec<&str> = SLASH_COMMANDS.iter().map(|c| c.name).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted);
+    }
+
+    #[test]
+    fn slash_commands_have_descriptions() {
+        // Every entry must carry a non-empty description: the dropdown
+        // menu (issue #97) renders these as the secondary column, and a
+        // blank entry would just be visual noise.
+        for cmd in SLASH_COMMANDS {
+            assert!(
+                !cmd.description.trim().is_empty(),
+                "/{} missing description",
+                cmd.name
+            );
+        }
+    }
+
+    #[test]
+    fn every_slash_command_dispatches_to_a_real_arm() {
+        // The table mirrors `parse_line`'s dispatch arms. A typo or
+        // forgotten arm would silently route the user to `/help`,
+        // which is what the unknown-command fallthrough emits — exactly
+        // the failure mode this test guards against. `/help` itself is
+        // legitimately `Command::Help`, so skip it.
+        for cmd in SLASH_COMMANDS {
+            if cmd.name == "help" {
+                continue;
+            }
+            // Two-token sample so commands that need both a role and
+            // a body (`/patch <role> <text>`) parse successfully.
+            // Single-arg commands just absorb the second token into
+            // their argument string, which is still a real dispatch.
+            let line = if cmd.takes_args {
+                format!("/{} role body", cmd.name)
+            } else {
+                format!("/{}", cmd.name)
+            };
+            let parsed = parse_line(&line);
+            assert!(
+                !matches!(parsed, Command::Help),
+                "/{} fell through to Command::Help — table and parse_line are out of sync",
+                cmd.name
+            );
+        }
+    }
+}
+
 /// One parsed user input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {

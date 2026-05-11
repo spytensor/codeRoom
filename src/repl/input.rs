@@ -12,6 +12,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::output;
 use crate::permissions::BridgeRequestSink;
 
+use super::command::{SlashCommand, SLASH_COMMANDS};
 use super::permission_prompt;
 
 /// How often the input loop checks `bridge_rx` for pending permission
@@ -394,41 +395,91 @@ impl LineEditor {
             .collect()
     }
 
-    /// Currently displayed ghost-text completion, if any. Returns the
-    /// suffix that would be appended to the `@<prefix>` if the user
-    /// pressed Tab (e.g. for buffer `cr › @ba` against role `backend`,
-    /// returns `"ckend"`).
-    fn ghost_suffix(&self) -> Option<String> {
-        let (_, prefix) = self.at_token()?;
-        let matches = self.matching_roles(&prefix);
-        if matches.is_empty() {
+    /// If the buffer is at-cursor-end and looks like a slash command in
+    /// the middle of being typed (`/<prefix>` with no whitespace yet),
+    /// return the bare prefix (no leading `/`). Once the user types a
+    /// space, slash-command completion is done — the existing
+    /// [`Self::at_token`] takes over for `@role` arg completion.
+    fn slash_token(&self) -> Option<String> {
+        if self.cursor != self.buffer.len() {
             return None;
         }
-        let pick = matches[self.completion_index % matches.len()];
-        // Skip if the prefix is already the full match (avoid empty ghost).
-        if pick.eq_ignore_ascii_case(&prefix) {
+        if self.buffer.first() != Some(&'/') {
             return None;
         }
-        Some(pick[prefix.len()..].to_owned())
+        let after_slash: String = self.buffer.iter().skip(1).collect();
+        if after_slash.chars().any(char::is_whitespace) {
+            return None;
+        }
+        Some(after_slash)
     }
 
-    /// Cycle to the next role match for the active prefix. Returns
-    /// `true` if the ghost text changed, `false` if there is no token
-    /// or no matches.
+    /// All slash commands whose name starts with `prefix` (case-insensitive).
+    /// Returned in [`SLASH_COMMANDS`] declaration order (alphabetical), so
+    /// the Tab cycle is stable. Associated function — the source is a
+    /// static table, no editor state is involved.
+    fn matching_slash_commands(prefix: &str) -> Vec<&'static SlashCommand> {
+        let needle = prefix.to_ascii_lowercase();
+        SLASH_COMMANDS
+            .iter()
+            .filter(|cmd| cmd.name.to_ascii_lowercase().starts_with(&needle))
+            .collect()
+    }
+
+    /// Currently displayed ghost-text completion, if any. Returns the
+    /// suffix that would be appended to the active token if the user
+    /// pressed Tab — e.g. buffer `cr › @ba` against role `backend`
+    /// returns `"ckend"`; buffer `cr › /h` returns `"alt"` (halt is the
+    /// first alphabetical match in `halt`/`help`/`host`).
+    fn ghost_suffix(&self) -> Option<String> {
+        if let Some((_, prefix)) = self.at_token() {
+            let matches = self.matching_roles(&prefix);
+            if matches.is_empty() {
+                return None;
+            }
+            let pick = matches[self.completion_index % matches.len()];
+            if pick.eq_ignore_ascii_case(&prefix) {
+                return None;
+            }
+            return Some(pick[prefix.len()..].to_owned());
+        }
+        if let Some(prefix) = self.slash_token() {
+            let matches = Self::matching_slash_commands(&prefix);
+            if matches.is_empty() {
+                return None;
+            }
+            let pick = matches[self.completion_index % matches.len()];
+            if pick.name.eq_ignore_ascii_case(&prefix) {
+                return None;
+            }
+            return Some(pick.name[prefix.len()..].to_owned());
+        }
+        None
+    }
+
+    /// Cycle to the next match for the active token (either `@role` or
+    /// `/command`). Returns `true` if the ghost text changed, `false`
+    /// when there is no token or no matches.
     ///
     /// First Tab on a fresh prefix advances index 0 → 1 so the user
     /// gets visible feedback. Subsequent Tabs continue advancing and
     /// wrap around. Typing more characters resets the cycle via
     /// [`Self::invalidate_completion`].
     fn cycle_completion(&mut self) -> bool {
-        let Some((_, prefix)) = self.at_token() else {
+        let (prefix_key, match_count) = if let Some((_, prefix)) = self.at_token() {
+            // `@`-prefixed key so the at-anchor and slash-anchor never
+            // collide if both could match the same prefix string.
+            let key = format!("@{}", prefix.to_ascii_lowercase());
+            (key, self.matching_roles(&prefix).len())
+        } else if let Some(prefix) = self.slash_token() {
+            let key = format!("/{}", prefix.to_ascii_lowercase());
+            (key, Self::matching_slash_commands(&prefix).len())
+        } else {
             return false;
         };
-        let match_count = self.matching_roles(&prefix).len();
         if match_count == 0 {
             return false;
         }
-        let prefix_key = prefix.to_ascii_lowercase();
         if self.completion_anchor.as_deref() == Some(prefix_key.as_str()) {
             self.completion_index = (self.completion_index + 1) % match_count;
         } else {
@@ -440,30 +491,56 @@ impl LineEditor {
         true
     }
 
-    /// Replace the active `@<prefix>` with `@<full> ` (note trailing
-    /// space). Returns `true` if a completion was applied.
+    /// Replace the active token with its picked completion. For `@role`
+    /// the inserted form is `@<role> ` (trailing space). For `/command`
+    /// the inserted form is `/<command>` with a trailing space only
+    /// when the command takes arguments (e.g. `/halt `), and no
+    /// trailing space for arg-less commands (e.g. `/help`). Returns
+    /// `true` when a completion was applied.
     fn accept_completion(&mut self) -> bool {
-        let Some((token_start, prefix)) = self.at_token() else {
-            return false;
-        };
-        let matches = self.matching_roles(&prefix);
-        if matches.is_empty() {
-            return false;
+        if let Some((token_start, prefix)) = self.at_token() {
+            let matches = self.matching_roles(&prefix);
+            if matches.is_empty() {
+                return false;
+            }
+            let pick = matches[self.completion_index % matches.len()].to_owned();
+            self.buffer.drain(token_start..self.cursor);
+            let mut insert_at = token_start;
+            for ch in std::iter::once('@')
+                .chain(pick.chars())
+                .chain(std::iter::once(' '))
+            {
+                self.buffer.insert(insert_at, ch);
+                insert_at += 1;
+            }
+            self.cursor = insert_at;
+            self.invalidate_completion();
+            return true;
         }
-        let pick = matches[self.completion_index % matches.len()].to_owned();
-        // Replace the buffer range [token_start, cursor) with `@<pick> `.
-        self.buffer.drain(token_start..self.cursor);
-        let mut insert_at = token_start;
-        for ch in std::iter::once('@')
-            .chain(pick.chars())
-            .chain(std::iter::once(' '))
-        {
-            self.buffer.insert(insert_at, ch);
-            insert_at += 1;
+        if let Some(prefix) = self.slash_token() {
+            let matches = Self::matching_slash_commands(&prefix);
+            if matches.is_empty() {
+                return false;
+            }
+            let pick = *matches[self.completion_index % matches.len()];
+            // `slash_token` guarantees the buffer starts with `/` and
+            // the cursor sits at buffer end, so the range to replace is
+            // the entire current buffer.
+            self.buffer.drain(0..self.cursor);
+            let mut insert_at = 0usize;
+            for ch in std::iter::once('/').chain(pick.name.chars()) {
+                self.buffer.insert(insert_at, ch);
+                insert_at += 1;
+            }
+            if pick.takes_args {
+                self.buffer.insert(insert_at, ' ');
+                insert_at += 1;
+            }
+            self.cursor = insert_at;
+            self.invalidate_completion();
+            return true;
         }
-        self.cursor = insert_at;
-        self.invalidate_completion();
-        true
+        false
     }
 
     fn redraw(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
@@ -688,5 +765,135 @@ mod tests {
         assert!(editor.ghost_suffix().is_none());
         assert!(!editor.accept_completion());
         assert_eq!(editor.input(), "ping @ci_status");
+    }
+
+    // ---- slash command completion ------------------------------------
+
+    fn slash_editor() -> LineEditor {
+        // Roles are present so we can verify the `@` and `/` token
+        // sources don't collide on overlapping prefixes ("h").
+        LineEditor::new(80, vec!["host".into(), "backend".into()])
+    }
+
+    #[test]
+    fn slash_ghost_completes_first_alphabetical_match() {
+        let mut editor = slash_editor();
+        editor.insert('/');
+        editor.insert('h');
+        // SLASH_COMMANDS in alphabetical order: allow, deny, exit, halt,
+        // help, host, journal, patch, refresh, stop, transcript, welcome.
+        // For prefix "h" the first match is `halt`.
+        assert_eq!(editor.ghost_suffix().as_deref(), Some("alt"));
+    }
+
+    #[test]
+    fn slash_cycle_rotates_through_matches() {
+        let mut editor = slash_editor();
+        editor.insert('/');
+        editor.insert('h');
+        // halt → help → host → halt
+        let first = editor.ghost_suffix().expect("halt suffix");
+        assert!(editor.cycle_completion());
+        let second = editor.ghost_suffix().expect("help suffix");
+        assert!(editor.cycle_completion());
+        let third = editor.ghost_suffix().expect("host suffix");
+        assert!(editor.cycle_completion());
+        let wrapped = editor.ghost_suffix().expect("wrap to halt");
+        assert_ne!(first, second);
+        assert_ne!(second, third);
+        assert_eq!(first, wrapped);
+    }
+
+    #[test]
+    fn slash_accept_adds_trailing_space_for_args_commands() {
+        let mut editor = slash_editor();
+        editor.insert('/');
+        editor.insert('a');
+        // First match alphabetically for `a` is /allow (takes_args = true).
+        assert!(editor.accept_completion());
+        assert_eq!(editor.input(), "/allow ");
+        assert_eq!(editor.cursor, editor.buffer.len());
+    }
+
+    #[test]
+    fn slash_accept_omits_space_for_halt_so_enter_halts_everything() {
+        // `/halt` alone halts every running role; that is the common
+        // path. Tab-accept must leave the buffer ready for an immediate
+        // Enter, not pad a space the user has to backspace away.
+        let mut editor = slash_editor();
+        for ch in "/ha".chars() {
+            editor.insert(ch);
+        }
+        assert!(editor.accept_completion());
+        assert_eq!(editor.input(), "/halt");
+    }
+
+    #[test]
+    fn bare_slash_cycles_through_all_commands() {
+        // Mirror of bare-`@` behavior, which also cycles through every
+        // role when the prefix is empty. Locking this with a test so a
+        // future "show menu only after one hint char" change is an
+        // explicit decision rather than an accidental UX flip.
+        let mut editor = slash_editor();
+        editor.insert('/');
+        assert!(editor.ghost_suffix().is_some());
+    }
+
+    #[test]
+    fn slash_accept_omits_trailing_space_for_arg_less_commands() {
+        let mut editor = slash_editor();
+        for ch in "/exi".chars() {
+            editor.insert(ch);
+        }
+        // /exit takes no args; accept lands the cursor right after `t`.
+        assert!(editor.accept_completion());
+        assert_eq!(editor.input(), "/exit");
+        assert_eq!(editor.cursor, editor.buffer.len());
+    }
+
+    #[test]
+    fn slash_completion_dormant_once_user_typed_space() {
+        let mut editor = slash_editor();
+        for ch in "/refresh ".chars() {
+            editor.insert(ch);
+        }
+        // Whitespace ends the slash-command token; no slash ghost.
+        assert!(editor.slash_token().is_none());
+        // The user can now switch to @ completion for the role arg.
+        editor.insert('@');
+        editor.insert('b');
+        assert_eq!(editor.ghost_suffix().as_deref(), Some("ackend"));
+    }
+
+    #[test]
+    fn slash_ghost_skips_full_match() {
+        let mut editor = slash_editor();
+        for ch in "/help".chars() {
+            editor.insert(ch);
+        }
+        // Buffer is the full command name; no ghost shown so the user
+        // can immediately hit Enter without an accidental cycle.
+        assert!(editor.ghost_suffix().is_none());
+    }
+
+    #[test]
+    fn slash_token_requires_buffer_start() {
+        let mut editor = slash_editor();
+        for ch in "ask /halt".chars() {
+            editor.insert(ch);
+        }
+        // `/halt` is mid-buffer, not a slash command — leave it alone.
+        assert!(editor.slash_token().is_none());
+        assert!(editor.ghost_suffix().is_none());
+    }
+
+    #[test]
+    fn slash_no_match_produces_no_ghost() {
+        let mut editor = slash_editor();
+        for ch in "/zzz".chars() {
+            editor.insert(ch);
+        }
+        assert!(editor.ghost_suffix().is_none());
+        assert!(!editor.accept_completion());
     }
 }

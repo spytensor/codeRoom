@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Slash-command autocomplete in the REPL prompt.** Typing `/` and a
+  hint character (e.g. `/h`) now shows ghost-text completion for slash
+  commands the same way `@`-mentions complete role names — Tab cycles
+  through matches, Right-arrow / Ctrl-F accepts, Enter accepts and
+  submits. Commands that take arguments land the cursor with a trailing
+  space; arg-less commands (`/help`, `/exit`, `/quit`, `/welcome`,
+  `/halt`) accept with no trailing space so the user can Enter
+  immediately. (#96)
+
 ### Changed
 
 - **Per-tool trace lines are now folded by default during a live turn.**
