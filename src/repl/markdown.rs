@@ -118,6 +118,23 @@ impl Renderer {
         self.first_line = false;
     }
 
+    fn push_horizontal_rule(&mut self) {
+        let prefix = if self.first_line {
+            &self.first_prefix
+        } else {
+            &self.rest_prefix
+        };
+        let prefix_width = if self.first_line {
+            self.first_prefix_width
+        } else {
+            self.rest_prefix_width
+        };
+        let dash_count = self.width.saturating_sub(prefix_width).max(MIN_TEXT_WIDTH);
+        let rule = "─".repeat(dash_count).with(output::RULE).to_string();
+        self.lines.push(format!("{prefix}{rule}"));
+        self.first_line = false;
+    }
+
     fn push_wrapped(&mut self, text: &str, style: LineStyle, continuation_indent: &str) {
         let available = self.available();
         let wrapped = wrap_cells(text, available, continuation_indent);
@@ -179,6 +196,30 @@ fn strip_bold_markers(text: &str) -> String {
     text.replace("**", "")
 }
 
+/// CommonMark thematic break: a line containing at least three
+/// `-`, `_`, or `*` (mixed runs not allowed), optionally separated
+/// by spaces. Examples: `---`, `***`, `___`, `- - -`.
+fn is_horizontal_rule(line: &str) -> bool {
+    for marker in ['-', '_', '*'] {
+        let mut count = 0usize;
+        let mut ok = true;
+        for c in line.chars() {
+            if c == marker {
+                count += 1;
+            } else if c.is_whitespace() {
+                continue;
+            } else {
+                ok = false;
+                break;
+            }
+        }
+        if ok && count >= 3 {
+            return true;
+        }
+    }
+    false
+}
+
 /// Render `text` through the wrap-aware renderer. Takes the initial
 /// in-code state (so streaming callers can persist it across chunks)
 /// and returns the post-render in-code state. Non-streaming callers
@@ -198,6 +239,15 @@ fn render_blocks(text: &str, renderer: &mut Renderer, mut in_code: bool) -> bool
         let trimmed = line.trim();
         if trimmed.is_empty() {
             renderer.push_blank();
+            continue;
+        }
+
+        if is_horizontal_rule(trimmed) {
+            // CommonMark thematic break — render as a dim dash run
+            // filling the available column budget, instead of
+            // dropping the literal `---` into the chat. Acts as a
+            // visual section divider inside a single role's reply.
+            renderer.push_horizontal_rule();
             continue;
         }
 
@@ -280,6 +330,35 @@ fn wrap_cells(text: &str, width: usize, continuation_indent: &str) -> Vec<String
         lines.push(current);
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn horizontal_rule_recognized_in_canonical_shapes() {
+        assert!(is_horizontal_rule("---"));
+        assert!(is_horizontal_rule("***"));
+        assert!(is_horizontal_rule("___"));
+        // Mixed spacing is allowed per CommonMark.
+        assert!(is_horizontal_rule("- - -"));
+        assert!(is_horizontal_rule("  - - -  "));
+        // Longer runs are still rules.
+        assert!(is_horizontal_rule("------"));
+    }
+
+    #[test]
+    fn horizontal_rule_rejected_for_non_rule_lines() {
+        // Mixed markers don't count.
+        assert!(!is_horizontal_rule("-*-"));
+        // Fewer than three markers.
+        assert!(!is_horizontal_rule("--"));
+        assert!(!is_horizontal_rule("- -"));
+        // Mixed with letters — keep as content.
+        assert!(!is_horizontal_rule("--- end of section ---"));
+        assert!(!is_horizontal_rule(""));
+    }
 }
 
 fn hard_wrap_word(word: &str, width: usize) -> Vec<String> {
