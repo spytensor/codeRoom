@@ -96,14 +96,15 @@ impl WorkCard {
             WorkStatus::Done {
                 duration,
                 steps_count,
-            } => format!(
-                "@{} done · {} · {} · {} {}",
-                self.role,
-                self.title,
-                format_duration(*duration),
-                steps_count,
-                if *steps_count == 1 { "step" } else { "steps" }
-            ),
+            } => {
+                let step_word = if *steps_count == 1 { "step" } else { "steps" };
+                format!(
+                    "@{} done · {} · {} {step_word}",
+                    self.role,
+                    format_duration(*duration),
+                    steps_count
+                )
+            }
             _ => format!(
                 "@{} · {} · {}",
                 self.role,
@@ -111,8 +112,8 @@ impl WorkCard {
                 self.status_summary()
             ),
         };
-        let content = truncate_cells(&summary, width.saturating_sub(2));
-        format!("{} {}", "▎".with(self.border_color()), content.with(FADE))
+        let content = truncate_cells(&summary, width);
+        content.with(FADE).to_string()
     }
 
     fn render_working(&self, width: usize) -> String {
@@ -500,10 +501,7 @@ mod tests {
         let rendered = strip_ansi(&card.render(80));
         let lines: Vec<&str> = rendered.lines().collect();
         assert_eq!(lines.len(), 1);
-        assert_eq!(
-            lines[0],
-            "▎ @security done · Scan repository permissions and adapters · 12s · 3 steps"
-        );
+        assert_eq!(lines[0], "@security done · 12s · 3 steps");
         assert!(!rendered.contains("Read Cargo.toml"));
     }
 

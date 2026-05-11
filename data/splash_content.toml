@@ -16,6 +16,14 @@ items = [
 ]
 
 [[whats_new]]
+version = "0.4.1"
+items = [
+  "role replies render as inset message blocks",
+  "ready/work lifecycle chatter is hidden by default",
+  "WorkCards sit inside the room instead of hugging the gutter",
+]
+
+[[whats_new]]
 version = "0.4.0"
 items = [
   "calm CLI surface: progress first, raw trace on demand",

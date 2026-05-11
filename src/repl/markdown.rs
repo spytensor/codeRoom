@@ -8,7 +8,7 @@ const MIN_TEXT_WIDTH: usize = 8;
 /// Persistent markdown-rendering state for a streaming turn. Live
 /// `RoleOutputDelta` events arrive in chunks; without persistent
 /// state every chunk would render as a fresh markdown document —
-/// the role badge would reprint at the head of each chunk and code
+/// the role header would reprint at the head of each chunk and code
 /// blocks opened in one chunk would close (visually) at the chunk
 /// boundary because the local `in_code` flag resets. Keeping these
 /// two flags across calls is what makes streaming output read like
@@ -22,9 +22,9 @@ const MIN_TEXT_WIDTH: usize = 8;
 #[derive(Debug, Clone, Default)]
 pub(super) struct StreamMarkdownState {
     /// `true` until at least one non-blank line has been emitted in
-    /// this turn. Switches to `false` after the first emit, so the
-    /// `▎ @role` prefix only renders once per turn instead of once
-    /// per streaming chunk.
+    /// this turn. Switches to `false` after the first emitted body
+    /// line, so the role header only renders once per turn instead
+    /// of once per streaming chunk.
     pub(super) first_line: bool,
     /// `true` when an opening ` ``` ` fence was seen but no closing
     /// fence has arrived yet. Persisted across chunks so a code
@@ -65,21 +65,13 @@ pub(super) fn render_role_markdown_with_state(
     width: usize,
     state: &mut StreamMarkdownState,
 ) -> String {
-    let role_color = output::role_color(role, host_role);
-    let first_prefix = format!(
-        "{} {} ",
-        super::render::GUTTER.with(role_color),
-        output::role_token(role, host_role)
-    );
-    let rest_prefix = format!("{} ", super::render::GUTTER.with(role_color));
-    let first_plain = format!("{} @{role} ", super::render::GUTTER);
-    let rest_plain = format!("{} ", super::render::GUTTER);
+    let header = format!("  {}", output::role_token(role, host_role).bold());
+    let body_prefix = "    ".to_owned();
     let mut renderer = Renderer {
         width,
-        first_prefix,
-        rest_prefix,
-        first_prefix_width: UnicodeWidthStr::width(first_plain.as_str()),
-        rest_prefix_width: UnicodeWidthStr::width(rest_plain.as_str()),
+        header,
+        body_prefix,
+        body_prefix_width: 4,
         first_line: state.first_line,
         lines: Vec::new(),
     };
@@ -90,52 +82,45 @@ pub(super) fn render_role_markdown_with_state(
 
 struct Renderer {
     width: usize,
-    first_prefix: String,
-    rest_prefix: String,
-    first_prefix_width: usize,
-    rest_prefix_width: usize,
+    header: String,
+    body_prefix: String,
+    body_prefix_width: usize,
     first_line: bool,
     lines: Vec<String>,
 }
 
 impl Renderer {
     fn available(&self) -> usize {
-        let prefix = if self.first_line {
-            self.first_prefix_width
-        } else {
-            self.rest_prefix_width
-        };
-        self.width.saturating_sub(prefix).max(MIN_TEXT_WIDTH)
+        self.width
+            .saturating_sub(self.body_prefix_width)
+            .max(MIN_TEXT_WIDTH)
+    }
+
+    fn ensure_header(&mut self) {
+        if self.first_line {
+            self.lines.push(self.header.clone());
+            self.first_line = false;
+        }
     }
 
     fn push_blank(&mut self) {
-        let prefix = if self.first_line {
-            &self.first_prefix
-        } else {
-            &self.rest_prefix
-        };
-        self.lines.push(prefix.trim_end().to_owned());
-        self.first_line = false;
+        if !self.first_line {
+            self.lines.push(String::new());
+        }
     }
 
     fn push_horizontal_rule(&mut self) {
-        let prefix = if self.first_line {
-            &self.first_prefix
-        } else {
-            &self.rest_prefix
-        };
-        let prefix_width = if self.first_line {
-            self.first_prefix_width
-        } else {
-            self.rest_prefix_width
-        };
-        let dash_count = self.width.saturating_sub(prefix_width).max(MIN_TEXT_WIDTH);
+        self.ensure_header();
+        let dash_count = self
+            .width
+            .saturating_sub(self.body_prefix_width)
+            .max(MIN_TEXT_WIDTH);
         let rule = "─".repeat(dash_count).with(output::RULE).to_string();
-        self.lines.push(format!("{prefix}{rule}"));
-        self.first_line = false;
+        self.lines.push(format!("{}{}", self.body_prefix, rule));
     }
 
     fn push_wrapped(&mut self, text: &str, style: LineStyle, continuation_indent: &str) {
+        self.ensure_header();
         let available = self.available();
         let wrapped = wrap_cells(text, available, continuation_indent);
         if wrapped.is_empty() {
@@ -143,14 +128,11 @@ impl Renderer {
             return;
         }
         for line in wrapped {
-            let prefix = if self.first_line {
-                &self.first_prefix
-            } else {
-                &self.rest_prefix
-            };
-            self.lines
-                .push(format!("{prefix}{}", apply_line_style(&line, style)));
-            self.first_line = false;
+            self.lines.push(format!(
+                "{}{}",
+                self.body_prefix,
+                apply_line_style(&line, style)
+            ));
         }
     }
 }

@@ -353,7 +353,9 @@ pub(super) async fn drain_one_turn(
                             ) {
                                 streamed_rendered_text.push_str(&rendered);
                             }
-                            work::render_card(&card);
+                            if printed_working_card || cleaned.text.trim().is_empty() {
+                                work::render_card(&card);
+                            }
                             let already_streamed = !streamed_rendered_text.trim().is_empty()
                                 && same_streamed_text(&streamed_rendered_text, &cleaned.text);
                             if !already_streamed && !cleaned.text.trim().is_empty() {

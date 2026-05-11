@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::render::{
-    render_event_line, render_event_line_at_width, started_model_label, summarize_tool_input,
-};
+use super::render::{render_event_line, render_event_line_at_width, summarize_tool_input};
 use super::show::{filter_show_events, normalize_show_event};
 use super::splash::{
     join_cells, load_splash_content, pick_release, plain_cell, render_home_at_width, splash_bottom,
@@ -286,15 +284,6 @@ fn parse_allow_and_deny() {
     assert_eq!(parse_line("/deny"), Command::Help);
 }
 
-#[test]
-fn started_model_label_hides_literal_model_placeholder() {
-    assert_eq!(started_model_label("codex", "model"), "Codex default");
-    assert_eq!(
-        started_model_label("cc", "claude-opus-4-7"),
-        "claude-opus-4-7"
-    );
-}
-
 #[tokio::test]
 async fn first_run_marker_round_trip() {
     let tmp = tempfile::tempdir().unwrap();
@@ -533,17 +522,17 @@ fn snapshot_boot_dashboard_at_80() {
     .trim_start_matches('\n')
     .to_owned();
     insta::assert_snapshot!(rendered, @r"
-┌─ codeRoom v0.4.0 ────────────────────────────────────────────────────────────┐
+┌─ codeRoom v0.4.1 ────────────────────────────────────────────────────────────┐
 │                                                                              │
 │ welcome back, Ada              tips for getting started                      │
 │                                • type @role to send a task to a specific ro… │
 │ ● @backend   cc     · 1M       • /halt @role interrupts a turn; Ctrl-C twic… │
 │ ● @host      cc     · 1M       • /journal <role> captures today's lessons-l… │
 │ ● @security  codex  · default                                                │
-│                                what's new in 0.4.0                           │
-│  0  base tokens loaded         • calm CLI surface: progress first, raw trac… │
-│ /repo/codeRoom                 • allow approvals disappear from chat         │
-│                                • completed WorkCards collapse to one quiet … │
+│                                what's new in 0.4.1                           │
+│  0  base tokens loaded         • role replies render as inset message blocks │
+│ /repo/codeRoom                 • ready/work lifecycle chatter is hidden by … │
+│                                • WorkCards sit inside the room instead of h… │
 │                                                                              │
 │                                /help for commands                            │
 │                                                                              │
@@ -610,21 +599,21 @@ fn snapshot_render_event_lines() {
     let rendered = events
         .iter()
         .map(|event| strip_ansi(&render_event_line(event, "host")))
+        .filter(|line| !line.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n");
     insta::assert_snapshot!(rendered, @r"
-▎ @backend ready · model=claude-opus-4-7
-▎ @backend work · Review work cards
-▎ @backend Ready for @security.
-▎ ↳ @backend · Bash `cargo test --all-features`
-▎ ✓ @backend · tests passed
-▎ ⊘ @backend · Bash denied: destructive shell ops require review
-▎ @backend stopped: Refreshed
+  @backend
+    Ready for @security.
+    ↳ @backend · Bash `cargo test --all-features`
+    ✓ @backend · tests passed
+  ⊘ @backend · Bash denied: destructive shell ops require review
+  @backend stopped: Refreshed
 ");
 }
 
 #[test]
-fn multi_line_role_spoke_keeps_gutter_on_each_line() {
+fn multi_line_role_spoke_uses_inset_message_block() {
     let event = CrepEvent::RoleSpoke {
         role: "backend".into(),
         text: "First paragraph.\nSecond paragraph.\nThird paragraph.".into(),
@@ -636,9 +625,10 @@ fn multi_line_role_spoke_keeps_gutter_on_each_line() {
     };
     let rendered = strip_ansi(&render_event_line(&event, "host"));
     insta::assert_snapshot!(rendered, @r"
-▎ @backend First paragraph.
-▎ Second paragraph.
-▎ Third paragraph.
+  @backend
+    First paragraph.
+    Second paragraph.
+    Third paragraph.
 ");
 }
 
@@ -658,7 +648,7 @@ fn turn_dispatched_renders_as_full_width_handoff_banner() {
     };
     let rendered = strip_ansi(&render_event_line_at_width(&dispatched, "host", 48));
     assert_eq!(unicode_width::UnicodeWidthStr::width(rendered.as_str()), 48);
-    assert!(rendered.starts_with("▎ @backend "));
+    assert!(rendered.starts_with("  @backend "));
     assert!(rendered.ends_with(" starting"));
     assert!(rendered.contains('─'));
 
@@ -674,7 +664,7 @@ fn turn_dispatched_renders_as_full_width_handoff_banner() {
         queue_position: 2,
     };
     let rendered = strip_ansi(&render_event_line_at_width(&queued, "host", 60));
-    assert_eq!(rendered, "▎ @frontend queued · 2 ahead");
+    assert_eq!(rendered, "  @frontend queued · 2 ahead");
 }
 
 #[test]
@@ -693,7 +683,7 @@ fn turn_dispatched_banner_pads_to_exact_width_in_tight_fits() {
     // width = 22 → dash_count = 2 → space-padded branch.
     let rendered = strip_ansi(&render_event_line_at_width(&dispatched, "host", 22));
     assert_eq!(unicode_width::UnicodeWidthStr::width(rendered.as_str()), 22);
-    assert!(rendered.starts_with("▎ @backend"));
+    assert!(rendered.starts_with("  @backend"));
     assert!(rendered.ends_with("starting"));
 }
 
@@ -711,7 +701,7 @@ fn turn_dispatched_banner_handles_long_role_names() {
     };
     let rendered = strip_ansi(&render_event_line_at_width(&dispatched, "host", 60));
     assert_eq!(unicode_width::UnicodeWidthStr::width(rendered.as_str()), 60);
-    assert!(rendered.starts_with("▎ @docs-reviewer "));
+    assert!(rendered.starts_with("  @docs-reviewer "));
     assert!(rendered.ends_with(" starting"));
     assert!(rendered.contains('─'));
 }
@@ -727,16 +717,11 @@ fn format_reply_quote_shows_speaker_change_and_truncated_snippet() {
         parent_text,
         72,
     ));
-    let lines: Vec<&str> = rendered.split('\n').collect();
-    assert_eq!(lines.len(), 2, "quote block is exactly two lines");
-    // Header line names both speakers and uses the reply arrow.
-    assert!(lines[0].starts_with("▎ @host"));
-    assert!(lines[0].contains("→"));
-    assert!(lines[0].contains("replying to @backend"));
-    // Quote line uses the `│` continuation glyph and wraps the
-    // parent's text in plain quotes; long bodies are ellipsis-truncated.
-    assert!(lines[1].starts_with("▎ │ \""));
-    assert!(lines[1].ends_with('"'), "quote line should be balanced");
+    assert!(!rendered.contains('\n'), "quote is intentionally one line");
+    assert!(rendered.starts_with("  @host"));
+    assert!(rendered.contains("↲"));
+    assert!(rendered.contains("@backend"));
+    assert!(rendered.ends_with('"'), "quote should be balanced");
 }
 
 #[test]
@@ -750,20 +735,14 @@ fn format_reply_quote_short_snippet_renders_without_ellipsis() {
         parent_text,
         80,
     ));
-    let lines: Vec<&str> = rendered.split('\n').collect();
-    assert_eq!(lines.len(), 2);
-    assert!(lines[1].contains("\"ok @host\""));
-    assert!(!lines[1].contains('…'));
+    assert!(!rendered.contains('\n'));
+    assert!(rendered.contains("\"ok @host\""));
+    assert!(!rendered.contains('…'));
 }
 
 #[test]
-fn format_reply_quote_renders_two_lines_at_narrow_width() {
+fn format_reply_quote_stays_one_line_at_narrow_width() {
     use super::render::format_reply_quote;
-    // 40-cell terminal still produces exactly two physical lines —
-    // the quote is one logical row in the buffer regardless of how
-    // narrow the terminal gets. (Terminal-driven wrapping may break
-    // it visually, but the formatter itself returns a single quote
-    // row plus a single header row.)
     let parent_text =
         "Look at src/server/index.ts and double-check the auth middleware before we ship.";
     let rendered = strip_ansi(&format_reply_quote(
@@ -773,8 +752,7 @@ fn format_reply_quote_renders_two_lines_at_narrow_width() {
         parent_text,
         40,
     ));
-    let lines: Vec<&str> = rendered.split('\n').collect();
-    assert_eq!(lines.len(), 2);
+    assert!(!rendered.contains('\n'));
 }
 
 #[test]
@@ -790,9 +768,8 @@ fn format_reply_quote_collapses_whitespace_for_snippet() {
         parent_text,
         80,
     ));
-    let lines: Vec<&str> = rendered.split('\n').collect();
-    assert_eq!(lines.len(), 2);
-    assert!(lines[1].contains("First line. Second paragraph with extra spaces."));
+    assert!(!rendered.contains('\n'));
+    assert!(rendered.contains("First line. Second paragraph with extra spaces."));
 }
 
 #[test]
@@ -808,9 +785,9 @@ fn turn_dispatched_collapses_on_narrow_terminals() {
         queue_position: 0,
     };
     let rendered = strip_ansi(&render_event_line_at_width(&dispatched, "host", 16));
-    // 16 cells: "▎ " (2) + "@backend" (8) + " " (1) + "starting" (8) = 19
+    // 16 cells: "  " (2) + "@backend" (8) + " " (1) + "starting" (8) = 19
     // → not enough for the dash run; fall back to a single space.
-    assert_eq!(rendered, "▎ @backend starting");
+    assert_eq!(rendered, "  @backend starting");
 }
 
 #[test]
@@ -1069,7 +1046,7 @@ fn status_region_renders_role_with_elapsed_and_state() {
     // give a tiny window for clock skew during the test) · default
     // "thinking" state since no events have arrived.
     assert!(
-        rendered.starts_with("│ 1 role working · ⠋ @security · "),
+        rendered.starts_with("  1 role working · ⠋ @security · "),
         "unexpected status header: {rendered}"
     );
     assert!(rendered.contains("thinking"), "rendered: {rendered}");
@@ -1263,10 +1240,10 @@ fn streaming_state_emits_role_badge_only_on_first_chunk() {
         &mut state,
     ));
 
-    // First chunk carries the role badge.
-    assert!(first.starts_with("▎ @security"), "first: {first:?}");
-    // Second chunk uses the gutter-only continuation prefix.
-    assert!(second.starts_with("▎ "), "second: {second:?}");
+    // First chunk carries the role header plus inset body.
+    assert!(first.starts_with("  @security\n    "), "first: {first:?}");
+    // Second chunk uses the body inset only.
+    assert!(second.starts_with("    "), "second: {second:?}");
     assert!(
         !second.contains("@security"),
         "second chunk should not reprint the role badge: {second:?}"
@@ -1312,19 +1289,14 @@ fn streaming_state_persists_code_block_across_chunks() {
 fn streaming_state_resets_first_line_only_after_real_content() {
     use crate::repl::markdown::{render_role_markdown_with_state, StreamMarkdownState};
 
-    // A pure-whitespace first chunk shouldn't burn the role badge.
-    // The badge should still appear on the first chunk that actually
+    // A pure-whitespace first chunk shouldn't burn the role header.
+    // The header should still appear on the first chunk that actually
     // has visible text.
     let mut state = StreamMarkdownState::fresh();
     let _ = render_role_markdown_with_state("security", "host", "\n\n", 80, &mut state);
-    // The renderer emits blank lines using the *current* prefix, so a
-    // blank-only chunk still flips `first_line` to false (push_blank
-    // mutates the flag). This is acceptable for the current design —
-    // adapters don't emit pure-whitespace leading chunks in practice.
-    // Lock this behavior so it's an explicit decision, not accidental.
     assert!(
-        !state.first_line,
-        "blank-only chunk consumes the first-line slot (renderer prints a blank with the role prefix)"
+        state.first_line,
+        "blank-only chunk should not consume the role header slot"
     );
 }
 

@@ -4,7 +4,7 @@
 //! primary consumer. See `docs/architecture.md` for the v0.1 constitution and
 //! `docs/v0.2-trust-and-interrupt.md` for the v0.2 amendment.
 
-#![doc(html_root_url = "https://docs.rs/coderoom/0.4.0")]
+#![doc(html_root_url = "https://docs.rs/coderoom/0.4.1")]
 #![warn(missing_debug_implementations)]
 #![warn(rust_2018_idioms)]
 

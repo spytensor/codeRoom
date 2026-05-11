@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-11
+
+### Changed
+
+- **Role replies now use inset message blocks.** Final and streaming role
+  output renders as a role header with indented body text instead of a
+  colored gutter on every line, giving the transcript a clearer reading
+  rhythm.
+- **Lifecycle chatter is hidden by default.** `ready` and `work` events are
+  folded out of the live transcript; they remain available in the durable
+  CREP log for audit/replay surfaces.
+- **WorkCards and status lines are visually inset.** Active cards no longer
+  hug the left terminal edge, done summaries omit repeated task titles, and
+  the status line drops the leading vertical bar.
+- **Auto-route reply quotes are one line.** Cross-role handoff context now
+  shows a compact `child ↲ parent · "snippet"` line instead of a two-line
+  quote block.
+
 ## [0.4.0] - 2026-05-11
 
 ### Added
@@ -902,7 +920,8 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/spytensor/codeRoom/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/spytensor/codeRoom/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/spytensor/codeRoom/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/spytensor/codeRoom/compare/v0.2.3...v0.2.4

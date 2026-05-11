@@ -12,6 +12,7 @@ use crate::work;
 use super::render::summarize_tool_input;
 use super::text::one_line;
 
+const CARD_INDENT: &str = "  ";
 const DEFAULT_CARD_WIDTH: usize = 80;
 
 #[derive(Debug, Clone)]
@@ -198,11 +199,16 @@ impl TurnWork {
 }
 
 pub(super) fn render_card(card: &WorkCard) {
-    println!("{}", card.render(card_width()));
+    let rendered = card.render(card_width());
+    for line in rendered.lines() {
+        println!("{CARD_INDENT}{line}");
+    }
 }
 
 pub(super) fn card_width() -> usize {
-    terminal::size().map_or(DEFAULT_CARD_WIDTH, |(cols, _)| usize::from(cols))
+    terminal::size().map_or(DEFAULT_CARD_WIDTH, |(cols, _)| {
+        usize::from(cols).saturating_sub(CARD_INDENT.len())
+    })
 }
 
 fn step_label(tool_name: &str, tool_input: &serde_json::Value) -> String {

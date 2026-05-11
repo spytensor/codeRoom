@@ -187,7 +187,7 @@ impl StatusRegion {
             .join("  ");
         let count = self.slots.len();
         let noun = if count == 1 { "role" } else { "roles" };
-        let line = format!("│ {count} {noun} working · {slots}");
+        let line = format!("  {count} {noun} working · {slots}");
         output::truncate_visible(&line, width)
             .with(output::DIM)
             .to_string()

@@ -276,8 +276,8 @@ def render_boot_dashboard() -> None:
 
 def status_line(draw: ScaledDraw, y: int, role: str) -> None:
     _ = role
-    line = "│ 2 working · @security checking permissions · @backend waiting approval"
-    draw_text(draw, (86, y), fit_text(draw, line, 1050, FONT), MUTED, FONT)
+    line = "  2 roles working · ... @security · 1m · checking permissions    ... @backend · waiting approval"
+    draw_text(draw, (96, y), fit_text(draw, line, 1040, FONT), MUTED, FONT)
 
 
 def active_card(
@@ -289,7 +289,7 @@ def active_card(
     rows: list[tuple[str, tuple[int, int, int], str]],
     color: tuple[int, int, int],
 ) -> None:
-    left, right = 90, 1148
+    left, right = 126, 1138
     height = 86 + 37 * len(rows)
     draw.line((left, y, right, y), fill=color, width=2)
     draw.line((left, y, left, y + height), fill=color, width=2)
@@ -341,8 +341,8 @@ def done_summary(
     steps: int,
     color: tuple[int, int, int],
 ) -> None:
-    draw.line((80, y - 3, 80, y + 29), fill=color, width=4)
-    draw_text(draw, (111, y), fit_text(draw, f"{role} done · {title} · {elapsed} · {steps} steps", 1040, FONT), MUTED, FONT)
+    _ = (title, color)
+    draw_text(draw, (126, y), fit_text(draw, f"{role} done · {elapsed} · {steps} steps", 1040, FONT), DIM, FONT)
 
 
 def chat_line(
@@ -352,10 +352,8 @@ def chat_line(
     text: str,
     color: tuple[int, int, int],
 ) -> None:
-    draw.line((80, y - 3, 80, y + 29), fill=color, width=4)
-    draw_text(draw, (111, y), role, color, BOLD)
-    text_x = 111 + text_width(draw, role, BOLD) + 18
-    draw_text(draw, (text_x, y), fit_text(draw, text, 1130 - text_x, FONT), WHITE, FONT)
+    draw_text(draw, (126, y), role, color, BOLD)
+    draw_text(draw, (164, y + 38), fit_text(draw, text, 980, FONT), WHITE, FONT)
 
 
 def reply_quote(
@@ -367,25 +365,16 @@ def reply_quote(
     child_color: tuple[int, int, int],
     parent_color: tuple[int, int, int],
 ) -> None:
-    """Two-line Slack-style reply pointer printed before an auto-routed
-    turn — mirrors `format_reply_quote` in src/repl/render.rs. The
-    gutter belongs to the child (it sits directly above the child's
-    output); the parent role label keeps its own role color so the eye
-    links the quote back to that role's earlier reply."""
-    draw.line((80, y - 3, 80, y + 29), fill=child_color, width=4)
-    draw_text(draw, (111, y), child_role, child_color, BOLD)
-    arrow_x = 111 + text_width(draw, child_role, BOLD) + 14
-    draw_text(draw, (arrow_x, y), "→", DIM, FONT)
-    reply_x = arrow_x + text_width(draw, "→", FONT) + 14
-    draw_text(draw, (reply_x, y), "replying to", MUTED, FONT)
-    parent_x = reply_x + text_width(draw, "replying to", FONT) + 12
+    """One-line reply pointer — mirrors `format_reply_quote`."""
+    draw_text(draw, (126, y), child_role, child_color, BOLD)
+    arrow_x = 126 + text_width(draw, child_role, BOLD) + 14
+    draw_text(draw, (arrow_x, y), "↲", DIM, FONT)
+    parent_x = arrow_x + text_width(draw, "↲", FONT) + 14
     draw_text(draw, (parent_x, y), parent_role, parent_color, FONT)
-
-    quote_y = y + 32
-    draw.line((80, quote_y - 3, 80, quote_y + 29), fill=child_color, width=4)
-    draw_text(draw, (111, quote_y), "│", DIM, FONT)
+    sep_x = parent_x + text_width(draw, parent_role, FONT) + 14
+    draw_text(draw, (sep_x, y), "·", DIM, FONT)
     snippet_text = f'"{snippet}"'
-    draw_text(draw, (135, quote_y), fit_text(draw, snippet_text, 1110, FONT), DIM, FONT)
+    draw_text(draw, (sep_x + 28, y), fit_text(draw, snippet_text, 870, FONT), DIM, FONT)
 
 
 def handoff_banner(
@@ -397,9 +386,8 @@ def handoff_banner(
     """Full-width handoff divider — mirrors `handoff_banner` in
     src/repl/render.rs. Painted when a TurnDispatched fires with
     queue_position == 0 (the new speaker actually starts)."""
-    draw.line((80, y - 3, 80, y + 29), fill=color, width=4)
-    draw_text(draw, (111, y), role, color, BOLD)
-    dash_start = 111 + text_width(draw, role, BOLD) + 14
+    draw_text(draw, (126, y), role, color, BOLD)
+    dash_start = 126 + text_width(draw, role, BOLD) + 14
     dash_end = 1144
     mid_y = y + 15
     draw.line(
@@ -416,14 +404,15 @@ def right_rail(draw: ScaledDraw) -> None:
     draw.rectangle((1204, 128, 1726, 764), fill=RAIL_BG)
     draw_text(draw, (x, 149), "default surface", YELLOW, TITLE)
     draw_text(draw, (x, 197), "show", WHITE, FONT)
-    draw_text(draw, (x + 26, 230), "user asks + final replies", MUTED, SMALL)
+    draw_text(draw, (x + 26, 230), "role header + inset replies", MUTED, SMALL)
     draw_text(draw, (x + 26, 264), "active progress + blockers", MUTED, SMALL)
     draw_text(draw, (x, 319), "summarize", WHITE, FONT)
     draw_text(draw, (x + 26, 352), "tool count + current step", MUTED, SMALL)
-    draw_text(draw, (x + 26, 386), "done in one quiet line", MUTED, SMALL)
+    draw_text(draw, (x + 26, 386), "done line only when useful", MUTED, SMALL)
     draw_text(draw, (x, 441), "hide", WHITE, FONT)
     draw_text(draw, (x + 26, 474), "allowed once/session", MUTED, SMALL)
-    draw_text(draw, (x + 26, 508), "raw tool input/output", MUTED, SMALL)
+    draw_text(draw, (x + 26, 508), "ready/work lifecycle noise", MUTED, SMALL)
+    draw_text(draw, (x + 26, 542), "raw tool input/output", MUTED, SMALL)
 
     draw_text(draw, (x, 586), "audit surface", YELLOW, TITLE)
     draw_text(draw, (x, 633), "cr show", WHITE, FONT)
@@ -458,16 +447,25 @@ def render_work_cards() -> None:
         BLUE,
     )
 
-    done_summary(draw, 646, "@qa", "audit README testability claims", "52s", 5, YELLOW)
+    done_summary(draw, 636, "@qa", "audit README testability claims", "52s", 5, YELLOW)
+    reply_quote(
+        draw,
+        684,
+        "@qa",
+        "@security",
+        "permission flow is safe; README testability claims need one correction",
+        YELLOW,
+        SECURITY,
+    )
     chat_line(
         draw,
-        706,
+        732,
         "@qa",
         'README says "fully tested"; src/turn.rs still lacks unit coverage.',
         YELLOW,
     )
 
-    done_summary(draw, 796, "@security", "audit permission and routing claims", "2m41s", 9, SECURITY)
+    done_summary(draw, 830, "@security", "audit permission and routing claims", "2m41s", 9, SECURITY)
     right_rail(draw)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
