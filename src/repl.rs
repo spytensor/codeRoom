@@ -191,28 +191,51 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
         }
     } else {
         // Surface which roles will actually resume so the user
-        // isn't surprised when the conversation already has
-        // context. Only roles with a persisted id say "resuming";
-        // first-run and freshly-cleared roles stay silent.
-        let mut resumed: Vec<String> = cfg
-            .role_names()
-            .filter(|name| {
-                sessions::read_session_id(project_root, name)
-                    .ok()
-                    .flatten()
-                    .is_some()
-            })
-            .map(ToOwned::to_owned)
-            .collect();
-        resumed.sort();
-        if !resumed.is_empty() {
-            let names = resumed
+        // isn't surprised. Roles with a persisted id whose engine
+        // wires resume (currently cc only) show up as "resuming";
+        // codex / gemini roles get a separate "resume not wired"
+        // line so the user knows context isn't actually carried
+        // forward (amendment A-006 codex/gemini follow-up).
+        let mut resumed_wired: Vec<String> = Vec::new();
+        let mut resumed_dropped: Vec<String> = Vec::new();
+        for name in cfg.role_names() {
+            if sessions::read_session_id(project_root, name)
+                .ok()
+                .flatten()
+                .is_none()
+            {
+                continue;
+            }
+            let engine = cfg
+                .roles
+                .get(name)
+                .and_then(|r| r.engine)
+                .unwrap_or(cfg.default_engine);
+            match engine {
+                Engine::Cc => resumed_wired.push(name.to_owned()),
+                Engine::Codex | Engine::Gemini => resumed_dropped.push(name.to_owned()),
+            }
+        }
+        resumed_wired.sort();
+        resumed_dropped.sort();
+        if !resumed_wired.is_empty() {
+            let names = resumed_wired
                 .iter()
                 .map(|n| format!("@{n}"))
                 .collect::<Vec<_>>()
                 .join(", ");
             output::hint(format!(
                 "resuming prior session for {names} — pass `--fresh` to start clean"
+            ));
+        }
+        if !resumed_dropped.is_empty() {
+            let names = resumed_dropped
+                .iter()
+                .map(|n| format!("@{n}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            output::hint(format!(
+                "resume not wired for codex/gemini yet — {names} will start fresh"
             ));
         }
     }

@@ -108,6 +108,20 @@ impl EngineAdapter for GeminiAdapter {
                     engine: Engine::Gemini.as_str(),
                     message,
                 })?;
+        // Gemini's `--resume <id>` expects an index number (`latest`
+        // or `--resume 5`), not the UUID-shaped session id codeRoom
+        // stores per role. Cross-referencing by index across cr
+        // projects is fragile (deletes shift the numbering), and the
+        // synthetic `gemini-<role>` id we emit on RoleStarted isn't
+        // a real resumable id either. Per amendment A-006 follow-up
+        // we log + continue with a fresh session; the user-facing
+        // hint at `spawn_role` warns about this.
+        if config.resume_session_id.is_some() {
+            tracing::debug!(
+                role = %config.name,
+                "ignoring resume_session_id: gemini --resume uses session indexes, not UUIDs"
+            );
+        }
         let priors_text = tokio::fs::read_to_string(&config.priors_path)
             .await
             .map_err(|source| AdapterError::PriorsRead {
