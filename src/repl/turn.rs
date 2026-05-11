@@ -208,6 +208,8 @@ pub(super) async fn drain_one_turn(
         return Ok(None);
     }
 
+    let verbose_tools = verbose_tools_enabled();
+
     let mut captured: Option<CapturedTurn> = None;
     let mut activity = TurnActivity::default();
     let turn_started = Instant::now();
@@ -290,14 +292,20 @@ pub(super) async fn drain_one_turn(
                             }
                         };
                         hidden.merge_into(&mut activity);
-                        // Bubble the same event into the status line so
-                        // its tool count + state stay current while the
-                        // terminal also gets compact trace lines.
+                        // Per-tool lines duplicate what the WorkCard
+                        // (rendered once on first tool, again on turn
+                        // end with all steps) and the live status
+                        // spinner already convey. Fold them by default;
+                        // `CODEROOM_VERBOSE_TOOLS=1` opts back in to the
+                        // full audit stream. `cr show` always replays
+                        // the full event log.
                         status.clear();
                         if let Some(card) = maybe_card {
                             work::render_card(&card);
                         }
-                        render_event(&event, host_role);
+                        if verbose_tools {
+                            render_event(&event, host_role);
+                        }
                         status.update_from_event(&event);
                         status.repaint();
                         continue;
@@ -418,6 +426,21 @@ pub(super) async fn drain_one_turn(
     Ok(captured)
 }
 
+/// Whether the user opted into the full per-tool trace stream via the
+/// `CODEROOM_VERBOSE_TOOLS` env var. Any non-empty value enables it.
+/// Checked once per turn-drain so a session can change behavior between
+/// turns without restarting the REPL.
+fn verbose_tools_enabled() -> bool {
+    verbose_from_value(std::env::var("CODEROOM_VERBOSE_TOOLS").ok().as_deref())
+}
+
+/// Pure decision so the env-var read can stay a one-liner while the
+/// gating semantics ("set + non-empty enables") are unit-testable
+/// without touching process-global env state.
+fn verbose_from_value(value: Option<&str>) -> bool {
+    value.is_some_and(|v| !v.is_empty())
+}
+
 fn render_stream_delta(role: &str, host_role: &str, pending: &mut String) -> Option<String> {
     if pending.trim().is_empty() {
         pending.clear();
@@ -516,5 +539,25 @@ mod tests {
         let mut filter = StreamFilter::default();
         assert_eq!(filter.push("Hello"), Some("Hello".to_owned()));
         assert_eq!(filter.push(" world"), Some(" world".to_owned()));
+    }
+
+    #[test]
+    fn verbose_gate_unset_means_folded() {
+        assert!(!verbose_from_value(None));
+    }
+
+    #[test]
+    fn verbose_gate_empty_string_means_folded() {
+        // An empty value (`CODEROOM_VERBOSE_TOOLS=`) is the same as
+        // unset — users sometimes export with no value to "clear" it
+        // and we shouldn't surprise them with verbose output.
+        assert!(!verbose_from_value(Some("")));
+    }
+
+    #[test]
+    fn verbose_gate_any_non_empty_value_enables() {
+        assert!(verbose_from_value(Some("1")));
+        assert!(verbose_from_value(Some("true")));
+        assert!(verbose_from_value(Some("yes")));
     }
 }
