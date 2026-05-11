@@ -16,6 +16,14 @@ items = [
 ]
 
 [[whats_new]]
+version = "0.3.0"
+items = [
+  "cr start resumes prior role sessions by default; use --fresh to forget",
+  "auto-routing chains run to completion — host hears specialists back",
+  "streaming output no longer reprints the role badge on every chunk",
+]
+
+[[whats_new]]
 version = "0.2.4"
 items = [
   "auto-routing chains run to completion — host hears specialists back",

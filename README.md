@@ -12,7 +12,7 @@
 
 ![CodeRoom role work cards](docs/images/work-cards.png)
 
-> **Status: v0.2.4 — user-runnable, still pre-1.0.** Claude Code,
+> **Status: v0.3.0 — user-runnable, still pre-1.0.** Claude Code,
 > Codex, and Gemini adapters are wired up; bare `cr` opens CodeRoom
 > directly, guides setup when `.coderoom/` is missing, and shows the
 > effective role / engine / model configuration on entry. **v0.2**
@@ -70,8 +70,9 @@ reply.
 | v0.1.x | First-run UI polish, config layering, updater, release hardening |
 | **v0.2** (shipped) | Trust + interrupt: deleted wall-clock per-turn kill; `/halt` + Ctrl-C two-press; codex stdio idle watchdog; WorkCard polish (filled/open glyphs + per-tool accent colors); richer status line |
 | **v0.2.2** (shipped) | Chat-room UX polish: folded per-tool traces, `@`/`/` dropdown completion menu, cross-role quote/reply block, full-width handoff banner, compact one-line permission prompts |
+| **v0.3.0** (shipped) | Per-role session resume by default (`cr start --fresh` to opt out); unbounded auto-routing so chains run to completion (`@host → @security → @host` synthesis); streaming-aware markdown; cc adapter wires `--resume <id>`; codex/gemini resume parity tracked separately |
 | v0.2.x | Concurrent typing during a turn + multi-role parallel dispatch + multi-slot status region |
-| v0.3 | `cr review` (patch clustering), `cr verify` (journal fact-check) |
+| v0.3.x | Codex / gemini resume parity (#120, #121); `cr review` (patch clustering); `cr verify` (journal fact-check); per-role context compaction (#117) |
 | v0.x | Team mode (per-role human owners), auto-router (opt-in), replay viewer |
 
 See [docs/architecture.md](docs/architecture.md) for the v0.1 constitution,
@@ -114,7 +115,7 @@ Disable that with `CODEROOM_NO_UPDATE_CHECK=1` or
 <summary>Don't have npm? Direct binary install.</summary>
 
 ```bash
-TAG=v0.2.4
+TAG=v0.3.0
 ARCH=$(uname -m); case "$ARCH" in arm64|aarch64) ARCH=aarch64 ;; *) ARCH=x86_64 ;; esac
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 curl -fsSL "https://github.com/spytensor/codeRoom/releases/download/${TAG}/cr-${TAG}-${OS}-${ARCH}.tar.gz" \

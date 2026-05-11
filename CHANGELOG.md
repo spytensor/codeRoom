@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-11
+
+### Added
+
+- **Per-role session resume by default (amendment A-006).** `cr start`
+  now resumes each role's prior engine session from
+  `.coderoom/sessions/ids/<role>.id` instead of spawning fresh.
+  Mirrors the behaviour of every modern AI CLI (`claude --resume` /
+  `--continue`, etc.). The REPL prints one hint line listing which
+  roles will resume; `cr start --fresh` clears the persisted ids
+  and starts every role clean. `/refresh @role` also clears that
+  role's session id alongside its priors reload — `/refresh`
+  semantically means "reload priors + start over" and now actually
+  does. (#118, #119)
+- **`cr start --fresh` flag.** Explicit escape hatch for "I want
+  to forget everything"; wipes `.coderoom/sessions/ids/` before
+  spawning roles. The init wizard's
+  `sessions/role-suggestions-dismissed` marker sits in a sibling
+  directory and survives `--fresh`, so users who already dismissed
+  the role-expansion picker aren't re-prompted. (#119)
+
+### Changed
+
+- **Default `cr start` behaviour: resume instead of fresh.** Per
+  amendment A-006. Previously a constitution-level implicit
+  guarantee that each start was fresh; now flipped. Migration:
+  none required — first run after upgrade has no
+  `.coderoom/sessions/` entries so the first session is fresh,
+  resume kicks in from the second session onward.
+
+### Notes
+
+- **Codex and gemini resume parity is deferred.** The cc adapter
+  consumes `resume_session_id` and passes `--resume <id>` to the
+  engine; codex's mcp-server mode has no resume flag (`codex resume`
+  is a separate interactive subcommand) and gemini's `--resume`
+  is index-based, not UUID-based. The REPL prints "resume not
+  wired for codex/gemini yet — @qa, @security will start fresh"
+  so users running mixed-engine projects aren't silently surprised.
+  Tracked at #120 (codex) and #121 (gemini). (#122)
+
 ## [0.2.4] - 2026-05-11
 
 ### Added
