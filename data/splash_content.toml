@@ -16,6 +16,14 @@ items = [
 ]
 
 [[whats_new]]
+version = "0.2.3"
+items = [
+  "Enter on a fresh @-mention now waits for the task body",
+  "@-mention and / commands open a dropdown completion menu",
+  "cross-role auto-routes show a Slack-style quote of the parent reply",
+]
+
+[[whats_new]]
 version = "0.2.2"
 items = [
   "@-mention and / commands open a dropdown completion menu",

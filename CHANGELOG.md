@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-05-11
+
+### Fixed
+
+- **Enter on a freshly-accepted `@`-mention no longer dispatches an
+  empty-body turn.** The completion menu and slash autocomplete from
+  #97/#96 used to accept the visible ghost AND submit in one stroke,
+  so `@host<Enter>` would dispatch a turn with literal text `@host`
+  to the host role instead of waiting for the user to type their
+  task. The Enter handler now distinguishes "complete command,
+  submit" (`/help`, `/exit`, `/halt`, `/quit`, `/welcome`) from
+  "needs more input, just confirm" (`@role `, `/allow `,
+  `/refresh `, etc.) and only submits when the buffer is a complete
+  request. Matches the Slack / Discord convention. (#109)
+
 ## [0.2.2] - 2026-05-11
 
 ### Added
