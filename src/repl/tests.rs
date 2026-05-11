@@ -533,17 +533,17 @@ fn snapshot_boot_dashboard_at_80() {
     .trim_start_matches('\n')
     .to_owned();
     insta::assert_snapshot!(rendered, @r"
-┌─ codeRoom v0.2.1 ────────────────────────────────────────────────────────────┐
+┌─ codeRoom v0.2.2 ────────────────────────────────────────────────────────────┐
 │                                                                              │
 │ welcome back, Ada              tips for getting started                      │
 │                                • type @role to send a task to a specific ro… │
 │ ● @backend   cc     · 1M       • /halt @role interrupts a turn; Ctrl-C twic… │
 │ ● @host      cc     · 1M       • /journal <role> captures today's lessons-l… │
 │ ● @security  codex  · default                                                │
-│                                what's new in 0.2.1                           │
-│  0  base tokens loaded         • role replies render markdown-lite instead … │
-│ /repo/codeRoom                 • Codex and Gemini stream assistant text whi… │
-│                                • tool progress surfaces as trace lines, sta… │
+│                                what's new in 0.2.2                           │
+│  0  base tokens loaded         • @-mention and / commands open a dropdown c… │
+│ /repo/codeRoom                 • cross-role auto-routes show a Slack-style … │
+│                                • permission prompts collapse to one line an… │
 │                                                                              │
 │                                /help for commands                            │
 │                                                                              │

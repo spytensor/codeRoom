@@ -16,6 +16,14 @@ items = [
 ]
 
 [[whats_new]]
+version = "0.2.2"
+items = [
+  "@-mention and / commands open a dropdown completion menu",
+  "cross-role auto-routes show a Slack-style quote of the parent reply",
+  "permission prompts collapse to one line and replace in place",
+]
+
+[[whats_new]]
 version = "0.2.1"
 items = [
   "role replies render markdown-lite instead of raw ## / ** markers",
