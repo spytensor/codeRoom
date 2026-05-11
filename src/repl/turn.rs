@@ -218,6 +218,10 @@ pub(super) async fn drain_one_turn(
     let mut stream_filter = StreamFilter::default();
     let mut streamed_rendered_text = String::new();
     let mut pending_delta = String::new();
+    // Persistent markdown state for the streaming render path. Mutated
+    // by each `render_stream_delta` call so the role badge prints
+    // once per turn and code blocks survive chunk boundaries.
+    let mut stream_md_state = super::markdown::StreamMarkdownState::fresh();
     let mut ticker = tokio::time::interval(Duration::from_millis(SPINNER_TICK_MS));
     // Skip the immediate fire so the spinner doesn't double-redraw on entry.
     ticker.tick().await;
@@ -253,9 +257,12 @@ pub(super) async fn drain_one_turn(
                     }
                     if pending_delta.contains('\n') || pending_delta.chars().count() >= 180 {
                         status.clear();
-                        if let Some(rendered) =
-                            render_stream_delta(role, host_role, &mut pending_delta)
-                        {
+                        if let Some(rendered) = render_stream_delta(
+                            role,
+                            host_role,
+                            &mut pending_delta,
+                            &mut stream_md_state,
+                        ) {
                             streamed_rendered_text.push_str(&rendered);
                         }
                         status.repaint();
@@ -333,9 +340,12 @@ pub(super) async fn drain_one_turn(
                                 activity: activity.clone(),
                             });
                             status.clear();
-                            if let Some(rendered) =
-                                render_stream_delta(role, host_role, &mut pending_delta)
-                            {
+                            if let Some(rendered) = render_stream_delta(
+                                role,
+                                host_role,
+                                &mut pending_delta,
+                                &mut stream_md_state,
+                            ) {
                                 streamed_rendered_text.push_str(&rendered);
                             }
                             work::render_card(&card);
@@ -441,20 +451,31 @@ fn verbose_from_value(value: Option<&str>) -> bool {
     value.is_some_and(|v| !v.is_empty())
 }
 
-fn render_stream_delta(role: &str, host_role: &str, pending: &mut String) -> Option<String> {
+fn render_stream_delta(
+    role: &str,
+    host_role: &str,
+    pending: &mut String,
+    state: &mut super::markdown::StreamMarkdownState,
+) -> Option<String> {
     if pending.trim().is_empty() {
         pending.clear();
         return None;
     }
     let text_delta = pending.clone();
-    let event = CrepEvent::RoleOutputDelta {
-        role: role.to_owned(),
-        text_delta: text_delta.clone(),
-        sequence: 0,
-        turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-        thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-    };
-    render_event(&event, host_role);
+    // Bypass `render_event` (which builds a fresh CrepEvent and would
+    // route through a stateless renderer) and call the markdown
+    // streaming entry point directly so the persistent state — role
+    // badge already emitted, currently-inside-a-fenced-code-block —
+    // carries from chunk to chunk within the same turn.
+    let width = crossterm::terminal::size().map_or(80, |(cols, _)| usize::from(cols));
+    let rendered = super::markdown::render_role_markdown_with_state(
+        role,
+        host_role,
+        &text_delta,
+        width,
+        state,
+    );
+    println!("{rendered}");
     pending.clear();
     Some(text_delta)
 }

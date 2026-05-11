@@ -5,11 +5,65 @@ use crate::output;
 
 const MIN_TEXT_WIDTH: usize = 8;
 
+/// Persistent markdown-rendering state for a streaming turn. Live
+/// `RoleOutputDelta` events arrive in chunks; without persistent
+/// state every chunk would render as a fresh markdown document —
+/// the role badge would reprint at the head of each chunk and code
+/// blocks opened in one chunk would close (visually) at the chunk
+/// boundary because the local `in_code` flag resets. Keeping these
+/// two flags across calls is what makes streaming output read like
+/// one continuous reply.
+///
+/// One state value is created per turn drain and mutated by each
+/// streamed render. The non-streaming entry point
+/// [`render_role_markdown`] uses a fresh state per call (the
+/// historical behavior) since a final `RoleSpoke` is a single
+/// complete document.
+#[derive(Debug, Clone, Default)]
+pub(super) struct StreamMarkdownState {
+    /// `true` until at least one non-blank line has been emitted in
+    /// this turn. Switches to `false` after the first emit, so the
+    /// `▎ @role` prefix only renders once per turn instead of once
+    /// per streaming chunk.
+    pub(super) first_line: bool,
+    /// `true` when an opening ` ``` ` fence was seen but no closing
+    /// fence has arrived yet. Persisted across chunks so a code
+    /// block that spans two streaming deltas keeps the Code line
+    /// style on both halves.
+    pub(super) in_code: bool,
+}
+
+impl StreamMarkdownState {
+    /// State for the start of a turn — first line not yet emitted,
+    /// no open code fence.
+    pub(super) fn fresh() -> Self {
+        Self {
+            first_line: true,
+            in_code: false,
+        }
+    }
+}
+
 pub(super) fn render_role_markdown(
     role: &str,
     host_role: &str,
     text: &str,
     width: usize,
+) -> String {
+    let mut state = StreamMarkdownState::fresh();
+    render_role_markdown_with_state(role, host_role, text, width, &mut state)
+}
+
+/// Streaming-aware variant of [`render_role_markdown`]. `state` is
+/// the persistent flag bundle for the current turn; it is mutated to
+/// reflect the post-render state so the next chunk picks up where
+/// this one left off.
+pub(super) fn render_role_markdown_with_state(
+    role: &str,
+    host_role: &str,
+    text: &str,
+    width: usize,
+    state: &mut StreamMarkdownState,
 ) -> String {
     let role_color = output::role_color(role, host_role);
     let first_prefix = format!(
@@ -26,10 +80,11 @@ pub(super) fn render_role_markdown(
         rest_prefix,
         first_prefix_width: UnicodeWidthStr::width(first_plain.as_str()),
         rest_prefix_width: UnicodeWidthStr::width(rest_plain.as_str()),
-        first_line: true,
+        first_line: state.first_line,
         lines: Vec::new(),
     };
-    render_blocks(text, &mut renderer);
+    state.in_code = render_blocks(text, &mut renderer, state.in_code);
+    state.first_line = renderer.first_line;
     renderer.lines.join("\n")
 }
 
@@ -124,9 +179,11 @@ fn strip_bold_markers(text: &str) -> String {
     text.replace("**", "")
 }
 
-fn render_blocks(text: &str, renderer: &mut Renderer) {
-    let mut in_code = false;
-
+/// Render `text` through the wrap-aware renderer. Takes the initial
+/// in-code state (so streaming callers can persist it across chunks)
+/// and returns the post-render in-code state. Non-streaming callers
+/// pass `false` and ignore the return.
+fn render_blocks(text: &str, renderer: &mut Renderer, mut in_code: bool) -> bool {
     for raw in text.lines() {
         let line = raw.trim_end();
         if line.trim_start().starts_with("```") {
@@ -156,6 +213,7 @@ fn render_blocks(text: &str, renderer: &mut Renderer) {
 
         renderer.push_wrapped(trimmed, LineStyle::Normal, "");
     }
+    in_code
 }
 
 fn heading(line: &str) -> Option<&str> {
