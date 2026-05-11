@@ -123,6 +123,11 @@ pub struct RunOptions {
     /// Session-wide permission mode override. `cr start --yolo` sets this
     /// to `Some(PermissionMode::Bypass)`.
     pub permission_mode_override: Option<PermissionMode>,
+    /// Start every role with a fresh engine session instead of
+    /// resuming. Set by `cr start --fresh`. When true, the REPL
+    /// wipes `.coderoom/sessions/ids/` before spawning any role
+    /// (amendment A-006).
+    pub fresh: bool,
 }
 
 /// REPL entry point. Loads config, spawns every declared role, forwards
@@ -168,6 +173,48 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
     crate::update::maybe_notify_on_start();
     if first_run {
         mark_welcomed(&coderoom_dir).await;
+    }
+
+    // `--fresh` wipes the persisted per-role session ids so every
+    // role spawns clean instead of resuming the prior conversation
+    // (amendment A-006). The wipe happens AFTER splash so the user
+    // can see the current role roster before sessions vanish; it
+    // runs BEFORE the bus opens / roles spawn so spawn_role reads
+    // a clean state.
+    if options.fresh {
+        if let Err(error) = sessions::clear_all(project_root) {
+            output::warn(format!(
+                "could not clear prior sessions for --fresh: {error}"
+            ));
+        } else {
+            output::hint("starting fresh — prior role sessions cleared");
+        }
+    } else {
+        // Surface which roles will actually resume so the user
+        // isn't surprised when the conversation already has
+        // context. Only roles with a persisted id say "resuming";
+        // first-run and freshly-cleared roles stay silent.
+        let mut resumed: Vec<String> = cfg
+            .role_names()
+            .filter(|name| {
+                sessions::read_session_id(project_root, name)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            })
+            .map(ToOwned::to_owned)
+            .collect();
+        resumed.sort();
+        if !resumed.is_empty() {
+            let names = resumed
+                .iter()
+                .map(|n| format!("@{n}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            output::hint(format!(
+                "resuming prior session for {names} — pass `--fresh` to start clean"
+            ));
+        }
     }
 
     let log_path = coderoom_dir.join("messages.jsonl");
@@ -997,6 +1044,19 @@ async fn refresh_role(
             "⟳".with(output::WARN),
             format!("refreshing @{role}...").with(output::TEXT),
         );
+    }
+    // Clear the persisted resume id so the refreshed role starts a
+    // fresh engine session under the reloaded priors. /refresh
+    // semantically means "reload priors + start over"; carrying the
+    // old session forward would leave the role talking under old
+    // priors next turn. Best-effort — a missing or unreadable file
+    // is fine.
+    let project_root = context
+        .coderoom_dir
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    if let Err(error) = sessions::clear_session_id(&project_root, role) {
+        debug!(role, %error, "could not clear session id during refresh");
     }
     match spawn_role(context, role).await {
         Ok(running) => {

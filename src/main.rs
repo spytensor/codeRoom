@@ -58,6 +58,14 @@ enum Cmd {
         /// Run this session with permission_mode=bypass for every role.
         #[arg(long)]
         yolo: bool,
+        /// Start every role with a fresh engine session instead of
+        /// resuming the prior conversation. Default behaviour (per
+        /// amendment A-006) is to resume from
+        /// `.coderoom/sessions/ids/<role>.id` when present; pass
+        /// `--fresh` to clear those ids and start clean. The user-
+        /// facing equivalent of `claude --resume` vs no flag.
+        #[arg(long)]
+        fresh: bool,
     },
     /// Replay `.coderoom/messages.jsonl` through the live renderer.
     Show {
@@ -297,7 +305,7 @@ fn main() -> Result<()> {
     }
 
     match cli.command {
-        None => run_start(None, false),
+        None => run_start(None, false, false),
         Some(Cmd::Init { project, yes }) => {
             let opts = if yes {
                 coderoom::init::InitOptions::accepted_defaults()
@@ -307,7 +315,11 @@ fn main() -> Result<()> {
             coderoom::init::run(&project_root_or_cwd(project)?, opts)
         }
         Some(Cmd::Role { command }) => run_role_cmd(command),
-        Some(Cmd::Start { project, yolo }) => run_start(project, yolo),
+        Some(Cmd::Start {
+            project,
+            yolo,
+            fresh,
+        }) => run_start(project, yolo, fresh),
         Some(Cmd::Show {
             project,
             role,
@@ -351,7 +363,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn run_start(project: Option<PathBuf>, yolo: bool) -> Result<()> {
+fn run_start(project: Option<PathBuf>, yolo: bool, fresh: bool) -> Result<()> {
     if yolo && !confirm_yolo()? {
         return Ok(());
     }
@@ -362,6 +374,7 @@ fn run_start(project: Option<PathBuf>, yolo: bool) -> Result<()> {
         let project_root = project_root_or_cwd(project)?;
         let options = coderoom::repl::RunOptions {
             permission_mode_override: yolo.then_some(PermissionMode::Bypass),
+            fresh,
         };
         coderoom::repl::run_with_options(&project_root, options).await
     })
