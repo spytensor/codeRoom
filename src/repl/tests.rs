@@ -717,6 +717,85 @@ fn turn_dispatched_banner_handles_long_role_names() {
 }
 
 #[test]
+fn format_reply_quote_shows_speaker_change_and_truncated_snippet() {
+    use super::render::format_reply_quote;
+    let parent_text = "Let me hand this off — @host should sanity-check the routing layer before we commit; I already verified the auth side.";
+    let rendered = strip_ansi(&format_reply_quote(
+        "host",
+        "backend",
+        "host",
+        parent_text,
+        72,
+    ));
+    let lines: Vec<&str> = rendered.split('\n').collect();
+    assert_eq!(lines.len(), 2, "quote block is exactly two lines");
+    // Header line names both speakers and uses the reply arrow.
+    assert!(lines[0].starts_with("▎ @host"));
+    assert!(lines[0].contains("→"));
+    assert!(lines[0].contains("replying to @backend"));
+    // Quote line uses the `│` continuation glyph and wraps the
+    // parent's text in plain quotes; long bodies are ellipsis-truncated.
+    assert!(lines[1].starts_with("▎ │ \""));
+    assert!(lines[1].ends_with('"'), "quote line should be balanced");
+}
+
+#[test]
+fn format_reply_quote_short_snippet_renders_without_ellipsis() {
+    use super::render::format_reply_quote;
+    let parent_text = "ok @host";
+    let rendered = strip_ansi(&format_reply_quote(
+        "host",
+        "backend",
+        "host",
+        parent_text,
+        80,
+    ));
+    let lines: Vec<&str> = rendered.split('\n').collect();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[1].contains("\"ok @host\""));
+    assert!(!lines[1].contains('…'));
+}
+
+#[test]
+fn format_reply_quote_renders_two_lines_at_narrow_width() {
+    use super::render::format_reply_quote;
+    // 40-cell terminal still produces exactly two physical lines —
+    // the quote is one logical row in the buffer regardless of how
+    // narrow the terminal gets. (Terminal-driven wrapping may break
+    // it visually, but the formatter itself returns a single quote
+    // row plus a single header row.)
+    let parent_text =
+        "Look at src/server/index.ts and double-check the auth middleware before we ship.";
+    let rendered = strip_ansi(&format_reply_quote(
+        "host",
+        "backend",
+        "host",
+        parent_text,
+        40,
+    ));
+    let lines: Vec<&str> = rendered.split('\n').collect();
+    assert_eq!(lines.len(), 2);
+}
+
+#[test]
+fn format_reply_quote_collapses_whitespace_for_snippet() {
+    use super::render::format_reply_quote;
+    // Newlines and run-of-whitespace in the parent's text would
+    // otherwise produce multi-line quotes that wreck the alignment.
+    let parent_text = "First line.\n\nSecond paragraph\n  with    extra spaces.";
+    let rendered = strip_ansi(&format_reply_quote(
+        "host",
+        "backend",
+        "host",
+        parent_text,
+        80,
+    ));
+    let lines: Vec<&str> = rendered.split('\n').collect();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[1].contains("First line. Second paragraph with extra spaces."));
+}
+
+#[test]
 fn turn_dispatched_collapses_on_narrow_terminals() {
     // On very narrow terminals the dash run shrinks to a single space
     // so the banner never wraps — the role badge + status still fit

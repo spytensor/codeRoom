@@ -615,12 +615,14 @@ async fn send_and_drain(
             continue;
         }
         let brief = format!("From @{role}: {}", captured.text);
+        // Render a Slack/Discord-style reply pointer before dispatching
+        // so the user can see *which* part of the parent reply triggered
+        // this hop. The handoff banner from #98 then renders right
+        // beneath this when the child role's turn actually starts.
+        let width = crossterm::terminal::size().map_or(80, |(cols, _)| usize::from(cols));
         println!(
-            "  {} {}",
-            "↳".with(output::FADE),
-            format!("auto-routing to @{mention}")
-                .with(output::DIM)
-                .italic(),
+            "{}",
+            render::format_reply_quote(mention, role, host_role, &captured.text, width)
         );
         if drain_one_turn_handling_ctrl_c(
             roles,

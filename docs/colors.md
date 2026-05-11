@@ -68,7 +68,7 @@ Used strictly for their named purpose; never reused for role coloring:
 | `ok` | `#97c459` | 9.6 / 8.2 / 6.9 ✓ | success | `✓ added role @backend` |
 | `warn` | `#ef9f27` | 8.9 / 7.7 / 6.4 ✓ | attention, non-fatal | `⚠ cap reached`, `⟳ refreshing` |
 | `bad` | `#ea5b5b` | 5.5 / 4.7 / 3.9 † | failure | `✗ no such role` |
-| `info` | `#6fa8dc` | 7.7 / 6.6 / 5.5 ✓ | neutral hint, auto-routing | `↳ auto-routing to @x` |
+| `info` | `#6fa8dc` | 7.7 / 6.6 / 5.5 ✓ | neutral hint | `▎ @host → replying to @backend` |
 | `key` | `#d4b87a` | 9.0 / 7.7 / 6.5 ✓ | commands, hotkeys | `/help`, `cr update` |
 | `prompt` | `#58c39c` | 8.9 / 7.7 / 6.4 ✓ | input prompt | `cr ›` |
 | `em` | `#f0f0f0` | 17.4 / 14.9 / 12.5 ✓ | emphasis | API paths, key values |
@@ -337,9 +337,10 @@ terminals; quantization is the terminal's responsibility. Filed under
         `queue!` / `execute!` rendering path.
 - [ ] **`cost.rs` and `role.rs` are not in scope** — they have zero
       styled-output calls today and are already compliant.
-- [ ] `repl.rs:692` (`↳ auto-routing`), `:1122` (`↳ tool proposed`), and
-      `:1131` (`✓/✗ tool executed`) currently use `.dim()`; after
-      migration the `↳` glyph specifically uses `output::FADE` per §4.
+- [ ] `:1122` (`↳ tool proposed`) and `:1131` (`✓/✗ tool executed`)
+      currently use `.dim()`; after migration the `↳` glyph specifically
+      uses `output::FADE` per §4. (The old `↳ auto-routing to @x` line
+      was replaced by the quote block in #99.)
 - [ ] `repl.rs:1141` `⊘` currently uses `.yellow()`; after migration it
       uses `output::WARN`.
 - [ ] Role turns are separated by a blank line; consecutive lines from

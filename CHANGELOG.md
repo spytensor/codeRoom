@@ -30,6 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Cross-role auto-routes now print a Slack-style quote block.** When
+  one role's reply mentions another role and the REPL auto-routes a
+  brief, the live chat shows a two-line reply pointer:
+  ```
+  ▎ @host → replying to @backend
+  ▎ │ "look at src/server/, focus on the routing layer ..."
+  ```
+  before the new role's handoff banner. The block replaces the old
+  one-line dim italic `↳ auto-routing to @x` trace, so the user can
+  see *which part* of the parent reply triggered each hop. Only the
+  live REPL renders the quote; `cr show` replay still works from the
+  bus event log and shows the bare events (follow-up). (#99)
 - **Cross-role handoffs now render as a full-width banner.** When a
   role's turn is dispatched and actually starts, the renderer prints
   `▎ @role ──────────────────────────────── starting` across the

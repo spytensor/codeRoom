@@ -238,6 +238,55 @@ fn handoff_banner(role: &str, host_role: &str, status: &str, width: usize) -> St
     format!("{gutter} {role_label}{separator}{status_styled}")
 }
 
+/// Two-line quote block printed by the REPL just before dispatching
+/// an auto-routed brief from `parent_role` to `child_role`. Parameter
+/// order is `(child, parent)`: the child is the new speaker, the
+/// parent is the role being quoted. Mirrors
+/// the way Slack / Discord show a reply pointer:
+///
+/// ```text
+/// ▎ @host → replying to @backend
+/// ▎ │ "look at src/server, focus on the routing layer ..."
+/// ```
+///
+/// The gutter color is the *child* role's color — the visual ownership
+/// belongs to the new speaker because the block sits directly above
+/// the child's turn output. `snippet` is one-line collapsed and
+/// truncated so a long parent reply doesn't push the actual answer
+/// off-screen.
+pub(super) fn format_reply_quote(
+    child_role: &str,
+    parent_role: &str,
+    host_role: &str,
+    parent_text: &str,
+    width: usize,
+) -> String {
+    let child_paint = output::role_color(child_role, host_role);
+    let parent_paint = output::role_color(parent_role, host_role);
+    // Gutter belongs to the child — the block sits directly above
+    // the child's turn output so visual ownership is theirs.
+    let gutter = GUTTER.with(child_paint).to_string();
+    let child_label = format!("@{child_role}")
+        .with(child_paint)
+        .bold()
+        .to_string();
+    // The referenced parent name keeps its own role color so the
+    // reader's eye links the quote back to that role's earlier output.
+    let parent_label = format!("@{parent_role}").with(parent_paint).to_string();
+    let arrow = "→".with(output::FADE).to_string();
+    let reply_to = format!("replying to {parent_label}");
+    let header = format!("{gutter} {child_label} {arrow} {reply_to}");
+
+    // Reserve cells for `▎ │ "…"` plus a little breathing room.
+    let snippet_budget = width.saturating_sub(8).max(20);
+    let snippet_oneline = one_line(parent_text);
+    let snippet = truncate_inline(&snippet_oneline, snippet_budget);
+    let quote_text = format!("\"{snippet}\"").with(output::DIM).to_string();
+    let quote = format!("{gutter} {sep} {quote_text}", sep = "│".with(output::RULE),);
+
+    format!("{header}\n{quote}")
+}
+
 pub(super) fn summarize_tool_input(input: &serde_json::Value) -> String {
     // Best-effort one-liner: if there's a "command", show it; if there's
     // a "file_path", show it; otherwise dump the JSON keys.
