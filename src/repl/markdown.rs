@@ -332,6 +332,26 @@ fn wrap_cells(text: &str, width: usize, continuation_indent: &str) -> Vec<String
     lines
 }
 
+fn hard_wrap_word(word: &str, width: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut used = 0usize;
+    for ch in word.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + ch_width > width && !current.is_empty() {
+            chunks.push(current);
+            current = String::new();
+            used = 0;
+        }
+        current.push(ch);
+        used += ch_width;
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,24 +379,4 @@ mod tests {
         assert!(!is_horizontal_rule("--- end of section ---"));
         assert!(!is_horizontal_rule(""));
     }
-}
-
-fn hard_wrap_word(word: &str, width: usize) -> Vec<String> {
-    let mut chunks = Vec::new();
-    let mut current = String::new();
-    let mut used = 0usize;
-    for ch in word.chars() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + ch_width > width && !current.is_empty() {
-            chunks.push(current);
-            current = String::new();
-            used = 0;
-        }
-        current.push(ch);
-        used += ch_width;
-    }
-    if !current.is_empty() {
-        chunks.push(current);
-    }
-    chunks
 }
