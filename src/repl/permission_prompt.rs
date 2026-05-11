@@ -177,9 +177,24 @@ fn format_prompt_line(request: &BridgeRequest, host_role: &str, width: usize) ->
 }
 
 fn paint_outcome(role: &str, host_role: &str, response: &BridgeResponse) {
-    // `\r\x1b[2K` returns to col 0 and clears the prompt line; the
-    // outcome then writes over it and the trailing newline (`println!`)
-    // advances to the next row, ready for whatever comes next.
+    // `\r\x1b[2K` returns to col 0 and clears the prompt line. We
+    // don't print an outcome line for `allow once` — the subsequent
+    // `✓ tool ok` trace already conveys success and stacking N
+    // identical `▎ ✓ @role allowed (once)` lines per turn (one per
+    // tool the user manually allowed) is pure noise. Denials and
+    // session-scope answers DO emit because they're real state
+    // transitions worth showing.
+    let suppressed = matches!(
+        (response.decision, response.scope),
+        (PermissionDecision::Allow, DecisionScope::Once)
+    );
+    if suppressed {
+        // Still wipe the prompt row so the next render starts on a
+        // clean line.
+        print!("\r\x1b[2K");
+        let _ = std::io::stdout().flush();
+        return;
+    }
     println!(
         "\r\x1b[2K{}",
         format_outcome_line(role, host_role, response)
