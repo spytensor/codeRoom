@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Per-tool trace lines are now folded by default during a live turn.**
+  Each tool's `ToolCallProposed` / `ToolCallExecuted` pair used to print
+  its own line in addition to the WorkCard and the live status spinner;
+  the duplicated lines turned dense exploratory turns into walls of
+  output. The WorkCard (rendered once on the first tool, and again as a
+  done card with the full step list on turn end) plus the live status
+  spinner now carry that information on their own. Set
+  `CODEROOM_VERBOSE_TOOLS=1` to opt back into the full per-tool stream
+  for auditing; `cr show` always replays the complete event log
+  regardless of the setting. (#95)
+
 ## [0.2.1] - 2026-05-10
 
 ### Added

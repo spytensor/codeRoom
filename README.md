@@ -185,7 +185,9 @@ Useful commands:
   inspection, spend tracking, priors compaction, layered config, and package
   upgrades.
 - Live turns fold internal tool traces into one activity summary; `cr show`
-  replays the full event log when you need to audit what happened.
+  replays the full event log when you need to audit what happened. Set
+  `CODEROOM_VERBOSE_TOOLS=1` to opt the live REPL back into the full
+  per-tool trace stream when you need it inline.
 
 ## Engine Capability Matrix
 
