@@ -124,7 +124,14 @@ impl TurnWork {
             self.title = title;
             self.title_from_task_block = true;
         }
-        let text = extracted.body.trim().to_owned();
+        // LLMs often echo their own role name at the start of a
+        // reply because the system prompt mentions it. The renderer
+        // already prepends `▎ @role ` via `first_prefix`, so without
+        // this strip the chat shows `▎ @security @security <body>`
+        // — one badge from the framework, one from the model.
+        let body = extracted.body.trim();
+        let stripped = work::strip_leading_self_mention(body, &self.role);
+        let text = stripped.trim().to_owned();
         let mentions = parse_mentions(&text);
         CleanedRoleText { text, mentions }
     }
