@@ -204,6 +204,100 @@ Additive CLI flags only.
 
 Accepted and implemented after v0.1.12.
 
+## A-005: Auto-routing is unbounded; user halts when satisfied
+
+- **Status:** proposed
+- **Filed:** 2026-05-11
+- **Touches:** Locked decision on "Per-thread hop-depth counter, ≥3 hops triggers escalation" in architecture.md (Failure-mode mitigations table) and the "enforces hop-depth limit" line in the layered architecture diagram.
+
+### Problem
+
+v0.1 capped cross-role auto-routing at one hop and the failure-mode table
+locked a "≥3 cross-role hops triggers escalation" depth counter. In
+practice this severs the conversational loop the room metaphor advertises:
+
+- User → @host (turn 1)
+- @host @-mentions @security → auto-route fires (turn 2)
+- @security finishes its analysis and writes `@host my recommendation is...`
+- @host **never wakes up** — the auto-router only iterates the *originating*
+  turn's mentions, not the dispatched-turn's mentions
+- The user has to manually copy @security's reply back into the prompt to
+  get @host to synthesize a final answer
+
+This is single-turn consultation, not a chat room. It also means the
+quote-block, handoff-banner, and visual handoff work shipped in #98 / #99
+only ever fires once per user message — exactly the case the user already
+saw.
+
+The "smart models will loop forever" risk that motivated the 1-hop cap in
+v0.1 has not held up under 2026 frontier models. They reliably converge
+("we're done here", "no further questions") on their own when the prompts
+don't push them into adversarial roles. The escape hatches that matter
+(per-role budget, Ctrl-C two-press halt, `/halt`, grounding-gate skip on
+all-denied tools) are already in place and are *not* depth-based.
+
+### Alternatives considered
+
+1. **Keep a depth limit but raise to ~5.** Still arbitrary, still cuts off
+   legitimate longer back-and-forth, still requires reasoning about which
+   number is right. Tunable knobs accumulate. Rejected.
+2. **Require explicit `@role:report` syntax for cross-role replies.**
+   Violates LLM natural-language norms and forces every prior template to
+   teach the syntax. Rejected.
+3. **Surface a confirmation prompt before each follow-up hop.** Breaks the
+   chat illusion; user becomes the manual router. Rejected.
+4. **Unbounded with semantic guards only.** Accepted (this amendment).
+
+### Proposed change
+
+Replace the architecture.md failure-mode entry:
+
+```
+| Routing loops (`@a` ↔ `@b` ↔ `@a`) | Per-thread hop-depth counter ... |
+```
+
+with:
+
+```
+| Routing loops (`@a` ↔ `@b` ↔ `@a`) | Trust the model + bounded by user. Auto-router skips three cases only: self-mention (`@a` mentioning `@a`), unknown role (`@<not-running>`), and ungrounded turn (tool calls were systematically denied → reply is a guess, not data). Hop depth is unbounded. User halts a runaway chain with Ctrl-C twice or `/halt`; per-role budgets cap total spend per chain. |
+```
+
+Replace the layered diagram line "enforces hop-depth limit, inflight
+tracking" with "tracks inflight turns, supervises grounding gate".
+
+Internally, `send_and_drain` becomes a worklist over a FIFO queue of
+`(role, brief)` pairs. The originating turn's mentions push onto the
+queue; each dispatched turn's mentions push too. The loop ends when the
+queue drains, when a turn is interrupted (`drain` returns `None`), or
+when the user halts.
+
+### Migration impact
+
+User-visible: chains can go deeper than one hop. Most existing prompts
+already encourage @-mentioning back to host for synthesis, so this turns
+single-shot consultations into the closed loops users expected from the
+"chat room" framing.
+
+CREP protocol: unchanged shape. `RoleSpoke` / `TurnDispatched` /
+`TurnInterrupted` already carry `turn_id` / `thread_id` / `parent_turn_id`
+fields. **Caveat:** today's adapters still emit `crate::turn::LEGACY_TURN_ID`
+(empty string) for these fields — wiring the IDs through every adapter is
+tracked as a separate v0.2.x deliverable. The dispatcher works without
+them; once the IDs land, `cr show` will be able to reconstruct chains by
+walking `parent_turn_id` ancestry.
+
+Spend: a chain can burn more tokens than before. The structural cap is
+the per-role engine budget — `budget_per_role_usd` is wired into the cc
+adapter (`--max-budget-usd` on spawn). **Caveat:** Codex ignores the
+value pending its own `--max-*` config, and Gemini has no native budget
+flag, so on those engines the only real spend bound is the user's
+`Ctrl-C` and any platform-side quota. Users running unbounded routing
+on chatty Codex/Gemini roles should keep that in mind.
+
+### Decision
+
+*(pending review)*
+
 ## Implemented amendments
 
 Implemented amendments are marked inline with `implemented in vX.Y.Z`.

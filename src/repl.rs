@@ -1,14 +1,21 @@
 //! The interactive REPL.
 //!
-//! `cr start` enters this loop. v0.1 is intentionally synchronous: each
-//! user input picks exactly one role, sends it a prompt, and renders bus
-//! events until that role emits a `RoleSpoke` (its turn is done). Then
-//! the loop re-prompts.
+//! `cr start` enters this loop. Each user input picks exactly one role,
+//! sends it a prompt, and renders bus events until that role emits a
+//! `RoleSpoke`. If the role's reply `@`-mentions any other running
+//! roles, those mentions push follow-up turns onto a FIFO worklist
+//! inside [`send_and_drain`], so chains like
+//! `user → @host → @security → @host (synthesis)` run to completion
+//! before the prompt returns. See amendment A-005 in
+//! `docs/proposed-amendments.md`: the chain has no hop-depth limit;
+//! it ends when the queue drains, a turn is interrupted, or the user
+//! halts (`Ctrl-C` × 2 / `/halt`).
 //!
-//! Cross-role auto-routing (when one role writes `@x` in its reply) and
-//! concurrent role rendering are deferred to a follow-up PR.
+//! Concurrent multi-role *parallel* rendering (a single `StatusRegion`
+//! shared across simultaneously-working roles) is still tracked
+//! separately as a v0.2.x deliverable.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{IsTerminal, Write as _};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -539,10 +546,22 @@ async fn mark_welcomed(coderoom_dir: &Path) {
 }
 
 /// Send `text` to `role` and drain bus events until that role finishes
-/// its turn. If the role's final `RoleSpoke` mentions other running
-/// roles, automatically forwards a brief to each (one hop only at v0.1
-/// — multi-hop + hop-depth escalation are tracked in
-/// `docs/proposed-amendments.md`).
+/// its turn. Each finished turn's `@<peer>` mentions push follow-up
+/// turns onto a FIFO worklist, so a chain like
+/// `user → @host → @security → @host (synthesis)` runs to completion
+/// without manual prodding from the user. Per amendment A-005
+/// (`docs/proposed-amendments.md`), the chain has no depth limit; it
+/// ends when the queue drains, a turn is interrupted, or the user
+/// halts (`Ctrl-C` × 2 / `/halt`). Three semantic guards still apply:
+///
+/// 1. **Self-mention skip** — `@host` mentioning `@host` doesn't fire
+///    a recursive turn; a role talking to itself is a no-op.
+/// 2. **Unknown-role skip** — `@<not-running>` mentions have nobody
+///    to receive the brief.
+/// 3. **Grounding-gate skip** — when a turn's tool calls were
+///    systematically denied, the reply is almost certainly an
+///    ungrounded guess; we do NOT fan out its mentions, so the
+///    hallucination stops with that turn.
 #[allow(
     clippy::too_many_arguments,
     reason = "REPL command plumbing passes role maps, event drains, bridge, and Ctrl-C state"
@@ -557,90 +576,133 @@ async fn send_and_drain(
     host_role: &str,
     last_ctrl_c: &Arc<Mutex<Option<std::time::Instant>>>,
 ) -> Result<()> {
-    let Some(captured) = drain_one_turn_handling_ctrl_c(
-        roles,
-        rx,
-        live_rx,
-        bridge_rx,
-        role,
-        text,
-        host_role,
-        last_ctrl_c,
-    )
-    .await?
-    else {
-        return Ok(());
-    };
+    // Worklist of pending turns. The initial entry is the user's
+    // direct dispatch; auto-routed follow-ups are appended below.
+    let mut queue: VecDeque<(String, String)> = VecDeque::new();
+    queue.push_back((role.to_owned(), text.to_owned()));
 
-    // Grounding gate: if the role's tool calls were systematically
-    // denied, don't auto-route its `@<peer>` mentions. The reply was
-    // almost certainly an ungrounded guess (memory + git log instead
-    // of source), so dispatching that guess as a brief just spreads
-    // the hallucination across the team. The user still sees the
-    // role's reply; they can re-issue manually after granting access.
-    if captured.activity.looks_ungrounded() && !captured.mentions.is_empty() {
-        let activity = &captured.activity;
-        let suggestion = if activity.denied > 0 {
-            let names = activity.top_denied_tools(3).join(", ");
-            format!(
-                " — try /allow {} or `cr start --yolo`",
-                activity
-                    .top_denied_tools(1)
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| names.clone())
-            )
-        } else {
-            String::new()
-        };
-        let summary = if activity.denied > 0 {
-            format!("{} permission denial(s)", activity.denied)
-        } else {
-            format!("all {} tool calls failed", activity.proposed)
-        };
-        println!(
-            "  {} {}",
-            "↳".with(output::FADE),
-            format!("skipping auto-route: @{role} had {summary} this turn{suggestion}")
-                .with(output::DIM)
-                .italic(),
-        );
-        return Ok(());
-    }
-
-    // One-hop auto-routing: forward to each mentioned running role.
-    // Self-references and unknown roles are skipped silently.
-    for mention in &captured.mentions {
-        if mention == role || !roles.contains_key(mention) {
-            continue;
-        }
-        let brief = format!("From @{role}: {}", captured.text);
-        // Render a Slack/Discord-style reply pointer before dispatching
-        // so the user can see *which* part of the parent reply triggered
-        // this hop. The handoff banner from #98 then renders right
-        // beneath this when the child role's turn actually starts.
-        let width = crossterm::terminal::size().map_or(80, |(cols, _)| usize::from(cols));
-        println!(
-            "{}",
-            render::format_reply_quote(mention, role, host_role, &captured.text, width)
-        );
-        if drain_one_turn_handling_ctrl_c(
+    while let Some((current_role, current_text)) = queue.pop_front() {
+        let Some(captured) = drain_one_turn_handling_ctrl_c(
             roles,
             rx,
             live_rx,
             bridge_rx,
-            mention,
-            &brief,
+            &current_role,
+            &current_text,
             host_role,
             last_ctrl_c,
         )
         .await?
-        .is_none()
-        {
-            break;
+        else {
+            // Turn was interrupted or the role stopped before
+            // replying. End the whole chain — the user has already
+            // seen the cancellation cue and can re-issue manually
+            // if they want to continue. If anything was queued
+            // behind this turn, surface a hint so the user knows
+            // those follow-ups did not silently fire.
+            if !queue.is_empty() {
+                println!(
+                    "  {} {}",
+                    "↳".with(output::FADE),
+                    format!(
+                        "{} follow-up turn(s) discarded after halt — re-issue manually if needed",
+                        queue.len()
+                    )
+                    .with(output::DIM)
+                    .italic(),
+                );
+            }
+            return Ok(());
+        };
+
+        // Grounding gate: if the role's tool calls were systematically
+        // denied, don't auto-route its `@<peer>` mentions. The reply
+        // was almost certainly an ungrounded guess (memory + git log
+        // instead of source), so dispatching that guess as a brief
+        // would just spread the hallucination across the team. The
+        // user still sees the role's reply; they can re-issue manually
+        // after granting access.
+        if captured.activity.looks_ungrounded() && !captured.mentions.is_empty() {
+            let activity = &captured.activity;
+            let suggestion = if activity.denied > 0 {
+                let names = activity.top_denied_tools(3).join(", ");
+                format!(
+                    " — try /allow {} or `cr start --yolo`",
+                    activity
+                        .top_denied_tools(1)
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| names.clone())
+                )
+            } else {
+                String::new()
+            };
+            let summary = if activity.denied > 0 {
+                format!("{} permission denial(s)", activity.denied)
+            } else {
+                format!("all {} tool calls failed", activity.proposed)
+            };
+            println!(
+                "  {} {}",
+                "↳".with(output::FADE),
+                format!("skipping auto-route: @{current_role} had {summary} this turn{suggestion}")
+                    .with(output::DIM)
+                    .italic(),
+            );
+            continue;
+        }
+
+        // Enqueue each mentioned running role for a follow-up turn.
+        // Self-mentions and unknown roles are filtered out silently;
+        // duplicates within a single reply are preserved (a role
+        // mentioning `@peer` twice in one message gets two follow-up
+        // turns — each mention may be a distinct ask, and dedup-by-
+        // string is too aggressive without conversational context).
+        let known: Vec<&str> = roles.keys().map(String::as_str).collect();
+        let next_targets = filter_routable_mentions(&current_role, &captured.mentions, &known);
+        let width = crossterm::terminal::size().map_or(80, |(cols, _)| usize::from(cols));
+        for mention in next_targets {
+            let brief = format!("From @{current_role}: {}", captured.text);
+            // Render the Slack/Discord-style reply pointer (#99)
+            // before dispatching so the user can see *which* part of
+            // the parent reply triggered this hop. The handoff
+            // banner from #98 then renders right beneath this when
+            // the child role's turn actually starts.
+            println!(
+                "{}",
+                render::format_reply_quote(
+                    &mention,
+                    &current_role,
+                    host_role,
+                    &captured.text,
+                    width
+                )
+            );
+            queue.push_back((mention, brief));
         }
     }
+
     Ok(())
+}
+
+/// Filter the mentions captured from a finished turn down to roles
+/// that should actually receive a follow-up dispatch. Pure: takes the
+/// finishing role's name, the parsed mentions in order, and the names
+/// of currently running roles. Returns mentions in original order,
+/// with self-mentions and unknown roles removed. Duplicates within a
+/// single reply are preserved (see [`send_and_drain`] worklist
+/// comment for rationale).
+fn filter_routable_mentions(
+    current_role: &str,
+    mentions: &[String],
+    known_roles: &[&str],
+) -> Vec<String> {
+    mentions
+        .iter()
+        .filter(|m| m.as_str() != current_role)
+        .filter(|m| known_roles.iter().any(|k| *k == m.as_str()))
+        .cloned()
+        .collect()
 }
 
 #[allow(

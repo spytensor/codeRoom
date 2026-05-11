@@ -1214,6 +1214,76 @@ fn parse_halt_strips_at_only() {
     assert!(matches!(parsed, Command::Halt(None)));
 }
 
+// ---- filter_routable_mentions ----------------------------------------
+//
+// Tests for the worklist's mention-filtering helper. The dispatcher
+// itself is async + cross-module and harder to drive in a unit test,
+// but the routing decision is a pure function we can lock here.
+
+#[test]
+fn filter_routable_mentions_drops_self_mention() {
+    use super::filter_routable_mentions;
+    let known = &["host", "security", "backend"];
+    let out = filter_routable_mentions(
+        "security",
+        &["security".to_owned(), "host".to_owned()],
+        known,
+    );
+    assert_eq!(out, vec!["host".to_owned()]);
+}
+
+#[test]
+fn filter_routable_mentions_drops_unknown_role() {
+    use super::filter_routable_mentions;
+    let known = &["host", "security"];
+    let out = filter_routable_mentions(
+        "host",
+        &[
+            "security".to_owned(),
+            "nobody".to_owned(),
+            "backend".to_owned(),
+        ],
+        known,
+    );
+    // `nobody` and `backend` aren't running; only `security` survives.
+    assert_eq!(out, vec!["security".to_owned()]);
+}
+
+#[test]
+fn filter_routable_mentions_preserves_order_and_duplicates() {
+    // BFS dispatch order is preserved, including duplicates within a
+    // single reply. A role mentioning `@peer` twice is two distinct
+    // asks that may carry different conversational weight; dedup is
+    // explicitly NOT applied at this layer.
+    use super::filter_routable_mentions;
+    let known = &["host", "security", "backend"];
+    let out = filter_routable_mentions(
+        "host",
+        &[
+            "backend".to_owned(),
+            "security".to_owned(),
+            "backend".to_owned(),
+        ],
+        known,
+    );
+    assert_eq!(
+        out,
+        vec![
+            "backend".to_owned(),
+            "security".to_owned(),
+            "backend".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn filter_routable_mentions_handles_empty_inputs() {
+    use super::filter_routable_mentions;
+    assert!(filter_routable_mentions("host", &[], &["host", "security"]).is_empty());
+    // No known roles → every mention is "unknown", nothing routable.
+    assert!(filter_routable_mentions("host", &["security".to_owned()], &[]).is_empty());
+}
+
 #[test]
 fn turn_interrupted_finalizes_work_card() {
     // `drain_one_turn`'s new boundary handler should flip the
