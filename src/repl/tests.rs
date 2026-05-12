@@ -560,7 +560,7 @@ fn snapshot_boot_dashboard_at_80() {
 │ ● @host      cc     · 1M       • /journal <role> captures today's lessons-l… │
 │ ● @security  codex  · default                                                │
 │                                what's new in 0.4.1                           │
-│  0  base tokens loaded         • role replies render as inset message blocks │
+│  1.1k  base tokens loaded      • role replies render as inset message blocks │
 │ /repo/codeRoom                 • ready/work lifecycle chatter is hidden by … │
 │                                • WorkCards sit inside the room instead of h… │
 │                                                                              │

@@ -21,13 +21,28 @@ fn coderoom_of(tmp: &TempDir) -> PathBuf {
     tmp.path().join(CODEROOM_DIR)
 }
 
+fn assert_order(haystack: &str, earlier: &str, later: &str) {
+    let earlier_pos = haystack
+        .find(earlier)
+        .unwrap_or_else(|| panic!("missing earlier marker {earlier:?} in {haystack:?}"));
+    let later_pos = haystack
+        .find(later)
+        .unwrap_or_else(|| panic!("missing later marker {later:?} in {haystack:?}"));
+    assert!(
+        earlier_pos < later_pos,
+        "expected {earlier:?} before {later:?} in {haystack:?}"
+    );
+}
+
 #[test]
 fn role_only_no_optional_pieces() {
     let tmp = fixture("backend", "BACKEND_PRIORS");
     let composed = compose_for(&coderoom_of(&tmp), "backend").unwrap();
-    // No shared.md present, no patches → role body plus the built-in
-    // WorkCard reporting protocol.
-    assert!(composed.starts_with("BACKEND_PRIORS\n\n---\n\n## CodeRoom work reporting protocol"));
+    assert!(composed.starts_with("# CodeRoom kernel protocol"));
+    assert!(composed.contains("Authority: protocol"));
+    assert!(composed.contains("Source: .coderoom/roles/backend.md"));
+    assert_order(&composed, "# CodeRoom kernel protocol", "## Role priors");
+    assert_order(&composed, "## Role priors", "BACKEND_PRIORS");
     assert!(composed.contains("```cr-task"));
 }
 
@@ -36,10 +51,16 @@ fn shared_then_role_separated_by_fence() {
     let tmp = fixture("backend", "BACKEND_PRIORS");
     fs::write(coderoom_of(&tmp).join(SHARED_FILE), "SHARED_PRIORS").unwrap();
     let composed = compose_for(&coderoom_of(&tmp), "backend").unwrap();
-    assert!(
-        composed.contains("SHARED_PRIORS\n\n---\n\nBACKEND_PRIORS"),
-        "composed: {composed:?}"
+    assert!(composed.contains("## Project shared priors"));
+    assert!(composed.contains("Source: .coderoom/shared.md"));
+    assert_order(
+        &composed,
+        "# CodeRoom kernel protocol",
+        "## Project shared priors",
     );
+    assert_order(&composed, "## Project shared priors", "SHARED_PRIORS");
+    assert_order(&composed, "SHARED_PRIORS", "## Role priors");
+    assert_order(&composed, "## Role priors", "BACKEND_PRIORS");
 }
 
 #[test]
@@ -60,6 +81,7 @@ fn compose_includes_team_roster_for_peer_roles() {
 
     let composed = compose_for(&coderoom, "backend").unwrap();
     assert!(composed.contains("## Team roster"));
+    assert!(composed.contains("Source: .coderoom/roles/*.md"));
     assert!(composed.contains("@host (host): Routes work."));
     assert!(composed.contains("@security: Reviews risk."));
     assert!(!composed.contains("@backend:"));
@@ -88,6 +110,7 @@ fn patches_appear_in_numeric_order() {
     fs::write(patches_dir.join("001-first.md"), "PATCH_ONE").unwrap();
 
     let composed = compose_for(&coderoom_of(&tmp), "backend").unwrap();
+    assert!(composed.contains("Source: .coderoom/patches/backend/"));
     let one = composed.find("PATCH_ONE").expect("contains PATCH_ONE");
     let two = composed.find("PATCH_TWO").expect("contains PATCH_TWO");
     let ten = composed.find("PATCH_TEN").expect("contains PATCH_TEN");
@@ -335,20 +358,30 @@ fn format_token_count_uses_one_decimal_kilo_suffix() {
 fn estimate_role_tokens_reads_role_plus_shared() {
     let tmp = fixture("backend", &"x".repeat(4_000));
     let coderoom = coderoom_of(&tmp);
-    // No shared.md yet → ~4000 bytes / 4 = 1000 tokens
-    assert_eq!(estimate_role_tokens(&coderoom, "backend"), 1_000);
+    // No shared.md yet → kernel + ~4000 bytes / 4.
+    assert_eq!(
+        estimate_role_tokens(&coderoom, "backend"),
+        (KERNEL_PROTOCOL.len() as u64 + 4_000) / 4
+    );
 
     fs::write(coderoom.join(SHARED_FILE), "y".repeat(8_000)).unwrap();
-    // (4000 + 8000) / 4 = 3000
-    assert_eq!(estimate_role_tokens(&coderoom, "backend"), 3_000);
+    // kernel + (4000 + 8000) / 4.
+    assert_eq!(
+        estimate_role_tokens(&coderoom, "backend"),
+        (KERNEL_PROTOCOL.len() as u64 + 12_000) / 4
+    );
 }
 
 #[test]
 fn estimate_role_tokens_returns_zero_for_unknown_role() {
     let tmp = fixture("backend", "x");
     let coderoom = coderoom_of(&tmp);
-    // unknown role → no role.md → contributes 0; shared.md missing too.
-    assert_eq!(estimate_role_tokens(&coderoom, "ghost"), 0);
+    // Unknown role still pays the fixed kernel estimate; splash callers only
+    // pass declared roles.
+    assert_eq!(
+        estimate_role_tokens(&coderoom, "ghost"),
+        KERNEL_PROTOCOL.len() as u64 / 4
+    );
 }
 
 #[test]
@@ -364,5 +397,6 @@ fn compose_includes_recent_journal_section() {
 
     let composed = compose_for(&coderoom, "backend").unwrap();
     assert!(composed.contains("Recent journal"));
+    assert!(composed.contains("Source: .coderoom/journal/YYYY-MM-DD/backend.md"));
     assert!(composed.contains("JOURNAL_TODAY"));
 }

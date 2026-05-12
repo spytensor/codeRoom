@@ -293,12 +293,20 @@ trait EngineAdapter {
 A role's effective system prompt is composed at spawn time:
 
 ```
+<built-in CodeRoom kernel protocol>
+<shared.md project-wide priors>
 <role priors>
-<shared.md>
+<team roster: one-paragraph blurb per other role; host is marked>
 <active patches in numeric order>
 <journal entries from last 7 days for this role>
-<team roster: one-paragraph blurb per other role; host is marked>
 ```
+
+The built-in kernel is not copied into `.coderoom/`. It owns the routing
+syntax (`@role` line starts), peer brief format (`From @role:`), patch/journal
+authority rules, and WorkCard `cr-task` block. User-editable project and role
+priors can tune behavior, but they cannot redefine those runtime contracts.
+Every composed section carries a source header so `cr prompt show <role>` is
+auditable.
 
 The team roster explicitly marks which role is host so non-host roles can
 escalate back to the user via `@<host>` when they need direction.
@@ -364,6 +372,8 @@ cr role host <name>              # change which role is host
 cr start                         # enter REPL; spawn all configured roles
 
 # global commands (outside REPL)
+cr prompt show <role>            # print the exact composed system prompt
+cr doctor [--fix]                # detect or remove legacy protocol in shared.md
 cr show <session>                # raw transcript dump
 cr cost                          # cost breakdown per role since YYYY-MM-DD
 ```

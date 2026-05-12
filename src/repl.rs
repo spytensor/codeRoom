@@ -887,10 +887,7 @@ fn parse_delegation_line(
     let mut rest = strip_leading_list_marker(line);
     let mut targets = Vec::new();
 
-    loop {
-        let Some(after_at) = rest.strip_prefix('@') else {
-            break;
-        };
+    while let Some(after_at) = rest.strip_prefix('@') {
         let (name, after_name) = take_role_name(after_at)?;
         if name == current_role || !known_roles.contains(&name.as_str()) {
             return None;

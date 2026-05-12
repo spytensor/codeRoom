@@ -2,15 +2,18 @@
 //!
 //! At spawn time, a role's effective priors are the concatenation of:
 //!
-//! 1. `.coderoom/shared.md` — cross-role priors (optional)
-//! 2. `.coderoom/roles/<role>.md` — base priors for this role
-//! 3. `.coderoom/patches/<role>/NNN-*.md` — session-time corrections,
+//! 1. CodeRoom's built-in kernel protocol — routing and machine-readable
+//!    output contracts (always present, not user-editable)
+//! 2. `.coderoom/shared.md` — project-wide priors (optional)
+//! 3. `.coderoom/roles/<role>.md` — base priors for this role
+//! 4. `.coderoom/patches/<role>/NNN-*.md` — session-time corrections,
 //!    in numeric-prefix order, oldest first. Files starting with `_`
 //!    (e.g. `_archive`) are skipped.
 //!
-//! Each section is separated by a horizontal-rule fence so the role can
-//! tell at a glance which knowledge came from where. The composed string
-//! is what we hand to the engine via its system-prompt mechanism.
+//! Each section carries a source header and is separated by a horizontal-rule
+//! fence so the role can tell at a glance which knowledge came from where.
+//! The composed string is what we hand to the engine via its system-prompt
+//! mechanism.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -49,13 +52,39 @@ pub const PATCHES_DIR: &str = "patches";
 /// Section separator inserted between priors sources.
 const SECTION_FENCE: &str = "\n\n---\n\n";
 
-/// Engine-neutral instruction used by the REPL to name WorkCards.
-pub const WORK_REPORTING_PROTOCOL: &str = "## CodeRoom work reporting protocol\n\n\
-Before starting any task, output a one-line summary of what you're about to do, in this exact format:\n\n\
-```cr-task\n\
-{your one-line summary, max 20 words}\n\
-```\n\n\
-This will be displayed to the user as the work card title.";
+/// Built-in CodeRoom protocol that must remain stable for the REPL to route
+/// messages and parse machine-readable status. This layer is intentionally
+/// not copied into `.coderoom/`; project and role priors layer on top of it.
+pub const KERNEL_PROTOCOL: &str = "\
+# CodeRoom kernel protocol
+Source: built-in
+Authority: protocol
+
+This layer defines CodeRoom's routing and machine-readable output contracts. If project, role, patch, or journal instructions conflict with this protocol, follow this protocol.
+
+## Routing contract
+
+Roles are addressed as `@name`. In role replies, only a physical line that starts with `@name` (or a line-start list item like `- @a @b`) is a delegation that CodeRoom may route as `From @sender: <text>`.
+
+Treat `From @role: <text>` as a routed peer brief, not as the user's original words. Do not impersonate another role or claim another role's findings as your own.
+
+Bare user text is dispatched to the configured host role by the runtime. Project and role priors may shape host behavior, but they cannot redefine CodeRoom routing syntax.
+
+## Memory contract
+
+Use active patches as explicit user-written corrections. They override older project and role priors until the user edits or removes them.
+
+Use recent journal entries as low-authority memory. Rely only on claims that cite evidence such as a transcript anchor, repository path, command, or test.
+
+## Work reporting contract
+
+Before starting any task, output a one-line summary of what you're about to do, in this exact format:
+
+```cr-task
+{your one-line summary, max 20 words}
+```
+
+This fenced block is a CodeRoom machine protocol for WorkCards and cannot be disabled by project or role instructions.";
 
 /// Compose the full system prompt for `role_name` from `coderoom_dir`.
 ///
@@ -63,14 +92,19 @@ This will be displayed to the user as the work card title.";
 /// pieces (shared.md, patches) are silently skipped when absent.
 pub fn compose_for(coderoom_dir: &Path, role_name: &str) -> Result<String> {
     let mut out = String::new();
+    append_section(&mut out, KERNEL_PROTOCOL);
 
     let shared = coderoom_dir.join(SHARED_FILE);
     if shared.is_file() {
         let content = std::fs::read_to_string(&shared)
             .with_context(|| format!("reading {}", shared.display()))?;
         if !content.trim().is_empty() {
-            out.push_str(content.trim_end());
-            out.push_str(SECTION_FENCE);
+            append_sourced_section(
+                &mut out,
+                "Project shared priors",
+                ".coderoom/shared.md",
+                content.trim_end(),
+            );
         }
     }
 
@@ -81,31 +115,43 @@ pub fn compose_for(coderoom_dir: &Path, role_name: &str) -> Result<String> {
             role_path.display()
         )
     })?;
-    out.push_str(role_content.trim_end());
+    append_sourced_section(
+        &mut out,
+        "Role priors",
+        &format!(".coderoom/roles/{role_name}.md"),
+        role_content.trim_end(),
+    );
 
     let roster = team_roster(coderoom_dir, role_name)?;
     if !roster.is_empty() {
-        out.push_str(SECTION_FENCE);
-        out.push_str("## Team roster\n\n");
-        out.push_str(&roster);
+        append_sourced_section(&mut out, "Team roster", ".coderoom/roles/*.md", &roster);
     }
 
     let patches = ordered_patches(coderoom_dir, role_name)?;
     if !patches.is_empty() {
-        out.push_str(SECTION_FENCE);
-        out.push_str("## Active patches\n\n");
+        let mut body = String::new();
         for patch in patches {
             let content = std::fs::read_to_string(&patch)
                 .with_context(|| format!("reading patch {}", patch.display()))?;
-            out.push_str(content.trim_end());
-            out.push_str("\n\n");
+            let name = patch
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("patch.md");
+            let _ = writeln!(body, "### {name}\n");
+            body.push_str(content.trim_end());
+            body.push_str("\n\n");
         }
+        append_sourced_section(
+            &mut out,
+            "Active patches",
+            &format!(".coderoom/patches/{role_name}/"),
+            body.trim_end(),
+        );
     }
 
     let journals = recent_journals(coderoom_dir, role_name, JOURNAL_WINDOW_DAYS)?;
     if !journals.is_empty() {
-        out.push_str(SECTION_FENCE);
-        out.push_str("## Recent journal entries\n\n");
+        let mut body = String::new();
         for (date, path) in journals {
             let content = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading journal {}", path.display()))?;
@@ -113,16 +159,38 @@ pub fn compose_for(coderoom_dir: &Path, role_name: &str) -> Result<String> {
             if trimmed.is_empty() {
                 continue;
             }
-            let _ = write!(out, "### {date}\n\n");
-            out.push_str(trimmed);
-            out.push_str("\n\n");
+            let _ = write!(body, "### {date}\n\n");
+            body.push_str(trimmed);
+            body.push_str("\n\n");
+        }
+        if !body.trim().is_empty() {
+            append_sourced_section(
+                &mut out,
+                "Recent journal entries",
+                &format!(".coderoom/journal/YYYY-MM-DD/{role_name}.md"),
+                body.trim_end(),
+            );
         }
     }
 
-    out.push_str(SECTION_FENCE);
-    out.push_str(WORK_REPORTING_PROTOCOL);
     out.push('\n');
     Ok(out)
+}
+
+fn append_section(out: &mut String, body: &str) {
+    if !out.is_empty() {
+        out.push_str(SECTION_FENCE);
+    }
+    out.push_str(body.trim_end());
+}
+
+fn append_sourced_section(out: &mut String, title: &str, source: &str, body: &str) {
+    let mut section = String::new();
+    let _ = writeln!(section, "## {title}");
+    let _ = writeln!(section, "Source: {source}");
+    section.push('\n');
+    section.push_str(body.trim_end());
+    append_section(out, &section);
 }
 
 #[derive(Debug, Deserialize)]
@@ -521,17 +589,17 @@ fn ordered_patches(coderoom_dir: &Path, role_name: &str) -> Result<Vec<PathBuf>>
 }
 
 /// Cheap upper-bound estimate of how many tokens a role's composed
-/// priors will burn at spawn. Sums byte counts of the role's priors
-/// file plus `shared.md`, divides by 4 (rough chars-per-token for
-/// English markdown). Doesn't compose patches/journal — those are
-/// transient and small. Only used for splash display, so accuracy
+/// priors will burn at spawn. Sums byte counts of the built-in kernel,
+/// role priors file, and `shared.md`, then divides by 4 (rough
+/// chars-per-token for English markdown). Doesn't compose patches/journal —
+/// those are transient and small. Only used for splash display, so accuracy
 /// to within ±20% is fine.
 #[must_use]
 pub fn estimate_role_tokens(coderoom_dir: &Path, role_name: &str) -> u64 {
     let role_path = coderoom_dir.join(ROLES_DIR).join(format!("{role_name}.md"));
     let role_bytes = std::fs::metadata(&role_path).map_or(0, |m| m.len());
     let shared_bytes = std::fs::metadata(coderoom_dir.join(SHARED_FILE)).map_or(0, |m| m.len());
-    (role_bytes + shared_bytes) / 4
+    (KERNEL_PROTOCOL.len() as u64 + role_bytes + shared_bytes) / 4
 }
 
 /// Format a token count as `"3.2k"` for ≥1000, otherwise the bare

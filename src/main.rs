@@ -7,6 +7,8 @@
 //! - `cr role list`              — list configured roles
 //! - `cr role rm <name>`         — remove a role (refuses for the host)
 //! - `cr [start] [--project PATH]` — enter the interactive REPL
+//! - `cr prompt show <role>`     — print a role's effective prompt
+//! - `cr doctor [--fix]`         — inspect CodeRoom project files
 //! - `cr show [--role ROLE] [--since YYYY-MM-DD] [--tail N]` — replay events
 //! - `cr cost [--since YYYY-MM-DD]` — summarize reported engine spend
 
@@ -107,6 +109,20 @@ enum Cmd {
     Config {
         #[command(subcommand)]
         command: ConfigCmd,
+    },
+    /// Inspect composed role prompts.
+    Prompt {
+        #[command(subcommand)]
+        command: PromptCmd,
+    },
+    /// Diagnose CodeRoom project files.
+    Doctor {
+        /// Project root. Defaults to the current working directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Apply exact safe fixes.
+        #[arg(long)]
+        fix: bool,
     },
     /// Check the npm registry for a newer `cr` and report the diff.
     /// Read-only — does not touch the installed binary. Run
@@ -233,6 +249,18 @@ enum ConfigCmd {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum PromptCmd {
+    /// Print the effective prompt for one role.
+    Show {
+        /// Role name. A leading `@` is accepted.
+        role: String,
+        /// Project root. Defaults to the current working directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
+}
+
 fn layer_from_flags(user: bool, local: bool) -> LayerTarget {
     match (user, local) {
         (true, _) => LayerTarget::User,
@@ -298,7 +326,14 @@ fn main() -> Result<()> {
     // requires at least one of claude / codex / gemini on $PATH.
     let needs_engine = !matches!(
         cli.command,
-        Some(Cmd::Config { .. } | Cmd::Update | Cmd::Upgrade | Cmd::HookDecision { .. })
+        Some(
+            Cmd::Config { .. }
+                | Cmd::Prompt { .. }
+                | Cmd::Doctor { .. }
+                | Cmd::Update
+                | Cmd::Upgrade
+                | Cmd::HookDecision { .. }
+        )
     );
     if needs_engine && coderoom::engines::require_any_installed().is_err() {
         std::process::exit(1);
@@ -340,6 +375,11 @@ fn main() -> Result<()> {
             })
         }
         Some(Cmd::Config { command }) => run_config_cmd(command),
+        Some(Cmd::Prompt { command }) => run_prompt_cmd(command),
+        Some(Cmd::Doctor { project, fix }) => {
+            let root = project_root_or_cwd(project)?;
+            coderoom::doctor::run(&root, coderoom::doctor::DoctorOptions { fix })
+        }
         Some(Cmd::Update) => coderoom::update::check(),
         Some(Cmd::Upgrade) => coderoom::update::upgrade(),
         Some(Cmd::HookDecision { .. }) => unreachable!("handled before terminal setup"),
@@ -359,6 +399,14 @@ fn main() -> Result<()> {
                 let project_root = project_root_or_cwd(project)?;
                 coderoom::cost::run(&project_root, since).await
             })
+        }
+    }
+}
+
+fn run_prompt_cmd(cmd: PromptCmd) -> Result<()> {
+    match cmd {
+        PromptCmd::Show { role, project } => {
+            coderoom::prompt_cmd::show(&project_root_or_cwd(project)?, &role)
         }
     }
 }

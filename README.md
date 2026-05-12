@@ -53,6 +53,9 @@ reply.
 - **Short role priors by default.** Generated roles start with compact
   responsibilities; long procedures and reference material belong in
   the underlying engine's skills or project docs, not every role prompt.
+- **Layered prompt contract.** CodeRoom's routing and WorkCard protocol is a
+  built-in kernel layer; `.coderoom/shared.md` and `roles/<role>.md` stay
+  user-owned project and role standards.
 - **Daily journals.** Every role writes an end-of-session log with cited
   evidence. Auto-loaded for the next 7 days.
 - **Patches.** `/patch <role> "..."` saves a session-time correction; the
@@ -196,10 +199,12 @@ Useful commands:
   and the user to halt when something looks wrong.
 - `/allow <tool>` and `/deny <tool>` update the session permission policy
   used by Claude Code hooks. Examples: `/allow Read`, `/deny Bash`.
+- `cr prompt show <role>` prints the exact effective prompt for a role.
+- `cr doctor [--fix]` detects old projects whose `shared.md` still contains
+  CodeRoom protocol text that now lives in the built-in kernel.
 - `cr show [--role backend] [--tail 20] [--since YYYY-MM-DD]`, `cr cost`,
-  `cr compact <role>`, `cr config get/set`, and `cr update` handle
-  inspection, spend tracking, priors compaction, layered config, and package
-  upgrades.
+  `cr compact <role>`, `cr config get/set`, and `cr update` handle inspection,
+  spend tracking, priors compaction, layered config, and package upgrades.
 - Live turns fold internal tool traces into one activity summary; `cr show`
   replays the full event log when you need to audit what happened. Set
   `CODEROOM_VERBOSE_TOOLS=1` to opt the live REPL back into the full
