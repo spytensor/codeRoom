@@ -3,7 +3,8 @@
 //! The implementation is intentionally one-shot per turn: for each user
 //! message we spawn `gemini -p`, parse its `stream-json` stdout, stream
 //! assistant text and tool lifecycle events, then finish with a final
-//! [`CrepEvent::RoleSpoke`]. There is no long-lived subprocess.
+//! [`CrepEvent::RoleSpoke`]. There is no long-lived subprocess; Gemini's
+//! native session id is persisted and passed back through `--resume`.
 //!
 //! Why so simple at v0.1:
 //!
@@ -108,20 +109,6 @@ impl EngineAdapter for GeminiAdapter {
                     engine: Engine::Gemini.as_str(),
                     message,
                 })?;
-        // Gemini's `--resume <id>` expects an index number (`latest`
-        // or `--resume 5`), not the UUID-shaped session id codeRoom
-        // stores per role. Cross-referencing by index across cr
-        // projects is fragile (deletes shift the numbering), and the
-        // synthetic `gemini-<role>` id we emit on RoleStarted isn't
-        // a real resumable id either. Per amendment A-006 follow-up
-        // we log + continue with a fresh session; the user-facing
-        // hint at `spawn_role` warns about this.
-        if config.resume_session_id.is_some() {
-            tracing::debug!(
-                role = %config.name,
-                "ignoring resume_session_id: gemini --resume uses session indexes, not UUIDs"
-            );
-        }
         let priors_text = tokio::fs::read_to_string(&config.priors_path)
             .await
             .map_err(|source| AdapterError::PriorsRead {
@@ -136,10 +123,7 @@ impl EngineAdapter for GeminiAdapter {
         let (interrupt_tx, interrupt_rx) =
             mpsc::channel::<TurnId>(crate::adapter::INTERRUPT_CHANNEL_CAPACITY);
 
-        // Synthetic session id — Gemini's CLI offers --resume by index
-        // for sessions persisted to disk, but we treat each turn as
-        // independent at v0.1.
-        let session_id = format!("gemini-{}", config.name);
+        let session_id = config.resume_session_id.clone().unwrap_or_default();
         let _ = tx_events
             .send(CrepEvent::RoleStarted {
                 role: config.name.clone(),
@@ -158,6 +142,7 @@ impl EngineAdapter for GeminiAdapter {
                 priors_path: config.priors_path.clone(),
                 priors_text,
                 prompt_mode,
+                resume_session_id: config.resume_session_id.clone(),
                 rx: rx_user,
                 events: tx_events,
                 stop_rx,
@@ -228,6 +213,7 @@ struct GeminiLoop {
     priors_path: PathBuf,
     priors_text: String,
     prompt_mode: GeminiPromptMode,
+    resume_session_id: Option<String>,
     events: mpsc::Sender<CrepEvent>,
     rx: mpsc::Receiver<UserMessage>,
     stop_rx: oneshot::Receiver<StopReason>,
@@ -269,6 +255,7 @@ impl GeminiLoop {
                     user_prompt: &prompt,
                     role: &self.role,
                     events: self.events.clone(),
+                    resume_session_id: self.resume_session_id.as_deref(),
                 },
                 &mut self.stop_rx,
                 &mut self.interrupt_rx,
@@ -276,7 +263,11 @@ impl GeminiLoop {
             .await;
             match outcome {
                 GeminiTurnOutcome::Stopped(reason) => break reason,
-                GeminiTurnOutcome::Interrupted { partial_text } => {
+                GeminiTurnOutcome::Interrupted {
+                    partial_text,
+                    session_id,
+                } => {
+                    self.record_session_id(session_id).await;
                     // Emit a turn-boundary event so the REPL's drain
                     // unblocks when the user halts. We don't yet know
                     // the dispatched turn_id (UserMessage will carry
@@ -306,6 +297,7 @@ impl GeminiLoop {
                         .await;
                 }
                 GeminiTurnOutcome::Completed(Ok(turn)) => {
+                    self.record_session_id(turn.session_id.clone()).await;
                     for event in
                         crate::adapter::role_spoke_events_from_text(&self.role, &turn.text, 0.0, 0)
                     {
@@ -339,6 +331,23 @@ impl GeminiLoop {
             .await;
         debug!("gemini per-turn loop exiting");
     }
+
+    async fn record_session_id(&mut self, session_id: Option<String>) {
+        let Some(session_id) = session_id else {
+            return;
+        };
+        if self.resume_session_id.as_deref() == Some(session_id.as_str()) {
+            return;
+        }
+        self.resume_session_id = Some(session_id.clone());
+        let _ = self
+            .events
+            .send(CrepEvent::RoleSessionUpdated {
+                role: self.role.clone(),
+                session_id,
+            })
+            .await;
+    }
 }
 
 enum GeminiTurnOutcome {
@@ -350,12 +359,14 @@ enum GeminiTurnOutcome {
     /// streaming accumulator captured before the child was killed.
     Interrupted {
         partial_text: String,
+        session_id: Option<String>,
     },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 struct GeminiTurn {
     text: String,
+    session_id: Option<String>,
 }
 
 struct GeminiTurnRequest<'a> {
@@ -367,6 +378,7 @@ struct GeminiTurnRequest<'a> {
     user_prompt: &'a str,
     role: &'a str,
     events: mpsc::Sender<CrepEvent>,
+    resume_session_id: Option<&'a str>,
 }
 
 /// Run a single `gemini -p` invocation and translate its stream-json stdout.
@@ -399,6 +411,9 @@ async fn run_one_turn(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     isolate_process_group(&mut cmd);
+    if let Some(session_id) = request.resume_session_id {
+        cmd.arg("--resume").arg(session_id);
+    }
     if request.prompt_mode == GeminiPromptMode::SystemInstructionFile {
         cmd.arg("--system-instruction-file")
             .arg(request.priors_path);
@@ -424,11 +439,16 @@ async fn run_one_turn(
     let stdout_accum: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let stderr_accum: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
     let assistant_text: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let session_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let stream_state = GeminiStreamState {
+        assistant_text: Arc::clone(&assistant_text),
+        session_id: Arc::clone(&session_id),
+    };
     let stdout_task = tokio::spawn(read_stdout_streaming(
         request.role.to_owned(),
         stdout,
         Arc::clone(&stdout_accum),
-        Arc::clone(&assistant_text),
+        stream_state,
         request.events.clone(),
     ));
     let stderr_task = tokio::spawn(read_pipe_streaming(stderr, Arc::clone(&stderr_accum)));
@@ -454,7 +474,11 @@ async fn run_one_turn(
             } else {
                 parsed_partial
             };
-            return GeminiTurnOutcome::Interrupted { partial_text };
+            let session_id = session_id.lock().await.clone();
+            return GeminiTurnOutcome::Interrupted {
+                partial_text,
+                session_id,
+            };
         }
         status = child.wait() => status,
     };
@@ -487,7 +511,7 @@ async fn read_stdout_streaming(
     role: String,
     mut stdout: impl tokio::io::AsyncRead + Unpin,
     raw_accum: Arc<Mutex<Vec<u8>>>,
-    assistant_text: Arc<Mutex<String>>,
+    stream_state: GeminiStreamState,
     events: mpsc::Sender<CrepEvent>,
 ) -> std::io::Result<GeminiTurn> {
     let mut fallback_lines = Vec::new();
@@ -510,7 +534,7 @@ async fn read_stdout_streaming(
             process_gemini_stream_line(
                 &role,
                 &line,
-                &assistant_text,
+                &stream_state,
                 &events,
                 &mut fallback_lines,
                 &mut tool_ids,
@@ -523,7 +547,7 @@ async fn read_stdout_streaming(
         process_gemini_stream_line(
             &role,
             &pending,
-            &assistant_text,
+            &stream_state,
             &events,
             &mut fallback_lines,
             &mut tool_ids,
@@ -531,19 +555,26 @@ async fn read_stdout_streaming(
         )
         .await;
     }
-    let mut text = assistant_text.lock().await.clone();
+    let mut text = stream_state.assistant_text.lock().await.clone();
     if text.is_empty() && !fallback_lines.is_empty() {
         text = fallback_lines.join("\n");
     }
     Ok(GeminiTurn {
         text: text.trim().to_owned(),
+        session_id: stream_state.session_id.lock().await.clone(),
     })
+}
+
+#[derive(Clone, Default)]
+struct GeminiStreamState {
+    assistant_text: Arc<Mutex<String>>,
+    session_id: Arc<Mutex<Option<String>>>,
 }
 
 async fn process_gemini_stream_line(
     role: &str,
     line: &[u8],
-    assistant_text: &Arc<Mutex<String>>,
+    stream_state: &GeminiStreamState,
     events: &mpsc::Sender<CrepEvent>,
     fallback_lines: &mut Vec<String>,
     tool_ids: &mut GeminiSyntheticToolIds,
@@ -559,11 +590,16 @@ async fn process_gemini_stream_line(
         return;
     };
     match value.get("type").and_then(serde_json::Value::as_str) {
+        Some("init") => {
+            if let Some(id) = gemini_session_id(&value) {
+                *stream_state.session_id.lock().await = Some(id);
+            }
+        }
         Some("message")
             if value.get("role").and_then(serde_json::Value::as_str) == Some("assistant") =>
         {
             if let Some(content) = value.get("content").and_then(serde_json::Value::as_str) {
-                assistant_text.lock().await.push_str(content);
+                stream_state.assistant_text.lock().await.push_str(content);
                 *delta_sequence = value
                     .get("sequence")
                     .and_then(serde_json::Value::as_u64)
@@ -591,6 +627,16 @@ async fn process_gemini_stream_line(
         }
         _ => {}
     }
+}
+
+fn gemini_session_id(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("session_id")
+        .or_else(|| value.get("sessionId"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 #[derive(Default)]
@@ -708,6 +754,7 @@ fn signal_process_group(_role: &str, _child: &Child, _signal: SignalKind) -> boo
 #[cfg(test)]
 fn parse_stream_json_turn(_role: &str, stdout: &str) -> GeminiTurn {
     let mut text = String::new();
+    let mut session_id = None;
     let mut fallback_lines = Vec::new();
 
     for line in stdout.lines() {
@@ -719,12 +766,20 @@ fn parse_stream_json_turn(_role: &str, stdout: &str) -> GeminiTurn {
             fallback_lines.push(line.to_owned());
             continue;
         };
-        if value.get("type").and_then(serde_json::Value::as_str) == Some("message")
-            && value.get("role").and_then(serde_json::Value::as_str) == Some("assistant")
-        {
-            if let Some(content) = value.get("content").and_then(serde_json::Value::as_str) {
-                text.push_str(content);
+        match value.get("type").and_then(serde_json::Value::as_str) {
+            Some("init") => {
+                if let Some(id) = gemini_session_id(&value) {
+                    session_id = Some(id);
+                }
             }
+            Some("message")
+                if value.get("role").and_then(serde_json::Value::as_str) == Some("assistant") =>
+            {
+                if let Some(content) = value.get("content").and_then(serde_json::Value::as_str) {
+                    text.push_str(content);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -734,6 +789,7 @@ fn parse_stream_json_turn(_role: &str, stdout: &str) -> GeminiTurn {
 
     GeminiTurn {
         text: text.trim().to_owned(),
+        session_id,
     }
 }
 
@@ -833,6 +889,7 @@ mod tests {
         let turn = parse_stream_json_turn("backend", stdout);
 
         assert_eq!(turn.text, "Done");
+        assert_eq!(turn.session_id.as_deref(), Some("s"));
     }
 
     #[tokio::test]
@@ -845,13 +902,14 @@ mod tests {
             "backend".to_owned(),
             stdout.as_bytes(),
             Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(String::new())),
+            GeminiStreamState::default(),
             tx,
         )
         .await
         .unwrap();
 
         assert_eq!(turn.text, "Done");
+        assert_eq!(turn.session_id, None);
         let mut events = Vec::new();
         while let Ok(event) = rx.try_recv() {
             events.push(event);
@@ -895,7 +953,7 @@ mod tests {
             "backend".to_owned(),
             stdout.as_bytes(),
             Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(String::new())),
+            GeminiStreamState::default(),
             tx,
         )
         .await
@@ -928,7 +986,7 @@ mod tests {
             "backend".to_owned(),
             stdout.as_bytes(),
             Arc::new(Mutex::new(Vec::new())),
-            Arc::new(Mutex::new(String::new())),
+            GeminiStreamState::default(),
             tx,
         )
         .await
@@ -948,5 +1006,24 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn stdout_streaming_captures_init_session_id() {
+        let stdout = r#"{"type":"init","session_id":"gemini-session-uuid","model":"gemini"}
+{"type":"message","role":"assistant","content":"Hi"}"#;
+        let (tx, _rx) = mpsc::channel(1);
+        let turn = read_stdout_streaming(
+            "backend".to_owned(),
+            stdout.as_bytes(),
+            Arc::new(Mutex::new(Vec::new())),
+            GeminiStreamState::default(),
+            tx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(turn.text, "Hi");
+        assert_eq!(turn.session_id.as_deref(), Some("gemini-session-uuid"));
     }
 }

@@ -197,12 +197,9 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
             output::warn(format!("could not prepare room session history: {error}"));
         }
         // Surface which roles will actually resume so the user
-        // isn't surprised. Roles with a persisted id whose engine
-        // wires resume show up as "resuming"; engines without wired
-        // resume get a separate line so the user knows context isn't
-        // actually carried forward (amendment A-006).
+        // isn't surprised. Stale synthetic placeholders are filtered
+        // out before they reach the engine's native resume path.
         let mut resumed_wired: Vec<String> = Vec::new();
-        let mut resumed_dropped: Vec<String> = Vec::new();
         for name in cfg.role_names() {
             let Some(session_id) = sessions::read_session_id(project_root, name).ok().flatten()
             else {
@@ -216,13 +213,9 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
             if !is_resumable_session_id(engine, name, &session_id) {
                 continue;
             }
-            match engine {
-                Engine::Cc | Engine::Codex => resumed_wired.push(name.to_owned()),
-                Engine::Gemini => resumed_dropped.push(name.to_owned()),
-            }
+            resumed_wired.push(name.to_owned());
         }
         resumed_wired.sort();
-        resumed_dropped.sort();
         if !resumed_wired.is_empty() {
             let names = resumed_wired
                 .iter()
@@ -231,16 +224,6 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                 .join(", ");
             output::hint(format!(
                 "resuming prior session for {names} — pass `--fresh` to start clean"
-            ));
-        }
-        if !resumed_dropped.is_empty() {
-            let names = resumed_dropped
-                .iter()
-                .map(|n| format!("@{n}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            output::hint(format!(
-                "resume not wired for gemini yet — {names} will start fresh"
             ));
         }
     }
@@ -1485,7 +1468,7 @@ fn is_resumable_session_id(engine: Engine, role: &str, session_id: &str) -> bool
     match engine {
         Engine::Cc => true,
         Engine::Codex => trimmed != format!("codex-{role}"),
-        Engine::Gemini => false,
+        Engine::Gemini => trimmed != format!("gemini-{role}"),
     }
 }
 
