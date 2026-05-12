@@ -374,9 +374,8 @@ with explicit per-role session persistence:
 
 Engines that do not support resume (or whose adapters haven't
 plumbed the flag yet) silently degrade to a fresh session at the
-engine layer; the REPL prints one user-visible hint at `cr start`
-so the user knows their gemini roles will start clean even though
-their cc and codex roles resume.
+engine layer; the REPL filters stale synthetic placeholders before
+they reach native resume paths.
 
 Currently wired:
 
@@ -386,9 +385,11 @@ Currently wired:
   The first turn starts a thread with `codex`; CodeRoom persists the
   returned `threadId` via `RoleSessionUpdated`, then later turns and
   future `cr start` invocations continue with `codex-reply`.
-- **gemini**: NOT wired. `gemini --resume <index>` uses session
-  *indexes*, not UUIDs; the synthetic `gemini-<role>` id codeRoom
-  emits is not a resumable identifier. Tracked at #121.
+- **gemini**: wired through `gemini --resume <session-id>`. CodeRoom
+  captures the real session id from Gemini's `stream-json` init event
+  via `RoleSessionUpdated`; upgraded projects discard older synthetic
+  `gemini-<role>` placeholders and start fresh once before persisting
+  the real id.
 
 ### Migration impact
 
