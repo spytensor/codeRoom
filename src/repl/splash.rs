@@ -1,9 +1,9 @@
 use std::fmt::Write as FmtWrite;
 use std::path::Path;
 
-use crossterm::style::Stylize;
+use crossterm::style::{Color, Stylize};
 
-use crate::adapter::Engine;
+use crate::adapter::{Engine, PermissionMode};
 use crate::config::Config;
 use crate::output;
 use crate::priors;
@@ -141,7 +141,7 @@ pub(super) fn splash_columns(width: usize, role_floor: usize) -> (usize, usize) 
 
 /// Visible width of the longest role row that will be rendered.
 /// Mirrors the layout used in `splash_role_cell`:
-///   `● ␠@{role:<role_pad+1}␠␠{engine:<6}␠·␠{ctx}`
+///   `● ␠@{role:<role_pad+1}␠␠{engine:<6}␠·␠{ctx}␠·␠{perm}`
 fn splash_role_floor(cfg: &Config, role_names: &[&str], role_pad: usize) -> usize {
     role_names
         .iter()
@@ -154,12 +154,49 @@ fn splash_role_floor(cfg: &Config, role_names: &[&str], role_pad: usize) -> usiz
                 .as_ref()
                 .and_then(|role| role.model.as_deref())
                 .or(cfg.default_model.as_deref());
+            let mode = role_cfg
+                .as_ref()
+                .map_or(cfg.permission_mode, |role| role.permission_mode);
             let ctx = splash_context_short(engine, model);
+            let (perm, _) = permission_label(engine, mode);
             // ● + ' ' + '@' + role_pad + ' ' + ' ' + engine_pad(6) + ' ' + '·' + ' ' + ctx
-            1 + 1 + 1 + role_pad + 2 + 6 + 1 + 1 + 1 + ctx.chars().count()
+            //   + ' ' + '·' + ' ' + perm
+            1 + 1
+                + 1
+                + role_pad
+                + 2
+                + 6
+                + 1
+                + 1
+                + 1
+                + ctx.chars().count()
+                + 3
+                + perm.chars().count()
         })
         .max()
         .unwrap_or(28)
+}
+
+/// Per-role permission gate descriptor shown on the dashboard.
+///
+/// The dashboard's job here is to keep the user from assuming CodeRoom
+/// gates every role's tool calls. Two states matter:
+///
+/// - **CR-gated** — engine is `cc` and the configured `permission_mode`
+///   is `ask`/`auto`. CodeRoom's PreToolUse hook intercepts. Rendered
+///   in [`output::MUTE`] (visually "covered").
+/// - **No CR gate** — anything else: `bypass` on any engine, or any
+///   mode on `codex`/`gemini` (CodeRoom doesn't intermediate tool calls
+///   on those engines). Rendered in [`output::WARN`] so the user can
+///   tell at a glance that they own the diff review.
+///
+/// The label itself is the literal `permission_mode` string so the
+/// dashboard mirrors `cr config show` rather than introducing a new
+/// vocabulary. Discrimination is by color, not by inventing terms.
+fn permission_label(engine: Engine, mode: PermissionMode) -> (&'static str, Color) {
+    let cr_gated = matches!(engine, Engine::Cc) && !matches!(mode, PermissionMode::Bypass);
+    let color = if cr_gated { output::MUTE } else { output::WARN };
+    (mode.as_str(), color)
 }
 
 /// `┌─ {title} ─...─┐` — title is embedded into the top stroke.
@@ -265,12 +302,16 @@ fn splash_role_cell(
         .as_ref()
         .and_then(|role| role.model.as_deref())
         .or(cfg.default_model.as_deref());
+    let mode = role_cfg
+        .as_ref()
+        .map_or(cfg.permission_mode, |role| role.permission_mode);
     let engine_short = splash_engine_short(engine);
     let ctx = splash_context_short(engine, model);
+    let (perm_label, perm_color) = permission_label(engine, mode);
     let role_paint = output::role_color(name, &cfg.host_role);
     let role_token = format!("@{name}");
     let role_padded = format!("{role_token:<width$}", width = role_pad + 1);
-    let plain = format!("● {role_padded}  {engine_short:<6} · {ctx}");
+    let plain = format!("● {role_padded}  {engine_short:<6} · {ctx} · {perm_label}");
     let cell = join_cells(&[
         styled_cell("●", "●".with(role_paint)),
         plain_cell(" "),
@@ -284,6 +325,10 @@ fn splash_role_cell(
         styled_cell("·", "·".with(output::FADE)),
         plain_cell(" "),
         styled_cell(ctx, ctx.with(output::MUTE)),
+        plain_cell(" "),
+        styled_cell("·", "·".with(output::FADE)),
+        plain_cell(" "),
+        styled_cell(perm_label, perm_label.with(perm_color)),
     ]);
     fit_cell(cell, &plain, max_width)
 }

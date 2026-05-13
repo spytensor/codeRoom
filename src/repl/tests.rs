@@ -558,17 +558,17 @@ fn snapshot_boot_dashboard_at_80() {
     insta::assert_snapshot!(rendered, @r"
 ┌─ codeRoom v0.4.1 ────────────────────────────────────────────────────────────┐
 │                                                                              │
-│ welcome back, Ada              tips for getting started                      │
-│                                • type @role to send a task to a specific ro… │
-│ ● @backend   cc     · 1M       • /halt @role interrupts a turn; Ctrl-C twic… │
-│ ● @host      cc     · 1M       • /journal <role> captures today's lessons-l… │
-│ ● @security  codex  · default                                                │
-│                                what's new in 0.4.1                           │
-│  1.1k  base tokens loaded      • role replies render as inset message blocks │
-│ /repo/codeRoom                 • ready/work lifecycle chatter is hidden by … │
-│                                • WorkCards sit inside the room instead of h… │
+│ welcome back, Ada                       tips for getting started             │
+│                                         • type @role to send a task to a sp… │
+│ ● @backend   cc     · 1M · ask          • /halt @role interrupts a turn; Ct… │
+│ ● @host      cc     · 1M · ask          • /journal <role> captures today's … │
+│ ● @security  codex  · default · bypass                                       │
+│                                         what's new in 0.4.1                  │
+│  1.1k  base tokens loaded               • role replies render as inset mess… │
+│ /repo/codeRoom                          • ready/work lifecycle chatter is h… │
+│                                         • WorkCards sit inside the room ins… │
 │                                                                              │
-│                                /help for commands                            │
+│                                         /help for commands                   │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
   type a task · @role · /help · /exit
