@@ -3,10 +3,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use crossterm::cursor::{MoveDown, MoveToColumn, MoveUp};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use crossterm::queue;
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
 use crossterm::style::Stylize;
 use crossterm::terminal::{self, Clear, ClearType};
+use crossterm::{execute, queue};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::output;
@@ -103,7 +105,19 @@ fn read_tty_line_blocking(
             continue;
         }
 
-        let Event::Key(key) = event::read().context("reading terminal input")? else {
+        let event = event::read().context("reading terminal input")?;
+        // Bracketed paste delivers the whole clipboard payload as one
+        // event — including any embedded newlines. Without this branch
+        // the terminal would synthesize per-line Enter key events and
+        // each line would dispatch as its own prompt, which is what
+        // made pasting a stack trace unusable before.
+        if let Event::Paste(text) = event {
+            editor.dismiss_completion();
+            editor.insert_str(&text);
+            editor.redraw(&mut stdout)?;
+            continue;
+        }
+        let Event::Key(key) = event else {
             continue;
         };
         if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
@@ -193,6 +207,20 @@ fn read_tty_line_blocking(
             KeyCode::End if editor.move_end() => {
                 editor.redraw(&mut stdout)?;
             }
+            KeyCode::Enter
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+            {
+                // Shift+Enter (or Alt+Enter for terminals that swallow
+                // SHIFT) inserts a literal newline so users can compose
+                // multi-line prompts — stack traces, code blocks, SQL
+                // — without each line dispatching as its own turn.
+                // Mirrors Claude Code / Codex / Gemini conventions.
+                editor.dismiss_completion();
+                editor.insert('\n');
+                editor.redraw(&mut stdout)?;
+            }
             KeyCode::Enter => {
                 // Accept any visible ghost first so `@b\n` becomes
                 // `@backend\n` instead of dispatching the prefix.
@@ -232,12 +260,20 @@ struct RawModeGuard;
 impl RawModeGuard {
     fn enter() -> Result<Self> {
         terminal::enable_raw_mode().context("enabling raw terminal input")?;
+        // Bracketed paste turns clipboard pastes into a single
+        // `Event::Paste(String)` event instead of a flood of synthetic
+        // key events that would dispatch each line as a separate prompt.
+        // Failure here is non-fatal — fall back to per-key paste which
+        // is the pre-PR behavior. Some minimal/legacy terminals (older
+        // tmux, certain serial consoles) ignore the escape entirely.
+        let _ = execute!(std::io::stdout(), EnableBracketedPaste);
         Ok(Self)
     }
 }
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
+        let _ = execute!(std::io::stdout(), DisableBracketedPaste);
         let _ = terminal::disable_raw_mode();
     }
 }
@@ -248,7 +284,13 @@ struct LineEditor {
     prompt_width: usize,
     buffer: Vec<char>,
     cursor: usize,
-    painted_cursor_width: usize,
+    /// Row offset (from the prompt's first painted row) where the
+    /// cursor is currently sitting after the last `redraw`/`finish`.
+    /// `clear_painted_area` uses this to walk back up to the prompt's
+    /// first row before wiping. A buffer with embedded `\n` or
+    /// soft-wrapped long lines spans multiple rows; this is how we
+    /// keep track of where we are vertically.
+    painted_cursor_row: usize,
     /// Display width of the trailing ghost-text completion (e.g. the
     /// remainder of `@back` → `@backend` shown in muted text after the
     /// cursor). Tracked so a redraw can wipe the right number of cells.
@@ -286,7 +328,7 @@ impl LineEditor {
             prompt_width: UnicodeWidthStr::width(output::prompt_plain()),
             buffer: Vec::new(),
             cursor: 0,
-            painted_cursor_width: 0,
+            painted_cursor_row: 0,
             painted_ghost_width: 0,
             columns: columns.max(1),
             roles,
@@ -308,6 +350,27 @@ impl LineEditor {
     fn insert(&mut self, ch: char) {
         self.buffer.insert(self.cursor, ch);
         self.cursor += 1;
+        self.invalidate_completion();
+    }
+
+    /// Bulk-insert at the cursor. Normalises `\r\n`/`\r` to `\n` so a
+    /// paste from Windows or older terminals lands as the same logical
+    /// line breaks the buffer's render path expects. Discards any other
+    /// control character (Tab is left intact — pasting Python source
+    /// shouldn't lose its indentation).
+    fn insert_str(&mut self, text: &str) {
+        let chars: Vec<char> = text
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .chars()
+            .filter(|ch| !ch.is_control() || matches!(ch, '\n' | '\t'))
+            .collect();
+        if chars.is_empty() {
+            return;
+        }
+        let cursor = self.cursor;
+        self.buffer.splice(cursor..cursor, chars.iter().copied());
+        self.cursor = cursor + chars.len();
         self.invalidate_completion();
     }
 
@@ -423,9 +486,12 @@ impl LineEditor {
     /// of [`Self::redraw`], and by [`Self::finish`] so the input area
     /// and any dropdown menu rows beneath it are wiped in one step.
     fn clear_painted_area(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
-        self.move_from_width_to_prompt_start(stdout, self.painted_cursor_width)?;
+        queue!(stdout, MoveToColumn(0))?;
+        if self.painted_cursor_row > 0 {
+            queue!(stdout, MoveUp(saturating_u16(self.painted_cursor_row)))?;
+        }
         queue!(stdout, Clear(ClearType::FromCursorDown))?;
-        self.painted_cursor_width = 0;
+        self.painted_cursor_row = 0;
         self.painted_ghost_width = 0;
         self.painted_menu_rows = 0;
         Ok(())
@@ -739,14 +805,14 @@ impl LineEditor {
 
     fn redraw(&mut self, stdout: &mut std::io::Stdout) -> Result<()> {
         self.clear_painted_area(stdout)?;
-        write!(stdout, "{}{}", self.prompt, self.input())?;
+        write!(stdout, "{}", self.prompt)?;
+        self.write_buffer(stdout)?;
         let ghost = self.ghost_suffix().unwrap_or_default();
         let ghost_width = UnicodeWidthStr::width(ghost.as_str());
         if !ghost.is_empty() {
             write!(stdout, "{}", ghost.as_str().with(output::DIM))?;
         }
         self.painted_ghost_width = ghost_width;
-        let cursor_width = self.cursor_width();
 
         // Paint the dropdown menu beneath the input. Each `\r\n` jumps
         // to column 0 of the next row, then we write the row content;
@@ -758,11 +824,12 @@ impl LineEditor {
         }
         self.painted_menu_rows = menu_height;
 
-        // Cursor lands at the end of the user-visible buffer (before
-        // the ghost suffix and any menu rows). The ghost is painted
-        // after but not selectable; the menu lives in its own rows.
-        self.move_from_painted_end_to_width(stdout, cursor_width)?;
-        self.painted_cursor_width = cursor_width;
+        // Cursor lands inside the buffer at (cursor_row, cursor_col).
+        // The ghost is painted past the buffer end but not selectable;
+        // the menu lives in its own rows beneath everything.
+        let (cursor_row, cursor_col) = self.cursor_position();
+        self.move_from_painted_end_to(stdout, cursor_row, cursor_col)?;
+        self.painted_cursor_row = cursor_row;
         stdout.flush()?;
         Ok(())
     }
@@ -772,25 +839,50 @@ impl LineEditor {
         // down the final committed line so leftover suggestions aren't
         // echoed back to the user's terminal.
         self.clear_painted_area(stdout)?;
-        write!(stdout, "{}{}", self.prompt, self.input())?;
-        let buffer_width = self.prompt_width + self.buffer_width_until(self.buffer.len());
-        self.painted_cursor_width = buffer_width;
+        write!(stdout, "{}", self.prompt)?;
+        self.write_buffer(stdout)?;
+        let (end_row, _) = self.position_at(self.buffer.len());
+        self.painted_cursor_row = end_row;
         stdout.flush()?;
+        Ok(())
+    }
+
+    /// Stream the buffer to `stdout`, translating embedded `\n` into
+    /// `\r\n` so the terminal advances to column 0 of the next row.
+    /// Tabs are kept; other control chars never enter the buffer
+    /// (filtered at [`Self::insert_str`]) so we don't need to handle
+    /// them here.
+    fn write_buffer(&self, stdout: &mut std::io::Stdout) -> Result<()> {
+        let mut chunk = String::new();
+        for ch in &self.buffer {
+            if *ch == '\n' {
+                if !chunk.is_empty() {
+                    write!(stdout, "{chunk}")?;
+                    chunk.clear();
+                }
+                write!(stdout, "\r\n")?;
+                continue;
+            }
+            chunk.push(*ch);
+        }
+        if !chunk.is_empty() {
+            write!(stdout, "{chunk}")?;
+        }
         Ok(())
     }
 
     /// Move the cursor from "end of the painted area" (last menu row
     /// when the menu is open; end of input + ghost otherwise) back
-    /// into the input line at the given visual column. Mirrors the
-    /// pre-menu helper but adds `painted_menu_rows` to the start row.
-    fn move_from_painted_end_to_width(
+    /// into the input area at `(target_row, target_col)` relative to
+    /// the prompt's first row.
+    fn move_from_painted_end_to(
         &self,
         stdout: &mut std::io::Stdout,
-        width: usize,
+        target_row: usize,
+        target_col: usize,
     ) -> Result<()> {
-        let (input_end_row, _) = self.visual_position(self.total_width());
+        let (input_end_row, _) = self.end_position();
         let total_end_row = input_end_row + self.painted_menu_rows;
-        let (target_row, target_col) = self.visual_position(width);
         queue!(stdout, MoveToColumn(0))?;
         if total_end_row > 0 {
             queue!(stdout, MoveUp(saturating_u16(total_end_row)))?;
@@ -802,40 +894,57 @@ impl LineEditor {
         Ok(())
     }
 
-    fn move_from_width_to_prompt_start(
-        &self,
-        stdout: &mut std::io::Stdout,
-        width: usize,
-    ) -> Result<()> {
-        let (row, _) = self.visual_position(width);
-        queue!(stdout, MoveToColumn(0))?;
-        if row > 0 {
-            queue!(stdout, MoveUp(saturating_u16(row)))?;
+    /// Visual (row, col) the cursor would land at if we wrote
+    /// `prompt + buffer[0..end]` from a fresh prompt-start position.
+    /// Walks the buffer one character at a time so explicit `\n` chars
+    /// produce hard row breaks (col = 0) and characters that would push
+    /// past `columns` get a soft-wrap row break.
+    fn position_at(&self, end: usize) -> (usize, usize) {
+        let mut row = 0usize;
+        let mut col = self.prompt_width;
+        for ch in self.buffer.iter().take(end) {
+            if *ch == '\n' {
+                row += 1;
+                col = 0;
+                continue;
+            }
+            let w = UnicodeWidthChar::width(*ch).unwrap_or(0);
+            if self.columns > 0 && col + w > self.columns {
+                row += 1;
+                col = 0;
+            }
+            col += w;
         }
-        Ok(())
+        (row, col)
     }
 
-    fn cursor_width(&self) -> usize {
-        self.prompt_width + self.buffer_width_until(self.cursor)
+    /// Position the user's cursor should sit at after a `redraw`.
+    fn cursor_position(&self) -> (usize, usize) {
+        self.position_at(self.cursor)
     }
 
-    fn total_width(&self) -> usize {
-        // Includes the ghost suffix so wrap-aware cursor positioning
-        // accounts for the full painted line, not just the user's
-        // committed text.
-        self.prompt_width + self.buffer_width_until(self.buffer.len()) + self.painted_ghost_width
+    /// Position just past the buffer's end + the ghost suffix. The ghost
+    /// renders on the same row the buffer ends in (it's a hint, not
+    /// committed text); only soft-wrap can push it down.
+    fn end_position(&self) -> (usize, usize) {
+        let (mut row, mut col) = self.position_at(self.buffer.len());
+        let ghost = self.painted_ghost_width;
+        if self.columns > 0 && col + ghost > self.columns {
+            row += ghost.div_ceil(self.columns.max(1));
+            col = ghost % self.columns;
+        } else {
+            col += ghost;
+        }
+        (row, col)
     }
 
+    #[cfg(test)]
     fn buffer_width_until(&self, end: usize) -> usize {
         self.buffer
             .iter()
             .take(end)
             .map(|ch| UnicodeWidthChar::width(*ch).unwrap_or(0))
             .sum()
-    }
-
-    fn visual_position(&self, width: usize) -> (usize, usize) {
-        (width / self.columns, width % self.columns)
     }
 }
 
@@ -863,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn editor_tracks_cursor_width_separately_from_buffer_end() {
+    fn editor_tracks_cursor_position_separately_from_buffer_end() {
         let mut editor = LineEditor::new(80, Vec::new());
         editor.insert('物');
         editor.insert('a');
@@ -871,25 +980,61 @@ mod tests {
         assert!(editor.move_left());
 
         assert_eq!(editor.input(), "物a品");
-        assert_eq!(
-            editor.cursor_width(),
-            UnicodeWidthStr::width(output::prompt_plain()) + 3
-        );
-        assert_eq!(
-            editor.total_width(),
-            UnicodeWidthStr::width(output::prompt_plain()) + 5
-        );
+        let prompt_w = UnicodeWidthStr::width(output::prompt_plain());
+        assert_eq!(editor.cursor_position(), (0, prompt_w + 3));
+        assert_eq!(editor.end_position(), (0, prompt_w + 5));
     }
 
     #[test]
     fn editor_maps_wrapped_columns_by_display_width() {
+        // Prompt eats `prompt_w` columns of row 0; with cols=10 the
+        // remaining 10 - prompt_w cells fit on row 0 before the cursor
+        // wraps. A 2-wide CJK character that would straddle the row
+        // boundary instead lands wholly on row 1 — terminals never
+        // split a wide cell across rows, and the math now agrees.
         let mut editor = LineEditor::new(10, Vec::new());
         editor.insert('a');
         editor.insert('物');
 
-        assert_eq!(editor.visual_position(editor.cursor_width()), (1, 1));
+        assert_eq!(editor.cursor_position(), (1, 2));
         editor.insert('品');
-        assert_eq!(editor.visual_position(editor.cursor_width()), (1, 3));
+        assert_eq!(editor.cursor_position(), (1, 4));
+    }
+
+    #[test]
+    fn insert_str_pastes_multi_line_block_as_one_buffer() {
+        let mut editor = LineEditor::new(80, Vec::new());
+        editor.insert_str("line 1\nline 2\nline 3");
+        // The paste lands as three logical rows, separated by `\n` in
+        // the buffer — Enter would dispatch all three lines together.
+        assert_eq!(editor.input(), "line 1\nline 2\nline 3");
+        assert_eq!(editor.cursor, editor.buffer.len());
+    }
+
+    #[test]
+    fn insert_str_normalises_crlf_from_windows_pastes() {
+        let mut editor = LineEditor::new(80, Vec::new());
+        editor.insert_str("a\r\nb\rc");
+        // \r\n collapses to \n; bare \r also becomes \n. So the buffer
+        // never carries platform-specific line-ending differences past
+        // this point.
+        assert_eq!(editor.input(), "a\nb\nc");
+    }
+
+    #[test]
+    fn insert_str_drops_control_chars_but_keeps_tabs() {
+        let mut editor = LineEditor::new(80, Vec::new());
+        editor.insert_str("ok\x07bell\tindent");
+        assert_eq!(editor.input(), "okbell\tindent");
+    }
+
+    #[test]
+    fn cursor_position_treats_newline_as_row_break() {
+        let mut editor = LineEditor::new(80, Vec::new());
+        editor.insert_str("abc\ndef");
+        // Cursor sits at the end of "def" on the second row, column 3.
+        // Without `\n` awareness the math would say (0, prompt_w + 7).
+        assert_eq!(editor.cursor_position(), (1, 3));
     }
 
     fn role_editor() -> LineEditor {
