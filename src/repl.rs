@@ -1340,21 +1340,40 @@ async fn handle_resume(
     selector: Option<&str>,
     project_root: &Path,
 ) {
-    let Some(selector) = selector.map(str::trim).filter(|s| !s.is_empty()) else {
-        print_room_sessions(project_root);
-        return;
-    };
-    let session = match sessions::resolve_room_session(project_root, selector) {
-        Ok(Some(session)) => session,
-        Ok(None) => {
-            output::bad(format!("no saved room session matches `{selector}`"));
-            print_room_sessions(project_root);
-            return;
-        }
-        Err(error) => {
-            output::bad(format!("reading room sessions failed: {error}"));
-            return;
-        }
+    let session = match selector.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(selector) => match sessions::resolve_room_session(project_root, selector) {
+            Ok(Some(session)) => session,
+            Ok(None) => {
+                output::bad(format!("no saved room session matches `{selector}`"));
+                print_room_sessions(project_root);
+                return;
+            }
+            Err(error) => {
+                output::bad(format!("reading room sessions failed: {error}"));
+                return;
+            }
+        },
+        None => match sessions::pick_room_session(project_root) {
+            Ok(Some(session)) => session,
+            Ok(None) => {
+                // Either no saved sessions or the user cancelled the
+                // picker. Print the list as a fallback only when there
+                // actually are sessions; otherwise stay quiet.
+                let has_any = sessions::list_room_sessions(project_root)
+                    .map(|sessions| !sessions.is_empty())
+                    .unwrap_or(false);
+                if has_any {
+                    output::hint("resume cancelled");
+                } else {
+                    output::hint("no saved room sessions yet");
+                }
+                return;
+            }
+            Err(error) => {
+                output::bad(format!("opening session picker failed: {error:#}"));
+                return;
+            }
+        },
     };
 
     output::system(format!("resuming CodeRoom session {}", session.id));

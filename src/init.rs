@@ -729,8 +729,14 @@ fn run_wizard(
     }
 }
 
+/// Raw-mode terminal wrapper for full-screen interactive pickers.
+///
+/// Used by `cr init`'s role/engine wizard *and* by the REPL `/resume`
+/// session picker. Owns the SIGINT/SIGTERM trap so a Ctrl-C while
+/// drawing leaves the terminal in a sane state (cooked mode + cursor
+/// visible) even if Drop didn't run.
 #[derive(Debug)]
-struct WizardTerminal {
+pub(crate) struct WizardTerminal {
     stdout: std::io::Stdout,
     raw_active: Arc<AtomicBool>,
     signal_handle: Option<SignalHandle>,
@@ -738,7 +744,7 @@ struct WizardTerminal {
 }
 
 impl WizardTerminal {
-    fn enter() -> Result<Self> {
+    pub(crate) fn enter() -> Result<Self> {
         let raw_active = Arc::new(AtomicBool::new(true));
         let mut signals = Signals::new([SIGINT, SIGTERM])?;
         let signal_handle = signals.handle();
@@ -771,7 +777,7 @@ impl WizardTerminal {
         })
     }
 
-    fn render(&mut self, body: &str) -> Result<()> {
+    pub(crate) fn render(&mut self, body: &str) -> Result<()> {
         // Raw mode disables ONLCR — bare `\n` only moves the cursor down,
         // it does NOT return to column 0. Picker bodies are built with
         // `writeln!` (LF only); without translation each row starts at
@@ -805,7 +811,7 @@ fn signal_exit_code(signal: i32) -> i32 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WizardKey {
+pub(crate) enum WizardKey {
     Up,
     Down,
     Left,
@@ -816,7 +822,7 @@ enum WizardKey {
     Abort,
 }
 
-fn read_key() -> Result<WizardKey> {
+pub(crate) fn read_key() -> Result<WizardKey> {
     loop {
         let event = event::read()?;
         if let Some(key) = wizard_key_from_event(&event) {

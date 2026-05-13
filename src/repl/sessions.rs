@@ -13,14 +13,19 @@
 //! `~/.claude/projects/<hash>/sessions/`) so they don't make sense
 //! across machines.
 
+use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use anyhow::Result as AnyResult;
+use crossterm::style::Stylize;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::config::CODEROOM_DIR;
+use crate::init::{read_key, WizardKey, WizardTerminal};
+use crate::output;
 
 /// Directory under a project's `.coderoom/` holding per-role session
 /// ids. Created on demand by [`write_session_id`]. The default
@@ -291,6 +296,86 @@ pub(super) fn resolve_room_session(
     }
 }
 
+/// Full-screen arrow-key picker over saved room sessions. Returns
+/// `Ok(Some(session))` when the user picks one, `Ok(None)` when they
+/// cancel (Esc / Ctrl-C) or no sessions exist. Drives the bare
+/// `/resume` flow in the REPL; callers with an explicit selector
+/// still go through [`resolve_room_session`] instead.
+pub(super) fn pick_room_session(project_root: &Path) -> AnyResult<Option<RoomSession>> {
+    let sessions = list_room_sessions(project_root)?;
+    if sessions.is_empty() {
+        return Ok(None);
+    }
+    let current = read_current_room_id(project_root)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let mut cursor = sessions
+        .iter()
+        .position(|session| session.id == current)
+        .unwrap_or(0);
+    let mut terminal = WizardTerminal::enter()?;
+    loop {
+        terminal.render(&render_session_picker(&sessions, &current, cursor))?;
+        match read_key()? {
+            WizardKey::Abort | WizardKey::Back => return Ok(None),
+            WizardKey::Up => cursor = cursor.saturating_sub(1),
+            WizardKey::Down => {
+                if cursor + 1 < sessions.len() {
+                    cursor += 1;
+                }
+            }
+            WizardKey::Enter => return Ok(Some(sessions[cursor].clone())),
+            WizardKey::Left | WizardKey::Right | WizardKey::Toggle => {}
+        }
+    }
+}
+
+/// Renderable picker body. Pure function for snapshot testing; the
+/// real picker re-paints this on every keypress.
+pub(super) fn render_session_picker(
+    sessions: &[RoomSession],
+    current: &str,
+    cursor: usize,
+) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{}",
+        "Resume which CodeRoom session?".with(output::TEXT).bold()
+    );
+    let _ = writeln!(
+        out,
+        "{}",
+        "  ↑↓ moves · enter selects · esc cancels".with(output::DIM)
+    );
+    let _ = writeln!(out);
+    for (index, session) in sessions.iter().enumerate() {
+        let cursor_glyph = if index == cursor { "> " } else { "  " };
+        let marker = if session.id == current {
+            "(current)"
+        } else {
+            ""
+        };
+        let role_count = session.role_sessions.len();
+        let role_word = if role_count == 1 {
+            "session"
+        } else {
+            "sessions"
+        };
+        let plain = format!(
+            "{cursor_glyph}{}  updated {}  {role_count} role {role_word}  {marker}",
+            session.id, session.updated_at,
+        );
+        if index == cursor {
+            let _ = writeln!(out, "{}", plain.with(output::EM));
+        } else {
+            let _ = writeln!(out, "{plain}");
+        }
+    }
+    out
+}
+
 pub(super) fn activate_room_session(project_root: &Path, session: &RoomSession) -> io::Result<()> {
     clear_all(project_root)?;
     for (role, session_id) in &session.role_sessions {
@@ -412,6 +497,48 @@ mod tests {
             updated.role_sessions.get("qa").map(String::as_str),
             Some("thread-1")
         );
+    }
+
+    #[test]
+    fn picker_renders_cursor_glyph_on_active_row() {
+        let sessions = vec![
+            RoomSession {
+                id: "room-aaa".into(),
+                created_at: "2026-05-13T16:00:00Z".into(),
+                updated_at: "2026-05-13T17:00:00Z".into(),
+                role_sessions: BTreeMap::from([("host".into(), "h1".into())]),
+            },
+            RoomSession {
+                id: "room-bbb".into(),
+                created_at: "2026-05-13T15:00:00Z".into(),
+                updated_at: "2026-05-13T16:00:00Z".into(),
+                role_sessions: BTreeMap::from([
+                    ("host".into(), "h2".into()),
+                    ("qa".into(), "q2".into()),
+                ]),
+            },
+        ];
+
+        let body = render_session_picker(&sessions, "room-bbb", 1);
+        // Cursor row is index 1 → only that row carries the "> " glyph.
+        let first_row = body.lines().nth(3).expect("first session row");
+        let second_row = body.lines().nth(4).expect("second session row");
+        assert!(
+            first_row.contains("  room-aaa"),
+            "non-cursor row should start with indent, got {first_row:?}"
+        );
+        assert!(
+            second_row.contains("> room-bbb"),
+            "cursor row should carry the > glyph, got {second_row:?}"
+        );
+        // Current session marker travels with the row, not the cursor.
+        assert!(
+            second_row.contains("(current)"),
+            "current marker missing from {second_row:?}"
+        );
+        // Plural-aware role-count copy.
+        assert!(first_row.contains("1 role session"));
+        assert!(second_row.contains("2 role sessions"));
     }
 
     #[test]
