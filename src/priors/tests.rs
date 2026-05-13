@@ -400,3 +400,86 @@ fn compose_includes_recent_journal_section() {
     assert!(composed.contains("Source: .coderoom/journal/YYYY-MM-DD/backend.md"));
     assert!(composed.contains("JOURNAL_TODAY"));
 }
+
+#[test]
+fn compose_for_expands_pointer_tokens_with_repo_content() {
+    use std::process::Command;
+    let tmp = TempDir::new().unwrap();
+    // Build a real git repo at tmp/ with a tracked source file, then
+    // put `.coderoom/` inside it so `compose_for`'s parent-of-
+    // coderoom-dir trick lands at the repo root.
+    Command::new("git")
+        .arg("-C")
+        .arg(tmp.path())
+        .args(["init", "--quiet", "--initial-branch=main"])
+        .output()
+        .unwrap();
+    for cfg in [
+        ["config", "user.email", "t@t"],
+        ["config", "user.name", "t"],
+    ] {
+        Command::new("git")
+            .arg("-C")
+            .arg(tmp.path())
+            .args(cfg)
+            .output()
+            .unwrap();
+    }
+    fs::write(tmp.path().join("watched.rs"), "fn live() {}\nfn old() {}\n").unwrap();
+    Command::new("git")
+        .arg("-C")
+        .arg(tmp.path())
+        .args(["add", "watched.rs"])
+        .output()
+        .unwrap();
+    Command::new("git")
+        .arg("-C")
+        .arg(tmp.path())
+        .args(["commit", "--quiet", "-m", "init"])
+        .output()
+        .unwrap();
+
+    // priors text contains a pointer to a real line in the tracked
+    // file. Use HEAD-tracking (no SHA) — the `#L1` line anchor
+    // satisfies the "at least one anchor signal" grammar requirement
+    // without us having to hard-code the commit id in the fixture.
+    let coderoom = tmp.path().join(CODEROOM_DIR);
+    fs::create_dir_all(coderoom.join(ROLES_DIR)).unwrap();
+    fs::write(
+        coderoom.join(ROLES_DIR).join("backend.md"),
+        "Watch:\n[[watched.rs#L1]]\n",
+    )
+    .unwrap();
+
+    let composed = compose_for(&coderoom, "backend").unwrap();
+    // The pointer expanded to a code block carrying line 1's content.
+    assert!(composed.contains("fn live()"));
+    // The freshness annotation surfaces so the model knows what state
+    // it's looking at.
+    assert!(composed.contains("**watched.rs#L1"));
+}
+
+#[test]
+fn compose_for_surfaces_unresolvable_pointer_inline() {
+    let tmp = TempDir::new().unwrap();
+    // Note: NOT a git repo. The pointer references an absolute SHA,
+    // so `git rev-parse` will fail. The composed prompt must still
+    // succeed and inline a visible warning — silently dropping the
+    // pointer would defeat the priors-author's intent of "this
+    // matters" without telling the model anything was missing.
+    let coderoom = tmp.path().join(CODEROOM_DIR);
+    fs::create_dir_all(coderoom.join(ROLES_DIR)).unwrap();
+    fs::write(
+        coderoom.join(ROLES_DIR).join("backend.md"),
+        "Reference:\n[[gone.rs@deadbeef]]\n",
+    )
+    .unwrap();
+
+    let composed = compose_for(&coderoom, "backend").unwrap();
+    // The pointer's status surfaces in the composed prompt so the
+    // model sees "this reference didn't resolve" rather than silent
+    // gap. The exact reason wording is implementation detail; we
+    // assert on the unresolvable marker.
+    assert!(composed.contains("unresolvable"));
+    assert!(composed.contains("**gone.rs"));
+}

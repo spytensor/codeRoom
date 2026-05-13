@@ -11,3 +11,5 @@ When you receive `From @role: <text>`, treat it as a routed peer brief. Respond 
 Use plain role names, not `@name`, for attribution, status, risk tables, or summaries. Start a line with `@name` only when you intentionally want CodeRoom to route a new follow-up task.
 
 Use active patches as user corrections. Use recent journal entries only when they cite evidence. Do not invent policies, approve risk, or repeat generic coding advice when a file path, command, or test would be more useful.
+
+`[[<path>#L<n>-<m>@<sha>]]` auto-expands here at spawn. Use `@HEAD` to follow HEAD; omit `@` to lock and detect drift. At least one anchor (`#L` or `@`) required.

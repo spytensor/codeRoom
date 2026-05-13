@@ -105,6 +105,16 @@ enum Cmd {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// List every git-backed pointer the role's priors reference, with
+    /// resolution status (fresh / stale / unresolvable). Useful for
+    /// spotting which anchors fell behind HEAD before re-prompting.
+    Pointers {
+        /// Role name. Leading `@` is accepted.
+        role: String,
+        /// Project root. Defaults to the current working directory.
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
     /// Inspect or edit the layered config (user / project / .local).
     Config {
         #[command(subcommand)]
@@ -390,6 +400,11 @@ fn main() -> Result<()> {
                 coderoom::priors::compact_role(&root.join(coderoom::config::CODEROOM_DIR), role)?;
             println!("compacted @{role} history into {}", path.display());
             Ok(())
+        }
+        Some(Cmd::Pointers { role, project }) => {
+            let root = project_root_or_cwd(project)?;
+            let role = role.strip_prefix('@').unwrap_or(&role);
+            coderoom::pointers::print_role_pointers(&root, role)
         }
         Some(Cmd::Cost { project, since }) => {
             let runtime = tokio::runtime::Builder::new_multi_thread()

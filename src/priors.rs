@@ -94,16 +94,25 @@ pub fn compose_for(coderoom_dir: &Path, role_name: &str) -> Result<String> {
     let mut out = String::new();
     append_section(&mut out, KERNEL_PROTOCOL);
 
+    // Repo root for pointer resolution: `.coderoom/` lives at the
+    // project root, so the parent dir is what `git -C` should target.
+    // When `.coderoom/` is at filesystem root (silly but possible in
+    // tests), default to `.` so git just looks at the working tree.
+    let repo_root = coderoom_dir
+        .parent()
+        .map_or_else(|| Path::new(".").to_path_buf(), Path::to_path_buf);
+
     let shared = coderoom_dir.join(SHARED_FILE);
     if shared.is_file() {
         let content = std::fs::read_to_string(&shared)
             .with_context(|| format!("reading {}", shared.display()))?;
         if !content.trim().is_empty() {
+            let expanded = crate::pointers::expand_text(content.trim_end(), &repo_root);
             append_sourced_section(
                 &mut out,
                 "Project shared priors",
                 ".coderoom/shared.md",
-                content.trim_end(),
+                expanded.trim_end(),
             );
         }
     }
@@ -115,11 +124,12 @@ pub fn compose_for(coderoom_dir: &Path, role_name: &str) -> Result<String> {
             role_path.display()
         )
     })?;
+    let expanded_role = crate::pointers::expand_text(role_content.trim_end(), &repo_root);
     append_sourced_section(
         &mut out,
         "Role priors",
         &format!(".coderoom/roles/{role_name}.md"),
-        role_content.trim_end(),
+        expanded_role.trim_end(),
     );
 
     let roster = team_roster(coderoom_dir, role_name)?;

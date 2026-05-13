@@ -416,7 +416,7 @@ fn expansion_uses_codex_for_security_when_no_default_model_can_leak() {
 #[test]
 fn default_priors_templates_stay_compact() {
     assert!(word_count(DEFAULT_HOST_PRIORS) <= 160);
-    assert!(word_count(DEFAULT_ROLE_TEMPLATE) <= 180);
+    assert!(word_count(DEFAULT_ROLE_TEMPLATE) <= 200);
     assert!(word_count(DEFAULT_SHARED_PRIORS) <= 80);
     for forbidden in ["@name", "From @", "/patch", "/journal", "cr-task"] {
         assert!(

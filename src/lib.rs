@@ -22,6 +22,7 @@ pub mod image_paths;
 pub mod init;
 pub mod output;
 pub mod permissions;
+pub mod pointers;
 pub mod priors;
 pub mod prompt_cmd;
 pub mod repl;
