@@ -333,6 +333,60 @@ fn shell_quote(path: &Path) -> String {
 ///
 /// `pub(crate)` so sibling adapters (codex, gemini) can reuse the same
 /// fingerprint format and produce comparable `priors_hash` values.
+/// Build the stream-json `{"type":"user", message:{...}}` envelope cc
+/// expects on stdin. Scans `text` for `@./` / `@/` / `~/` image refs
+/// and appends `{"type":"image","source":{"type":"base64",...}}`
+/// content blocks after the text block — order preserved so the
+/// model reads "user said X, here are the images" coherently.
+///
+/// Path validation happened at REPL pre-flight time
+/// (`crate::image_paths::parse_image_refs` in `src/repl.rs`). If a
+/// path re-resolves to missing or unreadable here (rare race between
+/// validation and adapter dispatch), we drop the image block and let
+/// the model see the text-only request; logging via `tracing::warn`
+/// flags the discrepancy without breaking the turn.
+fn build_user_envelope(role: &str, text: &str) -> serde_json::Value {
+    let mut content = vec![serde_json::json!({"type": "text", "text": text})];
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let home = dirs::home_dir();
+    match crate::image_paths::parse_image_refs(text, &cwd, home.as_deref()) {
+        Ok(refs) => {
+            for image in refs {
+                match crate::image_paths::read_and_encode(&image) {
+                    Ok(data_b64) => {
+                        content.push(serde_json::json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": image.media_type,
+                                "data": data_b64,
+                            },
+                        }));
+                    }
+                    Err(error) => {
+                        warn!(role, path = %image.abs_path.display(), %error,
+                            "could not read validated image after REPL pre-flight; skipping");
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            // Shouldn't fire — REPL pre-flight already validated. If
+            // it does (e.g. user pasted a previously-removed path),
+            // warn and fall back to text-only so the turn still goes
+            // through with what we have.
+            warn!(role, %error, "image refs re-validation failed in cc adapter; sending text only");
+        }
+    }
+    serde_json::json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": content,
+        },
+    })
+}
+
 pub(crate) fn fingerprint(content: &str) -> String {
     let mut hasher = DefaultHasher::new();
     content.hash(&mut hasher);
@@ -679,13 +733,7 @@ async fn write_stdin<W>(
     while let Some(msg) = rx.recv().await {
         match msg {
             UserMessage::Prompt(text) => {
-                let envelope = serde_json::json!({
-                    "type": "user",
-                    "message": {
-                        "role": "user",
-                        "content": [{"type": "text", "text": text}],
-                    },
-                });
+                let envelope = build_user_envelope(&role, &text);
                 let line = format!("{envelope}\n");
                 if let Err(error) = stdin.write_all(line.as_bytes()).await {
                     warn!(role, %error, "failed to write prompt to stdin; closing");

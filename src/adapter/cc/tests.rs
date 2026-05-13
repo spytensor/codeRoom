@@ -396,3 +396,43 @@ fn truncate_over_limit_appends_ellipsis() {
     assert_eq!(out.chars().count(), 8);
     assert!(out.ends_with('…'));
 }
+
+#[test]
+fn build_user_envelope_text_only_when_no_paths() {
+    let env = build_user_envelope("host", "no images here, just words");
+    let content = env["message"]["content"].as_array().unwrap();
+    assert_eq!(content.len(), 1);
+    assert_eq!(content[0]["type"], "text");
+}
+
+#[test]
+fn build_user_envelope_appends_image_block_after_text() {
+    use std::fs;
+    use tempfile::TempDir;
+    let tmp = TempDir::new().unwrap();
+    // Move into the tempdir so the relative `@./img.png` token in the
+    // prompt resolves correctly — `build_user_envelope` uses the
+    // process CWD, matching the REPL pre-flight's behavior.
+    let original = std::env::current_dir().unwrap();
+    fs::write(
+        tmp.path().join("img.png"),
+        [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+    )
+    .unwrap();
+    std::env::set_current_dir(tmp.path()).unwrap();
+
+    let env = build_user_envelope("host", "look at @./img.png please");
+
+    // Restore CWD before any assert can panic so other tests aren't
+    // affected by a leak.
+    std::env::set_current_dir(&original).unwrap();
+
+    let content = env["message"]["content"].as_array().unwrap();
+    assert_eq!(content.len(), 2);
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[0]["text"], "look at @./img.png please");
+    assert_eq!(content[1]["type"], "image");
+    assert_eq!(content[1]["source"]["type"], "base64");
+    assert_eq!(content[1]["source"]["media_type"], "image/png");
+    assert!(!content[1]["source"]["data"].as_str().unwrap().is_empty());
+}

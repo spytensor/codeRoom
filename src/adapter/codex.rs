@@ -1206,6 +1206,7 @@ async fn write_loop(
         let UserMessage::Prompt(prompt) = msg else {
             continue;
         };
+        let prompt = degrade_image_refs_for_codex(&prompt);
         let params = codex_tool_call_params(
             &prompt,
             &priors_text,
@@ -1345,6 +1346,60 @@ fn turn_interrupted_event(role: &str, partial_text: &str) -> CrepEvent {
         },
         partial_mentions,
     }
+}
+
+/// Rewrite a prompt that contains `@./img.png` image references into
+/// a codex-safe string. Codex's MCP `tools/call` schema accepts only
+/// `prompt: String` — there's no image content channel. If we forwarded
+/// the text as-is, codex would either ignore the `@<path>` tokens or
+/// be tempted to treat them as tool inputs without understanding why.
+///
+/// The fix: detect image refs, prepend an explicit disclosure at the
+/// top of the prompt naming each path, and strip the `@<path>` tokens
+/// from the user-facing body so the model isn't confused by a syntax
+/// it has no protocol for. The model then knows (a) images were
+/// intended, (b) which files on disk, and (c) that it can `view_image`
+/// or `read_file` them via its own sandbox tools if helpful.
+///
+/// Pre-1.0 caveat: a follow-up upstream change to codex's MCP schema
+/// (e.g. an `images: Vec<String>` parameter) would let this be a
+/// proper attachment instead of a disclosure. Tracked in
+/// `docs/proposed-amendments.md` (codex multimodal parity).
+fn degrade_image_refs_for_codex(text: &str) -> String {
+    let tokens = crate::image_paths::extract_path_tokens(text);
+    if tokens.is_empty() {
+        return text.to_owned();
+    }
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let home = dirs::home_dir();
+    let abs_paths: Vec<String> = tokens
+        .iter()
+        .map(|raw| {
+            let p = if let Some(rest) = raw.strip_prefix("~/") {
+                home.as_deref()
+                    .map_or_else(|| std::path::PathBuf::from(raw), |h| h.join(rest))
+            } else if raw.starts_with('/') {
+                std::path::PathBuf::from(raw)
+            } else {
+                cwd.join(raw)
+            };
+            p.display().to_string()
+        })
+        .collect();
+    let mut stripped = text.to_owned();
+    for raw in &tokens {
+        let needle = format!("@{raw}");
+        stripped = stripped.replace(&needle, "");
+    }
+    let stripped = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
+    let note_paths = abs_paths.join(", ");
+    let count = tokens.len();
+    let image_word = if count == 1 { "image" } else { "images" };
+    format!(
+        "[note: this turn referenced {count} {image_word} on disk at: {note_paths}. \
+         codex via MCP cannot view images directly; \
+         use view_image or read the file with a tool if you need its contents.]\n\n{stripped}"
+    )
 }
 
 fn codex_tool_call_params(
@@ -2178,5 +2233,36 @@ mod tests {
         // Trailing newline so codex's line-delimited reader sees a
         // complete JSON-RPC frame.
         assert!(line.ends_with('\n'));
+    }
+
+    #[test]
+    fn degrade_image_refs_passes_text_through_when_no_paths() {
+        let out = degrade_image_refs_for_codex("just words, no images");
+        assert_eq!(out, "just words, no images");
+    }
+
+    #[test]
+    fn degrade_image_refs_prepends_disclosure_and_strips_tokens() {
+        let out = degrade_image_refs_for_codex("look at @/tmp/x.png please");
+        // Tokens are stripped from the body so codex doesn't try to
+        // interpret `@<path>` as a syntax it has no protocol for.
+        assert!(!out.contains("@/tmp/x.png"));
+        // The disclosure names the absolute path so the model can
+        // still reach the file via its own sandbox tools if needed.
+        assert!(out.contains("/tmp/x.png"));
+        // Disclosure leads the prompt — model reads "I can't see
+        // images" before the actual request.
+        assert!(out.starts_with("[note:"));
+        // The intent body survives, just without the path token.
+        assert!(out.contains("look at"));
+        assert!(out.contains("please"));
+    }
+
+    #[test]
+    fn degrade_image_refs_pluralises_correctly() {
+        let single = degrade_image_refs_for_codex("@/a.png");
+        assert!(single.contains("1 image"));
+        let multi = degrade_image_refs_for_codex("@/a.png @/b.jpg");
+        assert!(multi.contains("2 images"));
     }
 }

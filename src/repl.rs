@@ -652,6 +652,19 @@ async fn send_and_drain(
     host_role: &str,
     last_ctrl_c: &Arc<Mutex<Option<std::time::Instant>>>,
 ) -> Result<()> {
+    // Pre-flight: validate any `@./img.png` style image refs the user
+    // typed. Missing files, oversized images, or unsupported formats
+    // are caught here so the user doesn't burn an API turn on a
+    // request that adapters can't fulfil. Only the user-typed prompt
+    // is validated; auto-routed follow-up briefs are constructed by
+    // CodeRoom itself and don't carry raw image refs.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let home = dirs::home_dir();
+    if let Err(error) = crate::image_paths::parse_image_refs(text, &cwd, home.as_deref()) {
+        output::bad(format!("image: {error}"));
+        return Ok(());
+    }
+
     // Worklist of pending turns. The initial entry is the user's
     // direct dispatch; auto-routed follow-ups are appended below.
     let mut queue: VecDeque<(String, String)> = VecDeque::new();
