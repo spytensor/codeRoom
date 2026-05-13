@@ -40,7 +40,11 @@ echo "sandbox: $SANDBOX"
 echo
 
 # Run with a 10s timeout — handshake should be near-instant.
-timeout 10 codex mcp-server < "$INPUT" > "$OUTPUT" 2> "$SANDBOX/stderr.log" || ec=$?
+# Portable timeout: GNU coreutils' `timeout` ships on Linux but not on a
+# default macOS install. `perl -e 'alarm shift; exec @ARGV'` is on every
+# macOS/Linux box, and SIGALRM transfers to the exec'd child so the child
+# is the one that dies on timeout. Exit 142 (128 + SIGALRM) = timed out.
+perl -e 'alarm shift; exec @ARGV' 10 codex mcp-server < "$INPUT" > "$OUTPUT" 2> "$SANDBOX/stderr.log" || ec=$?
 ec=${ec:-0}
 
 echo "exit code: $ec"
