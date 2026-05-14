@@ -746,20 +746,57 @@ mod tests {
         assert_eq!(ptrs[0].path, PathBuf::from("src/foo.rs"));
     }
 
+    /// Path two `TempDir`s end up being siblings (e.g.
+    /// `/tmp/.tmpAAA` and `/tmp/.tmpBBB`), and a relative path from
+    /// one to the other walks up the shared parent. Compute that
+    /// relative path so the path-traversal tests don't rely on
+    /// platform-specific files like `/etc/hostname` (which exists on
+    /// Linux but not on macOS — caught by CI).
+    fn relative_escape_path(from: &Path, to: &Path) -> PathBuf {
+        // Both TempDir paths share `std::env::temp_dir()` as their
+        // parent on Unix and Windows; we don't need a general-purpose
+        // path-diff — just `..` plus the target's last component.
+        let from = from.canonicalize().unwrap();
+        let to = to.canonicalize().unwrap();
+        let common = from
+            .parent()
+            .filter(|p| to.starts_with(p))
+            .unwrap_or_else(|| panic!("temp dirs don't share a parent: {from:?} vs {to:?}"));
+        let mut rel = PathBuf::new();
+        let from_remainder = from.strip_prefix(common).unwrap();
+        for _ in from_remainder.components() {
+            rel.push("..");
+        }
+        rel.push(to.strip_prefix(common).unwrap());
+        rel
+    }
+
     #[test]
     fn read_at_rejects_path_traversal_in_head_tracking_branch() {
-        let tmp = TempDir::new().unwrap();
-        init_git_repo(tmp.path());
-        commit_file(tmp.path(), "f.rs", "x\n", "init");
-        // Build a pointer that escapes the repo via `..`. The SHA-
-        // bound branch is gated by git itself; the HEAD-tracking
-        // branch needs our own containment check.
+        // Create a file in a *separate* tmpdir so the "escape target"
+        // is guaranteed to exist on both Linux and macOS. The earlier
+        // version pointed at `/etc/hostname`, which doesn't exist on
+        // macOS — canonicalize failed before the containment check
+        // could fire, so the test asserted the wrong branch.
+        let outside = TempDir::new().unwrap();
+        let outside_secret = outside.path().join("secret.txt");
+        fs::write(&outside_secret, "exfiltrate me\n").unwrap();
+
+        let repo = TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        commit_file(repo.path(), "f.rs", "x\n", "init");
+
+        // Relative path from inside the repo to the outside secret —
+        // walks `..` past the repo root then back down. The pointer
+        // path is relative on purpose: it's the most common shape a
+        // priors file would carry.
+        let escape = relative_escape_path(repo.path(), &outside_secret);
         let p = Pointer {
-            path: PathBuf::from("../../../../etc/hostname"),
+            path: escape,
             line_range: None,
             locked_sha: None,
         };
-        let r = resolve(&p, tmp.path());
+        let r = resolve(&p, repo.path());
         // The typed `PathEscapesRepo` reason flows out, not a generic
         // string — downstream UX can route on the variant.
         assert!(
@@ -775,15 +812,22 @@ mod tests {
 
     #[test]
     fn read_at_rejects_absolute_path_in_head_tracking_branch() {
-        let tmp = TempDir::new().unwrap();
-        init_git_repo(tmp.path());
-        commit_file(tmp.path(), "f.rs", "x\n", "init");
+        // Same fix as the relative-path test: use a tmpfile we control
+        // so the target exists on every platform CI runs on.
+        let outside = TempDir::new().unwrap();
+        let outside_secret = outside.path().join("secret.txt");
+        fs::write(&outside_secret, "exfiltrate me\n").unwrap();
+
+        let repo = TempDir::new().unwrap();
+        init_git_repo(repo.path());
+        commit_file(repo.path(), "f.rs", "x\n", "init");
+
         let p = Pointer {
-            path: PathBuf::from("/etc/hostname"),
+            path: outside_secret.canonicalize().unwrap(),
             line_range: None,
             locked_sha: None,
         };
-        let r = resolve(&p, tmp.path());
+        let r = resolve(&p, repo.path());
         assert!(matches!(
             r.status,
             PointerStatus::Unresolvable(UnresolvableReason::PathEscapesRepo { .. })

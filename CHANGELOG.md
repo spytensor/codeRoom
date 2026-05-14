@@ -7,9 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-05-14
+
+### Added
+
+- **Git-backed pointers in role priors (#141).** A new `[[<path>#L<n>-<m>@<sha>]]`
+  token grammar inside any role's `.md` priors auto-expands to fresh git
+  content when the role spawns. A locked SHA that has fallen behind HEAD
+  surfaces as stale; the working-tree content stays faithful to the locked
+  SHA so the priors author's intent isn't silently rewritten. `cr pointers
+  @<role>` lists every pointer with `fresh`/`stale`/`unresolvable` status.
+  Foundation for the v0.5 evolution layer — Contracts / Inbox / Evolution
+  all build on "facts have provenance" and "facts can become stale."
+  Security: HEAD-tracking pointers are containment-checked against the repo
+  root, so `[[../../etc/passwd@HEAD]]` cannot read outside the project.
+  Unanchored `[[bare-word]]` tokens are rejected at parse time.
+- **Local image input via `@<path>` references (#140).** Any prompt
+  containing `@./img.png`, `@/abs/path.jpg`, or `@~/file.gif` is parsed
+  for image references and routed per-engine: `cc` reads the bytes,
+  base64-encodes, and appends `{type:"image", source:{type:"base64", ...}}`
+  content blocks alongside the text. `gemini` passes through (the CLI
+  resolves `@<path>` itself via its own `read_file` tool turn). `codex`
+  degrades — MCP `tools/call` has no image channel, so the wrapper
+  strips the path tokens and prepends an explicit disclosure naming the
+  absolute paths so the model knows images were intended and can use its
+  own sandbox tools to read them. Combined with bracketed paste, **drag-
+  drop of an image into a modern terminal Just Works**: the terminal
+  pastes the file path, the wrapper validates and forwards. REPL pre-
+  flight rejects missing files, unsupported formats (png/jpg/jpeg/gif/
+  webp), oversize (>20 MB), and too-many (>5 per turn) with a visible
+  error before any API token is spent.
+- **Bracketed paste + multi-line buffer (#139).** Pasting a stack trace,
+  code block, JSON, or any multi-line snippet used to dispatch each line
+  as its own prompt — the terminal synthesised per-line Enter events and
+  the input loop submitted on every one. The `RawModeGuard` now toggles
+  `EnableBracketedPaste`/`DisableBracketedPaste` so clipboard payloads
+  arrive as one `Event::Paste(String)`. `LineEditor::insert_str` lands the
+  whole block atomically, normalising CRLF/CR to LF and dropping non-Tab
+  control chars. **Shift+Enter** (and Alt+Enter where terminals swallow
+  SHIFT) inserts a soft newline so users can compose multi-line prompts
+  by hand. Plain Enter still submits, with embedded newlines preserved
+  end-to-end — matches Claude Code / Codex / Gemini conventions.
+- **Interactive `/resume` picker (#138).** Bare `/resume` opens an arrow-
+  key selector over saved CodeRoom session rooms instead of dumping the
+  list and forcing the user to retype `/resume <number|id|prefix|latest>`.
+  Cursor lands on the current room; Enter resolves; Esc cancels with a
+  one-line `resume cancelled` hint. `/resume <selector>` is unchanged.
+
+### Changed
+
+- **Per-role permission mode shown on the boot dashboard (#136).** Each
+  role row now ends with `· <mode>`, coloured by who actually gates tool
+  calls: `MUTE` when CodeRoom intercepts (engine = cc and mode ≠ bypass),
+  `WARN` otherwise. The default `@security → codex` row reads `codex ·
+  default · bypass` in warn colour so the user can see at a glance that
+  diff review is on them, not on a hook — addresses the previous failure
+  mode where the dashboard implied uniform CodeRoom-side approval.
+- **Host synthesis duty reframed (#136).** The default `host.md` priors
+  rule was "synthesize peer replies into one answer" — too universal, so
+  `@host` re-spoke even when the specialist had already given a complete
+  structured reply. New rule: synthesize by default, but skip the
+  synthesis turn when the peer's reply already answers the user fully.
+- **Auto-routing distinguishes delegation from attribution.** Role
+  reports can mention peers in prose, risk tables, quotes, code blocks,
+  and pasted transcript snippets without spawning follow-up turns. The
+  router only dispatches explicit delegation blocks that begin at
+  physical line start (or a line-start Markdown list marker) with
+  `@role`, and each target receives that block instead of the parent
+  role's whole reply.
+
 ### Removed
 
-- **Per-role budget cap (`budget_per_role_usd`).** The day-1
+- **Per-role budget cap `budget_per_role_usd` (#135).** The day-1
   `--max-budget-usd` plumbing was a silent failure mode: when the cap
   was hit, Claude Code returned an empty `result` envelope which the
   adapter rendered as a successful zero-step turn. Users saw "done · 0s
@@ -22,15 +91,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   surfaced in the WorkCard, and any platform-side quota. **Migration:**
   remove `budget_per_role_usd` from any `.coderoom/config.toml` and
   user-level config; the field is no longer accepted.
+- **Status / Roadmap section dropped from README (#137).** Pre-1.0 the
+  "(shipped)" rows duplicated this CHANGELOG and the "v0.x" rows
+  promised scope this project hasn't committed to. The constitutional
+  doc links moved to a dedicated `## Design docs` section.
 
-### Fixed
+### Notes
 
-- **Auto-routing now distinguishes delegation from attribution.** Role
-  reports can mention peers in prose, risk tables, quotes, code blocks,
-  and pasted transcript snippets without spawning follow-up turns. The
-  router only dispatches explicit delegation blocks that begin at physical
-  line start (or a line-start Markdown list marker) with `@role`, and each
-  target receives that block instead of the parent role's whole reply.
+- **Anthropic billing change effective 2026-06-15.** Anthropic
+  [reclassified `claude -p` / Claude Agent SDK / Claude Code GitHub
+  Actions](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
+  as programmatic usage that draws from a separate, smaller monthly
+  credit pool (Pro: $20, Max 5x: $100, Max 20x: $200, non-rollover).
+  Because every CodeRoom role subprocess uses `claude --print`, **all
+  CodeRoom multi-role usage on a Claude subscription counts against this
+  pool**. When the credit runs out, requests either stop (default) or
+  spill to API pay-as-you-go (if "extra usage" is enabled on the
+  account). CodeRoom is unchanged — it assumes the user supplies an
+  authenticated, working CLI — but heavy multi-role users on Pro should
+  consider Max or `ANTHROPIC_API_KEY` before 2026-06-15.
 
 ## [0.4.1] - 2026-05-11
 

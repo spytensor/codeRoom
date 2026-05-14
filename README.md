@@ -143,6 +143,26 @@ sudo cp target/release/cr /usr/local/bin/
 
 </details>
 
+## Engine CLIs you bring
+
+CodeRoom never ships credentials and never calls the Anthropic / OpenAI /
+Google APIs directly. It drives whatever `claude`, `codex`, and `gemini`
+binaries are already on your `PATH`, using whichever auth (subscription,
+Console, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) you've configured
+for them. If `cr start` says it can't find an engine, install / log into
+that engine's own CLI and try again.
+
+> **Heads-up — Anthropic billing change effective 2026-06-15.** Anthropic
+> [reclassified `claude -p` and the Claude Agent SDK](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
+> as programmatic usage drawing from a separate monthly credit pool: $20
+> on Pro, $100 on Max 5x, $200 on Max 20x (non-rollover). CodeRoom uses
+> `claude --print` for every role subprocess, so all CodeRoom multi-role
+> sessions on a subscription count against that pool. When it runs out,
+> requests stop by default (or spill to API rates if you've enabled
+> "extra usage"). CodeRoom itself is unchanged — but if you run heavy
+> multi-role workloads on Pro, consider Max 5x+ or `ANTHROPIC_API_KEY`
+> before June 15.
+
 ## Quickstart
 
 ```bash
