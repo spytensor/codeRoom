@@ -192,6 +192,10 @@ Useful commands:
 - `cr show [--role backend] [--tail 20] [--since YYYY-MM-DD]`, `cr cost`,
   `cr compact <role>`, `cr config get/set`, and `cr update` handle inspection,
   spend tracking, priors compaction, layered config, and package upgrades.
+- `cr pointers @<role>` lists every `[[<path>#L<n>-<m>@<sha>]]` token in
+  the role's priors with its current resolution status (fresh / stale /
+  unresolvable). Pointers in priors auto-expand to fresh git content at
+  role spawn so anchors don't rot; see `cr pointers --help` for the grammar.
 - Live turns fold internal tool traces into one activity summary; `cr show`
   replays the full event log when you need to audit what happened. Set
   `CODEROOM_VERBOSE_TOOLS=1` to opt the live REPL back into the full

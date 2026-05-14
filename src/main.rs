@@ -13,7 +13,7 @@
 //! - `cr cost [--since YYYY-MM-DD]` — summarize reported engine spend
 
 use std::io::{IsTerminal, Write as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -106,8 +106,29 @@ enum Cmd {
         project: Option<PathBuf>,
     },
     /// List every git-backed pointer the role's priors reference, with
-    /// resolution status (fresh / stale / unresolvable). Useful for
-    /// spotting which anchors fell behind HEAD before re-prompting.
+    /// resolution status (fresh / stale / unresolvable).
+    #[command(long_about = "\
+List every `[[…]]` pointer in the role's priors file with its current \
+resolution status. Useful for spotting which anchors fell behind HEAD \
+before re-prompting.
+
+Token grammar (write these inside a role's .md file):
+
+  [[<path>#L<n>-<m>@<sha>]]   locked to a commit, line range
+  [[<path>#L<n>@<sha>]]        locked single line
+  [[<path>@<sha>]]              locked whole file
+  [[<path>#L<n>-<m>]]           HEAD range
+  [[<path>@HEAD]]                HEAD whole file (explicit)
+
+Every pointer must carry at least one anchor — `#L<range>` or `@<sha>` / \
+`@HEAD`. Unanchored `[[bare-word]]` tokens are intentionally rejected at \
+parse time so prose like `[[TODO]]` doesn't accidentally trigger a file \
+read. The HEAD-tracking branch is also containment-checked: any path \
+that canonicalises outside the repo root is refused.
+
+When a pointer's locked sha falls behind HEAD, the priors render flags it \
+as stale and keeps the content from the original sha. Update the sha or \
+switch to `@HEAD` when you've reviewed the new content.")]
     Pointers {
         /// Role name. Leading `@` is accepted.
         role: String,
@@ -404,7 +425,7 @@ fn main() -> Result<()> {
         Some(Cmd::Pointers { role, project }) => {
             let root = project_root_or_cwd(project)?;
             let role = role.strip_prefix('@').unwrap_or(&role);
-            coderoom::pointers::print_role_pointers(&root, role)
+            run_pointers(&root, role)
         }
         Some(Cmd::Cost { project, since }) => {
             let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -424,6 +445,80 @@ fn run_prompt_cmd(cmd: PromptCmd) -> Result<()> {
             coderoom::prompt_cmd::show(&project_root_or_cwd(project)?, &role)
         }
     }
+}
+
+/// `cr pointers @<role>` — read the role's priors file and list each
+/// `[[…]]` pointer with its resolution status. Lives here (not in the
+/// `pointers` library module) so the module stays pure data-in /
+/// data-out with no `crate::config` or `println!` dependencies; the
+/// future Contracts / Inbox layers reuse the library half.
+fn run_pointers(project_root: &Path, role: &str) -> Result<()> {
+    use coderoom::config::{CODEROOM_DIR, ROLES_DIR};
+    use coderoom::pointers::{
+        resolve_all, status_glyph, status_word, Pointer, PointerStatus, UnresolvableReason,
+    };
+
+    let priors_path = project_root
+        .join(CODEROOM_DIR)
+        .join(ROLES_DIR)
+        .join(format!("{role}.md"));
+    let priors = std::fs::read_to_string(&priors_path).map_err(|e| {
+        anyhow::anyhow!(
+            "could not read priors for @{role} at {}: {e} \
+             (run `cr role list` to see existing roles)",
+            priors_path.display()
+        )
+    })?;
+
+    let resolved = resolve_all(&priors, project_root);
+    if resolved.is_empty() {
+        println!(
+            "@{role} has no pointers in its priors file. \
+             Add one with `[[<path>#L<n>-<m>@<sha>]]` or `[[<path>@HEAD]]`.\n\
+             See `cr pointers --help` for the full grammar."
+        );
+        return Ok(());
+    }
+    println!("pointers in @{role} priors:");
+    for r in &resolved {
+        // Short locked SHA matches the short HEAD form used elsewhere,
+        // so the line doesn't wrap on 80-col terminals and the two
+        // SHAs are visually comparable.
+        let display_pointer = Pointer {
+            path: r.pointer.path.clone(),
+            line_range: r.pointer.line_range,
+            locked_sha: r
+                .pointer
+                .locked_sha
+                .as_ref()
+                .map(|s| s.chars().take(8).collect::<String>()),
+        };
+        let status_extra = match &r.status {
+            PointerStatus::Fresh => String::new(),
+            PointerStatus::Stale { head_sha } => format!(" (HEAD at {head_sha})"),
+            PointerStatus::Unresolvable(reason) => match reason {
+                UnresolvableReason::ShaNotFound { .. } => " (sha gone)".to_owned(),
+                UnresolvableReason::NotAGitRepo { .. } => " (not a git repo)".to_owned(),
+                UnresolvableReason::PathEscapesRepo { .. } => {
+                    " (path escapes repo — security gate)".to_owned()
+                }
+                UnresolvableReason::PathNotFoundAtSha { .. } => " (path missing at sha)".to_owned(),
+                _ => String::new(),
+            },
+        };
+        println!(
+            "  {} [[{display_pointer}]]  [{}{status_extra}]",
+            status_glyph(&r.status),
+            status_word(&r.status),
+        );
+        // For unresolvable pointers, print the actionable reason on a
+        // second indented line so the user sees the remediation hint
+        // without having to dig.
+        if let PointerStatus::Unresolvable(reason) = &r.status {
+            println!("      → {reason}");
+        }
+    }
+    Ok(())
 }
 
 fn run_start(project: Option<PathBuf>, yolo: bool, fresh: bool) -> Result<()> {

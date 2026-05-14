@@ -50,6 +50,12 @@ use regex::Regex;
 
 /// One pointer parsed out of priors. Cheap to clone; the heavy work
 /// is in [`resolve`].
+///
+/// Round-trips through markdown via `Display` and `FromStr`:
+/// ```ignore
+/// let p = Pointer::from_str("src/foo.rs#L42-67@a1b2c3").unwrap();
+/// assert_eq!(p.to_string(), "src/foo.rs#L42-67@a1b2c3");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pointer {
     /// Repo-relative path.
@@ -59,9 +65,37 @@ pub struct Pointer {
     /// Git object id the pointer is locked to. `None` means "HEAD,
     /// no staleness check" — the escape hatch.
     pub locked_sha: Option<String>,
-    /// The raw `[[...]]` token from the priors text, kept verbatim so
-    /// resolved output can quote the original reference.
-    pub raw: String,
+}
+
+impl std::fmt::Display for Pointer {
+    /// Canonical token form, **without** the surrounding `[[ ]]`.
+    /// Wrap with brackets at render time when emitting into priors
+    /// markdown.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.path.display())?;
+        if let Some((start, end)) = self.line_range {
+            if start == end {
+                write!(f, "#L{start}")?;
+            } else {
+                write!(f, "#L{start}-{end}")?;
+            }
+        }
+        if let Some(sha) = &self.locked_sha {
+            write!(f, "@{sha}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::str::FromStr for Pointer {
+    type Err = ();
+    /// Parse a token *body* (without the surrounding `[[ ]]`). Use
+    /// [`parse_token`] for the same operation with an explicit
+    /// `Option` return — `FromStr` exists so `Pointer` can ride
+    /// through `serde` / `clap` / config files without bespoke code.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        parse_token(s).ok_or(())
+    }
 }
 
 /// Result of one pointer resolution. The renderer turns this into a
@@ -91,13 +125,98 @@ pub enum PointerStatus {
         /// Current HEAD object id (short form).
         head_sha: String,
     },
-    /// Pointer could not be resolved at all (path missing at SHA,
-    /// SHA unknown to git, not in a repo, etc.). `content` is `None`.
-    Unresolvable {
-        /// Human-readable explanation for the priors render and for
-        /// `cr show pointers`.
-        reason: String,
+    /// Pointer could not be resolved at all. The typed reason lets
+    /// downstream consumers (Contracts, Inbox, future evolution
+    /// loop) discriminate on cause without string-parsing.
+    Unresolvable(UnresolvableReason),
+}
+
+/// Why a pointer couldn't be resolved. Each variant maps to a distinct
+/// remediation path on the user side, so downstream surfaces (cr
+/// pointers output, contract validation, evolution-loop checks) can
+/// route on the typed value instead of reading prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnresolvableReason {
+    /// `git rev-parse HEAD` failed — most likely the project isn't
+    /// inside a git working tree. `repo_root` is captured so error
+    /// messages can point the user at the directory checked.
+    NotAGitRepo {
+        /// Path that was checked (the `repo_root` argument).
+        repo_root: PathBuf,
     },
+    /// The locked SHA is not known to this clone. Usually a force-
+    /// push discarded it, or the priors author referenced a SHA from
+    /// a different branch that was never fetched.
+    ShaNotFound {
+        /// The hex object id from the pointer's `@<sha>` suffix.
+        sha: String,
+    },
+    /// HEAD-tracking path canonicalised to a location outside
+    /// `repo_root`. Security gate against `[[../../etc/passwd@HEAD]]`
+    /// style tokens. Captures both paths so the error message can
+    /// explain *why* the read was refused.
+    PathEscapesRepo {
+        /// Canonical absolute path the pointer resolved to.
+        attempted: PathBuf,
+        /// Canonical repo root the path had to stay inside.
+        repo_root: PathBuf,
+    },
+    /// Path doesn't exist at the locked SHA — e.g. the file was
+    /// renamed or deleted in a later commit, and the priors author
+    /// pinned to a version that no longer matches the working tree.
+    PathNotFoundAtSha {
+        /// Repo-relative path that wasn't found.
+        path: PathBuf,
+        /// The locked SHA the lookup was attempted against.
+        sha: String,
+    },
+    /// I/O error other than path-not-found (permission, disk, etc.).
+    /// Captured as a string because the underlying [`std::io::Error`]
+    /// kinds aren't useful enough to enumerate.
+    Io(String),
+    /// `git` invocation failed for a reason we couldn't classify into
+    /// one of the typed variants above (network during fetch, broken
+    /// `.git/`, etc.).
+    Git(String),
+}
+
+impl std::fmt::Display for UnresolvableReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotAGitRepo { repo_root } => write!(
+                f,
+                "not a git repo at {} — run from a git working tree, or pass --project",
+                repo_root.display(),
+            ),
+            Self::ShaNotFound { sha } => write!(
+                f,
+                "locked sha `{sha}` is not in this repo \
+                 (use `git log --oneline -- <path>` to find a valid sha, \
+                 or `git fetch` if it's on a remote branch)",
+            ),
+            Self::PathEscapesRepo {
+                attempted,
+                repo_root,
+            } => write!(
+                f,
+                "pointer path {} leaves the project \
+                 (pointers must reference files inside {} — \
+                 this is a security gate against `@HEAD` reads of files \
+                 outside the repo)",
+                attempted.display(),
+                repo_root.display(),
+            ),
+            Self::PathNotFoundAtSha { path, sha } => write!(
+                f,
+                "path {} does not exist at locked sha `{sha}` \
+                 (the file may have been renamed or deleted since — \
+                 update the pointer's path or move it to `@HEAD`)",
+                path.display(),
+            ),
+            Self::Io(msg) => write!(f, "i/o error: {msg}"),
+            Self::Git(msg) => write!(f, "git error: {msg}"),
+        }
+    }
 }
 
 static TOKEN_RE: OnceLock<Regex> = OnceLock::new();
@@ -156,7 +275,6 @@ pub fn parse_token(raw_token: &str) -> Option<Pointer> {
         path: PathBuf::from(path_str),
         line_range,
         locked_sha,
-        raw: format!("[[{raw_token}]]"),
     })
 }
 
@@ -211,15 +329,10 @@ fn resolve_head(repo_root: &Path) -> Option<String> {
 fn resolve_with_head(pointer: &Pointer, repo_root: &Path, head_full: Option<&str>) -> Resolved {
     let status = staleness(pointer, repo_root, head_full);
     let (content, status) = match &status {
-        PointerStatus::Unresolvable { .. } => (None, status.clone()),
+        PointerStatus::Unresolvable(_) => (None, status.clone()),
         PointerStatus::Fresh | PointerStatus::Stale { .. } => match read_at(pointer, repo_root) {
             Ok(text) => (Some(text), status),
-            Err(error) => (
-                None,
-                PointerStatus::Unresolvable {
-                    reason: error.to_string(),
-                },
-            ),
+            Err(reason) => (None, PointerStatus::Unresolvable(reason)),
         },
     };
     Resolved {
@@ -234,9 +347,9 @@ fn staleness(pointer: &Pointer, repo_root: &Path, head_full: Option<&str>) -> Po
         return PointerStatus::Fresh;
     };
     let Some(head_full) = head_full else {
-        return PointerStatus::Unresolvable {
-            reason: "could not resolve HEAD (not a git repo?)".to_owned(),
-        };
+        return PointerStatus::Unresolvable(UnresolvableReason::NotAGitRepo {
+            repo_root: repo_root.to_path_buf(),
+        });
     };
     // Resolve the locked sha to its full form. If git can't, the
     // priors reference a commit that doesn't exist in this clone
@@ -245,9 +358,9 @@ fn staleness(pointer: &Pointer, repo_root: &Path, head_full: Option<&str>) -> Po
     let locked_full = match run_git(repo_root, &["rev-parse", locked_sha]) {
         Ok(s) => s.trim().to_owned(),
         Err(_) => {
-            return PointerStatus::Unresolvable {
-                reason: format!("locked sha `{locked_sha}` is not in this repo"),
-            };
+            return PointerStatus::Unresolvable(UnresolvableReason::ShaNotFound {
+                sha: locked_sha.to_owned(),
+            });
         }
     };
     if locked_full == head_full {
@@ -261,7 +374,7 @@ fn staleness(pointer: &Pointer, repo_root: &Path, head_full: Option<&str>) -> Po
     }
 }
 
-fn read_at(pointer: &Pointer, repo_root: &Path) -> Result<String> {
+fn read_at(pointer: &Pointer, repo_root: &Path) -> Result<String, UnresolvableReason> {
     let raw = if let Some(sha) = pointer.locked_sha.as_deref() {
         // `git show <sha>:<path>` is safe by construction — git
         // explicitly rejects `../` and absolute paths with "path
@@ -270,7 +383,22 @@ fn read_at(pointer: &Pointer, repo_root: &Path) -> Result<String> {
         run_git(
             repo_root,
             &["show", &format!("{sha}:{}", path_for_git(&pointer.path))],
-        )?
+        )
+        .map_err(|e| {
+            // Git's "exists in <tree>, exists on disk" vs "does not
+            // exist in <tree>" diagnostics — we route the latter to
+            // the typed PathNotFoundAtSha so downstream UX can offer
+            // "use @HEAD or update the path."
+            let msg = e.to_string();
+            if msg.contains("does not exist") || msg.contains("exists on disk") {
+                UnresolvableReason::PathNotFoundAtSha {
+                    path: pointer.path.clone(),
+                    sha: sha.to_owned(),
+                }
+            } else {
+                UnresolvableReason::Git(msg)
+            }
+        })?
     } else {
         // HEAD-tracking branch: read directly from the working tree
         // so the role sees uncommitted edits. We must do our own
@@ -282,19 +410,19 @@ fn read_at(pointer: &Pointer, repo_root: &Path) -> Result<String> {
         let full = repo_root.join(&pointer.path);
         let canonical_root = repo_root
             .canonicalize()
-            .map_err(|e| anyhow::anyhow!("canonicalising repo root: {e}"))?;
-        let canonical_full = full
-            .canonicalize()
-            .map_err(|e| anyhow::anyhow!("canonicalising {}: {e}", full.display()))?;
+            .map_err(|e| UnresolvableReason::Io(format!("canonicalising repo root: {e}")))?;
+        let canonical_full = full.canonicalize().map_err(|e| {
+            UnresolvableReason::Io(format!("canonicalising {}: {e}", full.display()))
+        })?;
         if !canonical_full.starts_with(&canonical_root) {
-            anyhow::bail!(
-                "path {} escapes repo root {}",
-                canonical_full.display(),
-                canonical_root.display(),
-            );
+            return Err(UnresolvableReason::PathEscapesRepo {
+                attempted: canonical_full,
+                repo_root: canonical_root,
+            });
         }
-        std::fs::read_to_string(&canonical_full)
-            .map_err(|e| anyhow::anyhow!("reading {}: {e}", canonical_full.display()))?
+        std::fs::read_to_string(&canonical_full).map_err(|e| {
+            UnresolvableReason::Io(format!("reading {}: {e}", canonical_full.display()))
+        })?
     };
     Ok(narrow_to_range(&raw, pointer.line_range))
 }
@@ -376,33 +504,32 @@ pub fn expand_text(text: &str, repo_root: &Path) -> String {
 fn render_resolved(out: &mut String, r: &Resolved) {
     use std::fmt::Write as _;
     let p = &r.pointer;
-    let range = match p.line_range {
-        Some((s, e)) if s == e => format!("#L{s}"),
-        Some((s, e)) => format!("#L{s}-{e}"),
-        None => String::new(),
+    // `path[#L…][@<short-sha>]` — the `Display` impl on Pointer
+    // emits the canonical form, but we want the locked SHA shown
+    // in short form here for terminal readability. Build a shadow
+    // pointer with the truncated SHA and Display *that*.
+    let header_pointer = Pointer {
+        path: p.path.clone(),
+        line_range: p.line_range,
+        locked_sha: p
+            .locked_sha
+            .as_ref()
+            .map(|s| s.chars().take(8).collect::<String>()),
     };
-    let sha = p.locked_sha.as_deref().unwrap_or("HEAD");
     let _ = writeln!(out);
     match &r.status {
         PointerStatus::Fresh => {
-            let _ = writeln!(out, "**{}{} @ {sha}** _(fresh)_", p.path.display(), range);
+            let _ = writeln!(out, "**[[{header_pointer}]]** _(fresh)_");
         }
         PointerStatus::Stale { head_sha } => {
             let _ = writeln!(
                 out,
-                "**{}{} @ {sha}** _(stale — HEAD is at {head_sha}; \
+                "**[[{header_pointer}]]** _(⚠ stale — HEAD is at {head_sha}; \
                  content below is from the locked sha, the working tree may differ)_",
-                p.path.display(),
-                range,
             );
         }
-        PointerStatus::Unresolvable { reason } => {
-            let _ = writeln!(
-                out,
-                "**{}{} @ {sha}** _(unresolvable: {reason})_",
-                p.path.display(),
-                range,
-            );
+        PointerStatus::Unresolvable(reason) => {
+            let _ = writeln!(out, "**[[{header_pointer}]]** _(unresolvable: {reason})_");
         }
     }
     if let Some(body) = &r.content {
@@ -432,56 +559,43 @@ pub fn extract_pointers(text: &str) -> Vec<Pointer> {
     out
 }
 
-/// `cr pointers @<role>` — read the role's priors file, list every
-/// pointer it references, and print each one's resolution status
-/// (fresh / stale / unresolvable). Mirrors `cr cost`'s shape: print
-/// to stdout, return `Result<()>` for clean error surfacing.
-pub fn print_role_pointers(project_root: &Path, role: &str) -> Result<()> {
-    let coderoom_dir = project_root.join(crate::config::CODEROOM_DIR);
-    let priors_path = coderoom_dir
-        .join(crate::config::ROLES_DIR)
-        .join(format!("{role}.md"));
-    let priors = std::fs::read_to_string(&priors_path).map_err(|e| {
-        anyhow::anyhow!(
-            "could not read priors for @{role} at {}: {e}",
-            priors_path.display()
-        )
-    })?;
-    let pointers = extract_pointers(&priors);
-    if pointers.is_empty() {
-        println!("@{role} has no pointers in its priors file.");
-        return Ok(());
-    }
-    println!("pointers in @{role} priors:");
-    // Cache HEAD across the whole list so 10 pointers cost one
-    // `git rev-parse HEAD` plus per-pointer `git show`, not N×3.
-    let head = resolve_head(project_root);
+/// Resolve every pointer in `text` against `repo_root` with a single
+/// shared HEAD lookup. Caller decides how to render — used by the
+/// `cr pointers` subcommand and could be reused by a future TUI
+/// inspection surface. Pure data in / data out: this module no
+/// longer reaches into `crate::config` or `println!`s.
+#[must_use]
+pub fn resolve_all(text: &str, repo_root: &Path) -> Vec<Resolved> {
+    let head = resolve_head(repo_root);
     let head_ref = head.as_deref();
-    for p in &pointers {
-        let r = resolve_with_head(p, project_root, head_ref);
-        let status_label = match &r.status {
-            PointerStatus::Fresh => "fresh".to_owned(),
-            PointerStatus::Stale { head_sha } => format!("stale (HEAD at {head_sha})"),
-            PointerStatus::Unresolvable { reason } => format!("unresolvable: {reason}"),
-        };
-        let range = match p.line_range {
-            Some((s, e)) if s == e => format!("#L{s}"),
-            Some((s, e)) => format!("#L{s}-{e}"),
-            None => String::new(),
-        };
-        let sha = p.locked_sha.as_deref().unwrap_or("HEAD");
-        println!(
-            "  {} {}{}  @ {sha}  [{status_label}]",
-            match &r.status {
-                PointerStatus::Fresh => "✓",
-                PointerStatus::Stale { .. } => "⚠",
-                PointerStatus::Unresolvable { .. } => "✗",
-            },
-            p.path.display(),
-            range,
-        );
+    extract_pointers(text)
+        .into_iter()
+        .map(|p| resolve_with_head(&p, repo_root, head_ref))
+        .collect()
+}
+
+/// Short status word for `cr pointers` table output. Pure function
+/// so the CLI rendering path can stay in `main.rs` without re-
+/// implementing the status taxonomy.
+#[must_use]
+pub fn status_word(status: &PointerStatus) -> &'static str {
+    match status {
+        PointerStatus::Fresh => "fresh",
+        PointerStatus::Stale { .. } => "stale",
+        PointerStatus::Unresolvable(_) => "unresolvable",
     }
-    Ok(())
+}
+
+/// Status glyph for terminal rendering. Returns plain ASCII when the
+/// caller is going to wrap with colour; for piped/non-TTY output, the
+/// caller can substitute `[ok]/[stale]/[bad]` brackets.
+#[must_use]
+pub fn status_glyph(status: &PointerStatus) -> &'static str {
+    match status {
+        PointerStatus::Fresh => "✓",
+        PointerStatus::Stale { .. } => "⚠",
+        PointerStatus::Unresolvable(_) => "✗",
+    }
 }
 
 #[cfg(test)]
@@ -519,6 +633,34 @@ mod tests {
         run(&["commit", "--quiet", "-m", message]);
         let output = run(&["rev-parse", "HEAD"]);
         String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    #[test]
+    fn pointer_round_trips_through_display_and_from_str() {
+        use std::str::FromStr;
+        // Canonical forms — parse and Display agree exactly.
+        for body in [
+            "src/foo.rs#L42-67@a1b2c3",
+            "src/foo.rs#L7@deadbeef",
+            "src/foo.rs@aabbccdd",
+            "src/foo.rs#L1-2",
+        ] {
+            let parsed =
+                Pointer::from_str(body).unwrap_or_else(|()| panic!("should parse: {body}"));
+            assert_eq!(parsed.to_string(), body, "round-trip failed for {body}");
+        }
+    }
+
+    #[test]
+    fn pointer_head_anchor_canonicalises_away_at_serialize() {
+        use std::str::FromStr;
+        // `@HEAD` and the equivalent line-anchored form both parse,
+        // but the canonical `Display` drops `@HEAD` since locked_sha
+        // is None — semantically identical, no information lost.
+        let with = Pointer::from_str("src/foo.rs#L1@HEAD").unwrap();
+        let without = Pointer::from_str("src/foo.rs#L1").unwrap();
+        assert_eq!(with, without);
+        assert_eq!(with.to_string(), "src/foo.rs#L1");
     }
 
     #[test]
@@ -616,12 +758,16 @@ mod tests {
             path: PathBuf::from("../../../../etc/hostname"),
             line_range: None,
             locked_sha: None,
-            raw: "[[../../../../etc/hostname@HEAD]]".into(),
         };
         let r = resolve(&p, tmp.path());
+        // The typed `PathEscapesRepo` reason flows out, not a generic
+        // string — downstream UX can route on the variant.
         assert!(
-            matches!(r.status, PointerStatus::Unresolvable { .. }),
-            "expected Unresolvable, got {:?}",
+            matches!(
+                r.status,
+                PointerStatus::Unresolvable(UnresolvableReason::PathEscapesRepo { .. })
+            ),
+            "expected PathEscapesRepo, got {:?}",
             r.status
         );
         assert!(r.content.is_none());
@@ -636,10 +782,12 @@ mod tests {
             path: PathBuf::from("/etc/hostname"),
             line_range: None,
             locked_sha: None,
-            raw: "[[/etc/hostname@HEAD]]".into(),
         };
         let r = resolve(&p, tmp.path());
-        assert!(matches!(r.status, PointerStatus::Unresolvable { .. }));
+        assert!(matches!(
+            r.status,
+            PointerStatus::Unresolvable(UnresolvableReason::PathEscapesRepo { .. })
+        ));
     }
 
     #[test]
@@ -675,7 +823,11 @@ mod tests {
         commit_file(tmp.path(), "f.rs", "data\n", "init");
         let p = parse_token("f.rs@000000").unwrap();
         let r = resolve(&p, tmp.path());
-        assert!(matches!(r.status, PointerStatus::Unresolvable { .. }));
+        // Typed reason: ShaNotFound, not a generic Unresolvable string.
+        assert!(matches!(
+            r.status,
+            PointerStatus::Unresolvable(UnresolvableReason::ShaNotFound { ref sha }) if sha == "000000"
+        ));
         assert!(r.content.is_none());
     }
 
@@ -703,7 +855,9 @@ mod tests {
         let sha = commit_file(tmp.path(), "f.rs", "a\nb\nc\n", "init");
         let priors = format!("Watch the cc adapter:\n[[f.rs#L2@{sha}]]\nThat's the line.\n");
         let out = expand_text(&priors, tmp.path());
-        assert!(out.contains("**f.rs#L2"));
+        // Resolved header carries the canonical token form (with the
+        // SHA truncated to 8 chars for terminal width).
+        assert!(out.contains("**[[f.rs#L2@"));
         assert!(out.contains("(fresh)"));
         assert!(out.contains("```\nb\n```"));
         // Surrounding prose is preserved.
@@ -719,7 +873,7 @@ mod tests {
         commit_file(tmp.path(), "f.rs", "rewritten\n", "rewrite");
         let priors = format!("[[f.rs@{old}]]");
         let out = expand_text(&priors, tmp.path());
-        assert!(out.contains("(stale"));
+        assert!(out.contains("⚠ stale"));
         assert!(out.contains("HEAD is at"));
         assert!(out.contains("```\noriginal\n```"));
     }

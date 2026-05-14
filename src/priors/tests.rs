@@ -455,8 +455,8 @@ fn compose_for_expands_pointer_tokens_with_repo_content() {
     // The pointer expanded to a code block carrying line 1's content.
     assert!(composed.contains("fn live()"));
     // The freshness annotation surfaces so the model knows what state
-    // it's looking at.
-    assert!(composed.contains("**watched.rs#L1"));
+    // it's looking at — the resolved header echoes the canonical token.
+    assert!(composed.contains("**[[watched.rs#L1]]**"));
 }
 
 #[test]
@@ -481,5 +481,5 @@ fn compose_for_surfaces_unresolvable_pointer_inline() {
     // gap. The exact reason wording is implementation detail; we
     // assert on the unresolvable marker.
     assert!(composed.contains("unresolvable"));
-    assert!(composed.contains("**gone.rs"));
+    assert!(composed.contains("**[[gone.rs"));
 }
