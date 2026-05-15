@@ -81,6 +81,11 @@ pub(crate) const SLASH_COMMANDS: &[SlashCommand] = &[
         takes_args: true,
     },
     SlashCommand {
+        name: "permissions",
+        description: "show or clear session tool approvals",
+        takes_args: false,
+    },
+    SlashCommand {
         name: "quit",
         description: "leave the REPL (alias for /exit)",
         takes_args: false,
@@ -219,6 +224,8 @@ pub enum Command {
     Allow(String),
     /// `/deny <tool>` — deny a tool in the session permission policy.
     Deny(String),
+    /// `/permissions [show|clear]` — show or clear session permission policy.
+    Permissions(PermissionCommand),
     /// `/stop <role>` — terminate the named role's subprocess.
     Stop(String),
     /// `/halt` (no arg) interrupts the current in-flight turn for every
@@ -236,6 +243,15 @@ pub enum Command {
     Exit,
     /// Empty input — re-prompt without doing anything.
     Empty,
+}
+
+/// Parsed `/permissions` subcommand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionCommand {
+    /// Show the active permission policy.
+    Show,
+    /// Clear allow/deny decisions.
+    Clear,
 }
 
 /// Parse one line of user input. Pure function — no I/O.
@@ -310,6 +326,7 @@ pub fn parse_line(input: &str) -> Command {
             "welcome" => Command::Welcome,
             "allow" if !arg.is_empty() => Command::Allow(arg.to_owned()),
             "deny" if !arg.is_empty() => Command::Deny(arg.to_owned()),
+            "permissions" => parse_permissions_arg(arg).unwrap_or(Command::Help),
             // /help, /h, and any unknown slash command all fall through here.
             _ => Command::Help,
         };
@@ -326,6 +343,15 @@ pub fn parse_line(input: &str) -> Command {
         }
     }
     Command::SendToHost(trimmed.to_owned())
+}
+
+fn parse_permissions_arg(arg: &str) -> Option<Command> {
+    let arg = arg.trim().to_ascii_lowercase();
+    match arg.as_str() {
+        "" | "show" | "list" => Some(Command::Permissions(PermissionCommand::Show)),
+        "clear" | "reset" | "fresh" => Some(Command::Permissions(PermissionCommand::Clear)),
+        _ => None,
+    }
 }
 
 /// Parse the argument string of `/patch <role> <text>`. Accepts both

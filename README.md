@@ -212,7 +212,9 @@ Useful commands:
   at any wall-clock — the wrapper trusts each engine to self-terminate
   and the user to halt when something looks wrong.
 - `/allow <tool>` and `/deny <tool>` update the session permission policy
-  used by Claude Code hooks. Examples: `/allow Read`, `/deny Bash`.
+  used by Claude Code hooks. `/permissions` shows active decisions;
+  `/permissions clear` resets them for a fresh review. Examples:
+  `/allow Read`, `/deny Bash`.
 - `cr prompt show <role>` prints the exact effective prompt for a role.
 - `cr gate status|validate|close` inspects SDLC gate ledgers under
   `.coderoom/gates/`; the normal path is host-led, with commands kept as
@@ -232,8 +234,9 @@ Useful commands:
   `CODEROOM_VERBOSE_TOOLS=1` to opt the live REPL back into the full
   per-tool trace stream when you need it inline.
 - Permission prompts appear only while a decision is needed. Successful
-  allows clear the prompt and stay out of the chat stream; denials remain
-  visible because they change what the role can do.
+  once-only allows clear the prompt and stay out of the chat stream; session
+  approvals and denials remain visible because they change what the role can
+  do beyond one tool call.
 
 ## Engine Capability Matrix
 
@@ -268,7 +271,9 @@ permission_mode = "bypass"
 - `ask` requests approval before tools that are not explicitly allowed. In a
   live REPL, Claude Code hooks and Codex MCP approvals surface as CodeRoom
   prompts; use `/allow <tool>` or choose "allow session" when you trust the
-  call.
+  call. Existing allow/deny policy is surfaced at startup; use
+  `/permissions clear` before audits or release reviews that need fresh
+  approvals.
 - `auto` allows low-risk read-only tools and asks for risky or unknown tools.
 - `bypass` is explicit yolo mode. It is not required for Claude Code. Codex
   can run `ask` / `auto` only from a live REPL with a permission bridge;

@@ -36,7 +36,7 @@ use crate::bus::MessageBus;
 use crate::config::{Config, CODEROOM_DIR};
 use crate::crep::{CrepEvent, StopReason};
 use crate::output;
-use crate::permissions::{BridgeHandle, BridgeRequestSink};
+use crate::permissions::{BridgeHandle, BridgeRequestSink, PermissionPolicy};
 use crate::priors;
 
 mod command;
@@ -52,7 +52,7 @@ mod text;
 mod turn;
 mod work;
 
-pub use command::{parse_line, Command};
+pub use command::{parse_line, Command, PermissionCommand};
 use input::InputLine;
 use render::render_event;
 pub use show::{show_log, ShowOptions};
@@ -351,6 +351,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
 
     let permission_policy_path = crate::permissions::policy_path_for_coderoom(&coderoom_dir);
     ensure_permission_policy(&permission_policy_path)?;
+    surface_existing_permission_policy(&permission_policy_path);
     if options.permission_mode_override == Some(PermissionMode::Bypass) {
         output::warn("permission_mode=bypass is active for this session");
     }
@@ -570,6 +571,12 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
             Command::Deny(tool) => {
                 update_permission_policy(&permission_policy_path, &tool, false);
             }
+            Command::Permissions(PermissionCommand::Show) => {
+                show_permission_policy(&permission_policy_path);
+            }
+            Command::Permissions(PermissionCommand::Clear) => {
+                clear_permission_policy(&permission_policy_path);
+            }
             Command::Host(role) => {
                 if cfg.roles.contains_key(&role) {
                     cfg.host_role.clone_from(&role);
@@ -741,6 +748,37 @@ fn update_permission_policy(path: &Path, tool: &str, allow: bool) {
         Ok(_) if allow => output::ok(format!("{tool} allowed for this session")),
         Ok(_) => output::ok(format!("{tool} denied for this session")),
         Err(error) => output::bad(format!("updating permission policy failed: {error:#}")),
+    }
+}
+
+fn permission_policy_summary(path: &Path) -> Result<Option<String>> {
+    Ok(PermissionPolicy::load(path)?.summary())
+}
+
+fn surface_existing_permission_policy(path: &Path) {
+    match permission_policy_summary(path) {
+        Ok(Some(summary)) => output::warn(format!(
+            "permission policy active: {summary} — `/permissions clear` resets task approvals"
+        )),
+        Ok(None) => {}
+        Err(error) => output::bad(format!("reading permission policy failed: {error:#}")),
+    }
+}
+
+fn show_permission_policy(path: &Path) {
+    match permission_policy_summary(path) {
+        Ok(Some(summary)) => output::system(format!(
+            "permission policy active: {summary} — `/permissions clear` resets it"
+        )),
+        Ok(None) => output::hint("permission policy is empty"),
+        Err(error) => output::bad(format!("reading permission policy failed: {error:#}")),
+    }
+}
+
+fn clear_permission_policy(path: &Path) {
+    match crate::permissions::clear_policy(path) {
+        Ok(_) => output::ok("permission approvals cleared for this task"),
+        Err(error) => output::bad(format!("clearing permission policy failed: {error:#}")),
     }
 }
 

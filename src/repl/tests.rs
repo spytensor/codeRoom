@@ -335,6 +335,23 @@ fn parse_allow_and_deny() {
 }
 
 #[test]
+fn parse_permissions_show_and_clear() {
+    assert_eq!(
+        parse_line("/permissions"),
+        Command::Permissions(PermissionCommand::Show)
+    );
+    assert_eq!(
+        parse_line("/permissions show"),
+        Command::Permissions(PermissionCommand::Show)
+    );
+    assert_eq!(
+        parse_line("/permissions clear"),
+        Command::Permissions(PermissionCommand::Clear)
+    );
+    assert_eq!(parse_line("/permissions nope"), Command::Help);
+}
+
+#[test]
 fn parse_compact_with_role_or_all() {
     assert_eq!(
         parse_line("/compact backend"),
@@ -383,6 +400,25 @@ fn ensure_permission_policy_creates_file_and_gitignore_rule() {
             .count(),
         1
     );
+}
+
+#[test]
+fn permission_policy_summary_reports_existing_approvals() {
+    let tmp = tempfile::tempdir().unwrap();
+    let policy_path = tmp.path().join("permission_policy.json");
+    crate::permissions::update_policy(&policy_path, |policy| {
+        policy.allow_tool("Read");
+        policy.deny_tool("Bash");
+    })
+    .unwrap();
+
+    assert_eq!(
+        permission_policy_summary(&policy_path).unwrap().as_deref(),
+        Some("allow: Read; deny: Bash")
+    );
+
+    crate::permissions::clear_policy(&policy_path).unwrap();
+    assert!(permission_policy_summary(&policy_path).unwrap().is_none());
 }
 
 #[test]
