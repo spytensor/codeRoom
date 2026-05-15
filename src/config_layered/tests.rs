@@ -94,6 +94,25 @@ host_role = "host"
 }
 
 #[test]
+fn legacy_user_budget_hint_is_accepted_but_ignored() {
+    let tmp = TempDir::new().unwrap();
+    let user_path = tmp.path().join("user/config.toml");
+    write_user(
+        &user_path,
+        r#"
+[defaults]
+engine = "cc"
+budget_per_role_usd = 0.5
+"#,
+    );
+    let coderoom = tmp.path().join(CODEROOM_DIR);
+    write_minimal_project(&coderoom, "");
+
+    let cfg = load(tmp.path(), Some(&user_path)).expect("legacy budget hint should load");
+    assert_eq!(cfg.default_engine, Engine::Cc);
+}
+
+#[test]
 fn project_engine_overrides_user_engine() {
     let tmp = TempDir::new().unwrap();
     let user_path = tmp.path().join("user-config.toml");

@@ -116,6 +116,11 @@ pub struct UserDefaults {
     /// Default wrapper permission mode when a project doesn't pin one.
     #[serde(default)]
     pub permission_mode: Option<PermissionMode>,
+    /// Deprecated v0.1-era budget hint. Accepted so older user config
+    /// files do not prevent CodeRoom from starting; live spend limits
+    /// are not enforced by the current runtime.
+    #[serde(default)]
+    pub budget_per_role_usd: Option<f64>,
 }
 
 /// Per-engine entry in user config.
