@@ -587,6 +587,7 @@ pub(super) fn print_help(cfg: &Config) {
     println!("  /host <role>        make role the host for this session");
     println!("  /patch <role> <…>   save a correction; loads on next /refresh");
     println!("  /compact <role|all> compact live engine context when supported");
+    println!("  /fresh              restart all roles with clean engine sessions");
     println!("  /refresh <role>     re-instantiate role with latest priors+patches");
     println!("  /resume [id]        list or switch saved CodeRoom sessions");
     println!("  /transcript <role>  show that role's recent spoken turns");

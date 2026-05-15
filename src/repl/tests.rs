@@ -60,6 +60,21 @@ fn resume_id_filter_accepts_real_session_ids_but_rejects_legacy_placeholders() {
 }
 
 #[test]
+fn resume_guard_message_names_roles_and_clean_start_commands() {
+    let roles = vec!["backend".to_owned(), "host".to_owned()];
+    let message = resume_guard_prompt_message(&roles);
+    assert!(message.contains("@backend, @host"));
+    assert!(message.contains("`/fresh`"));
+    assert!(message.contains("`cr start --fresh`"));
+    assert!(message.contains("audits/release work"));
+}
+
+#[test]
+fn parse_fresh_restarts_clean_sessions() {
+    assert_eq!(parse_line("/fresh"), Command::Fresh);
+}
+
+#[test]
 fn show_filter_keeps_role_events_and_applies_tail() {
     let events = vec![
         CrepEvent::RoleStarted {

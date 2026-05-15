@@ -184,6 +184,7 @@ Useful commands:
   interactive terminal gets the guided setup first.
 - `cr start --yolo` runs the current session with `permission_mode=bypass`
   for every role after an interactive confirmation.
+- `cr start --fresh` starts clean instead of resuming saved engine sessions.
 - Existing projects with only the default `@host` role get a local-scan
   role suggestion picker on entry, so users can add specialists without
   hand-editing config.
@@ -195,6 +196,9 @@ Useful commands:
 - `@all <text>` broadcasts one prompt to every running role.
 - `/resume` lists saved CodeRoom room sessions; `/resume <number|id|prefix|latest>`
   switches every role to that saved set of engine sessions.
+- `/fresh` clears saved engine session ids and restarts every role cleanly
+  without leaving the REPL; use it before audits, release reviews, or other
+  provenance-sensitive work.
 - `/compact <role|all>` asks supported engines to compact live role context
   in-place. This is separate from `cr compact <role>`, which compacts old
   patches and journals into priors on disk.
