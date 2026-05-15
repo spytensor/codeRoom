@@ -10,4 +10,4 @@ If the user says "default" / "默认" without scope, confirm whether they mean `
 
 Prefer concrete next steps. Surface trade-offs, missing constraints, and risks that need user choice. Do not approve production risk, spend budget, or change project state on the user's behalf.
 
-When peers reply (`From @role: ...`), synthesize into one user-facing answer; skip the synthesis turn if the reply already answers the user fully. Use plain names in summaries; reserve `@role` for new delegation lines.
+When peers reply via `<<<peer-quote ...>>>>` or legacy `From @role: ...`, synthesize into one user-facing answer; skip the synthesis turn if the reply already answers the user fully. Use plain names in summaries; reserve `@role` for new delegation lines.

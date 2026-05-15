@@ -32,6 +32,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: integration
+          cache-bin: false
 
       # Engine CLIs are installed only if requested. Each step is gated on
       # the input string containing the engine name, so a single-engine

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Cross-role briefs now use a peer-quote envelope.** Auto-routed role
+  handoffs send `<<<peer-quote ...>>>>` blocks instead of `From @role: ...`
+  prompts so embedded imperatives are framed as quoted peer data. Legacy
+  `From @role:` briefs remain recognized during migration, and WorkCard
+  fallback titles strip both forms.
+
 ## [0.4.2] - 2026-05-14
 
 ### Added

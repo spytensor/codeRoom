@@ -97,6 +97,10 @@ struct RunningRole {
         reason = "kept alive only for its Drop side-effect (tempfile cleanup)"
     )]
     priors_temp: NamedTempFile,
+    /// Hash of the composed priors staged for this role at spawn time.
+    /// Auto-routed peer quotes include it so the receiver can audit which
+    /// role identity produced the quoted payload.
+    priors_hash: String,
     #[allow(
         dead_code,
         reason = "kept alive only for Drop side-effects such as hook settings cleanup"
@@ -749,7 +753,15 @@ async fn send_and_drain(
         // block addressed to it, not the parent's whole reply.
         let width = crossterm::terminal::size().map_or(80, |(cols, _)| usize::from(cols));
         for instruction in route_instructions {
-            let brief = format!("From @{current_role}: {}", instruction.brief);
+            let priors_hash = roles
+                .get(&current_role)
+                .map_or("", |running| running.priors_hash.as_str());
+            let brief = format_peer_brief(
+                &current_role,
+                priors_hash,
+                &captured.turn_id,
+                &instruction.brief,
+            );
             // Render the Slack/Discord-style reply pointer (#99)
             // before dispatching so the user can see *which* part of
             // the parent reply triggered this hop. The handoff
@@ -770,6 +782,10 @@ async fn send_and_drain(
     }
 
     Ok(())
+}
+
+fn format_peer_brief(sender: &str, priors_hash: &str, turn_id: &str, payload: &str) -> String {
+    crate::peer_quote::format_peer_quote(sender, priors_hash, turn_id, payload)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1514,6 +1530,7 @@ async fn spawn_role(context: &SpawnContext<'_>, name: &str) -> Result<RunningRol
             .await
             .context("joining priors composer task")?
             .with_context(|| format!("composing priors for role `{name}`"))?;
+    let priors_hash = crate::adapter::cc::fingerprint(&composed);
     let priors_temp = writepriors_tempfile(name, &composed)
         .with_context(|| format!("staging priors for role `{name}`"))?;
 
@@ -1585,6 +1602,7 @@ async fn spawn_role(context: &SpawnContext<'_>, name: &str) -> Result<RunningRol
         stop_tx: Some(stop_tx),
         interrupt_tx,
         priors_temp,
+        priors_hash,
         adapter_tempfiles: tempfiles,
     })
 }

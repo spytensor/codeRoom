@@ -40,6 +40,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: clippy
+          cache-bin: false
       - run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
   test:
@@ -57,6 +58,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}
+          cache-bin: false
       - name: Build
         run: cargo build --all-targets --locked
       - name: Test

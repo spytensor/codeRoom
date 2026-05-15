@@ -61,6 +61,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: release-${{ matrix.target }}
+          cache-bin: false
 
       - name: Build (cargo)
         if: matrix.use_cross == false

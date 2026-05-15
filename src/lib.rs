@@ -21,6 +21,7 @@ pub mod engines;
 pub mod image_paths;
 pub mod init;
 pub mod output;
+pub(crate) mod peer_quote;
 pub mod permissions;
 pub mod pointers;
 pub mod priors;
