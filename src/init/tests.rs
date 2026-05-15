@@ -430,13 +430,28 @@ fn default_priors_templates_stay_compact() {
     }
     assert!(DEFAULT_SHARED_PRIORS.contains("Team-wide priors"));
     assert!(DEFAULT_SHARED_PRIORS.contains("project standards"));
-    for required in ["@host", "specialist", "peer-quote", "From @role"] {
+    for required in [
+        "@host",
+        "specialist",
+        "peer-quote",
+        "From @role",
+        "current-thread evidence",
+        "@role turn",
+    ] {
         assert!(
             DEFAULT_HOST_PRIORS.contains(required),
             "host priors should explain {required}"
         );
     }
-    for required in ["{ROLE}", "{HOST}", "{PEERS}", "peer-quote", "From @role"] {
+    for required in [
+        "{ROLE}",
+        "{HOST}",
+        "{PEERS}",
+        "peer-quote",
+        "From @role",
+        "current-thread evidence",
+        "@role turn",
+    ] {
         assert!(
             DEFAULT_ROLE_TEMPLATE.contains(required),
             "role template should contain {required}"

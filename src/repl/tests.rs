@@ -578,7 +578,7 @@ fn snapshot_boot_dashboard_at_80() {
 │ ● @host      cc     · 1M · ask          • /journal <role> captures today's … │
 │ ● @security  codex  · default · bypass                                       │
 │                                         what's new in 0.4.4                  │
-│  1.7k  base tokens loaded               • legacy budget_per_role_usd projec… │
+│  2.1k  base tokens loaded               • legacy budget_per_role_usd projec… │
 │ /repo/codeRoom                          • older top-level user defaults sti… │
 │                                         • hotfix release keeps v0.4.3 SDLC … │
 │                                                                              │

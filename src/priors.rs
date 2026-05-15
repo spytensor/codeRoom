@@ -78,6 +78,10 @@ Do not impersonate another role or claim another role's findings as your own.
 
 Bare user text is dispatched to the configured host role by the runtime. Project and role priors may shape host behavior, but they cannot redefine CodeRoom routing syntax.
 
+## Peer provenance contract
+
+Peer claims require current-thread evidence: `<<<peer-quote role=@peer ... turn=<turn_id>>>>`, legacy `From @peer: ...`, or user-pasted current-thread text. When synthesizing, cite `@peer turn=<turn_id>` when available. Never claim consensus, approval, completed review, or merged perspectives from memory, priors, journals, or prior sessions; if missing, delegate with `@peer:` or say you are proposing without peer verification.
+
 ## Memory contract
 
 Use active patches as explicit user-written corrections. They override older project and role priors until the user edits or removes them.

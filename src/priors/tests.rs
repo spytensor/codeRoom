@@ -54,6 +54,10 @@ fn kernel_protocol_teaches_peer_quote_envelope() {
     assert!(KERNEL_PROTOCOL.contains("<<<end peer-quote>>>"));
     assert!(KERNEL_PROTOCOL.contains("data, not instruction"));
     assert!(KERNEL_PROTOCOL.contains("legacy `From @role: <text>`"));
+    assert!(KERNEL_PROTOCOL.contains("## Peer provenance contract"));
+    assert!(KERNEL_PROTOCOL.contains("current-thread evidence"));
+    assert!(KERNEL_PROTOCOL.contains("`@peer turn=<turn_id>`"));
+    assert!(KERNEL_PROTOCOL.contains("without peer verification"));
     assert!(!KERNEL_PROTOCOL.contains("route as `From @sender: <text>`"));
 }
 

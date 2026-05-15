@@ -308,6 +308,12 @@ rules, and WorkCard `cr-task` block. User-editable project and role priors can
 tune behavior, but they cannot redefine those runtime contracts. Every
 composed section carries a source header so `cr prompt show <role>` is auditable.
 
+The kernel also owns peer provenance: a role may synthesize peer input only
+from current-thread evidence such as `peer-quote` envelopes with `turn` ids,
+legacy `From @role:` briefs, or user-pasted current-thread text. Consensus,
+approval, review completion, and "merged perspectives" claims are not valid
+when sourced only from memory, priors, journals, or previous sessions.
+
 The team roster explicitly marks which role is host so non-host roles can
 escalate back to the user via `@<host>` when they need direction.
 
