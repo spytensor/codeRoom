@@ -16,6 +16,14 @@ items = [
 ]
 
 [[whats_new]]
+version = "0.4.3"
+items = [
+  "host-led SDLC gates track evidence, review, sign-off, and verification",
+  "/compact <role|all> asks supported engines to shrink live context",
+  "legacy budget_per_role_usd user configs no longer block startup",
+]
+
+[[whats_new]]
 version = "0.4.1"
 items = [
   "role replies render as inset message blocks",

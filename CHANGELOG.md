@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-05-15
+
+### Added
+
+- **Host-led SDLC gate ledgers (#147-#152).** New `cr gate ...`
+  commands and durable `.coderoom/gates/` ledgers let the host record
+  research, plan, Tier 1 review, sign-off, and verification evidence
+  before closing work. Gate templates are installed into new projects,
+  and close attempts now report actionable missing evidence or record
+  an explicit bypass reason.
+- **Manual live role compaction (#117).** The REPL now supports
+  `/compact <role|all>`. Claude Code receives its native `/compact`
+  command through the live session and reports completion after the
+  turn boundary; Codex and Gemini report explicit unsupported reasons
+  until their supervised native equivalents are verified.
+
 ### Changed
 
 - **Cross-role briefs now use a peer-quote envelope.** Auto-routed role
@@ -14,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prompts so embedded imperatives are framed as quoted peer data. Legacy
   `From @role:` briefs remain recognized during migration, and WorkCard
   fallback titles strip both forms.
+
+### Fixed
+
+- **Legacy user budget config no longer blocks startup.** User config
+  files with the removed `[defaults].budget_per_role_usd` key are
+  accepted for compatibility and ignored by the current runtime, so old
+  `~/Library/Application Support/coderoom/config.toml` files do not
+  prevent `cr` from starting.
 
 ## [0.4.2] - 2026-05-14
 
@@ -1031,7 +1055,9 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/spytensor/codeRoom/compare/v0.4.2...v0.4.3
+[0.4.2]: https://github.com/spytensor/codeRoom/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/spytensor/codeRoom/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/spytensor/codeRoom/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/spytensor/codeRoom/compare/v0.2.4...v0.3.0
