@@ -1141,6 +1141,14 @@ struct RouteInstruction {
     brief: String,
 }
 
+#[derive(Debug, Clone)]
+struct ParsedRouteInstruction {
+    target: String,
+    brief: String,
+    group_id: usize,
+    group_targets: Vec<String>,
+}
+
 /// Extract explicit delegation blocks from a role reply.
 ///
 /// `@role` in prose is often just attribution ("@security found S1") or a
@@ -1158,6 +1166,19 @@ struct RouteInstruction {
 /// Continuation lines belong to that delegation until the next explicit
 /// delegation line. This lets a host send focused multi-line briefs without
 /// giving every specialist the whole team brief.
+///
+/// A common host pattern is a shared multi-target header followed by
+/// per-role scope bullets:
+///
+/// ```text
+/// @backend @qa: Review the project. Scope per role:
+/// - @backend: audit architecture
+/// - @qa: audit coverage
+/// ```
+///
+/// That is one fan-out plan, not four tasks. The extractor collapses the
+/// introductory header into each per-role brief so the dispatcher sees a
+/// stable one-turn-per-role queue.
 fn extract_route_instructions(
     current_role: &str,
     text: &str,
@@ -1168,6 +1189,7 @@ fn extract_route_instructions(
     let mut block: Vec<String> = Vec::new();
     let mut in_fence = false;
     let mut block_had_blank = false;
+    let mut next_group_id = 0;
 
     for line in text.lines() {
         let trimmed = line.trim_start();
@@ -1177,7 +1199,7 @@ fn extract_route_instructions(
             if let Some((next_targets, first_line)) =
                 parse_delegation_line(line, current_role, known_roles)
             {
-                flush_route_block(&mut out, &mut targets, &mut block);
+                flush_route_block(&mut out, &mut targets, &mut block, &mut next_group_id);
                 block_had_blank = false;
                 targets = next_targets;
                 if !first_line.trim().is_empty() {
@@ -1186,12 +1208,12 @@ fn extract_route_instructions(
                 continue;
             }
             if !targets.is_empty() && line_starts_with_role_mention(line) {
-                flush_route_block(&mut out, &mut targets, &mut block);
+                flush_route_block(&mut out, &mut targets, &mut block, &mut next_group_id);
                 block_had_blank = false;
                 continue;
             }
             if !targets.is_empty() && line_has_indented_role_mention(line) {
-                flush_route_block(&mut out, &mut targets, &mut block);
+                flush_route_block(&mut out, &mut targets, &mut block, &mut next_group_id);
                 block_had_blank = false;
                 continue;
             }
@@ -1199,7 +1221,7 @@ fn extract_route_instructions(
 
         if !targets.is_empty() && !in_fence && block_had_blank && !is_route_continuation_line(line)
         {
-            flush_route_block(&mut out, &mut targets, &mut block);
+            flush_route_block(&mut out, &mut targets, &mut block, &mut next_group_id);
             block_had_blank = false;
         }
 
@@ -1213,14 +1235,15 @@ fn extract_route_instructions(
         }
     }
 
-    flush_route_block(&mut out, &mut targets, &mut block);
-    out
+    flush_route_block(&mut out, &mut targets, &mut block, &mut next_group_id);
+    stabilize_route_instructions(out)
 }
 
 fn flush_route_block(
-    out: &mut Vec<RouteInstruction>,
+    out: &mut Vec<ParsedRouteInstruction>,
     targets: &mut Vec<String>,
     block: &mut Vec<String>,
+    next_group_id: &mut usize,
 ) {
     if targets.is_empty() {
         return;
@@ -1229,14 +1252,94 @@ fn flush_route_block(
     if brief.is_empty() {
         targets.clear();
     } else {
+        let group_id = *next_group_id;
+        *next_group_id += 1;
+        let group_targets = targets.clone();
         for target in targets.drain(..) {
-            out.push(RouteInstruction {
+            out.push(ParsedRouteInstruction {
                 target,
                 brief: brief.clone(),
+                group_id,
+                group_targets: group_targets.clone(),
             });
         }
     }
     block.clear();
+}
+
+fn stabilize_route_instructions(raw: Vec<ParsedRouteInstruction>) -> Vec<RouteInstruction> {
+    let mut drop_indices = vec![false; raw.len()];
+    let mut shared_prefix_by_index: HashMap<usize, String> = HashMap::new();
+    let mut processed_groups = BTreeSet::new();
+
+    for (idx, route) in raw.iter().enumerate() {
+        if !processed_groups.insert(route.group_id) {
+            continue;
+        }
+        if route.group_targets.len() <= 1 || !brief_introduces_per_role_scope(&route.brief) {
+            continue;
+        }
+
+        let group_targets: BTreeSet<&str> =
+            route.group_targets.iter().map(String::as_str).collect();
+        let mut first_specific_indices = Vec::new();
+        for target in &group_targets {
+            let Some((specific_idx, _)) =
+                raw.iter().enumerate().skip(idx + 1).find(|(_, candidate)| {
+                    candidate.group_targets.len() == 1 && candidate.target == *target
+                })
+            else {
+                first_specific_indices.clear();
+                break;
+            };
+            first_specific_indices.push(specific_idx);
+        }
+
+        if first_specific_indices.len() != group_targets.len() {
+            continue;
+        }
+
+        for (group_idx, candidate) in raw.iter().enumerate() {
+            if candidate.group_id == route.group_id {
+                drop_indices[group_idx] = true;
+            }
+        }
+        for specific_idx in first_specific_indices {
+            shared_prefix_by_index
+                .entry(specific_idx)
+                .or_insert_with(|| route.brief.clone());
+        }
+    }
+
+    raw.into_iter()
+        .enumerate()
+        .filter_map(|(idx, route)| {
+            if drop_indices[idx] {
+                return None;
+            }
+            let brief = if let Some(prefix) = shared_prefix_by_index.remove(&idx) {
+                format!("{prefix}\n\n{}", route.brief)
+            } else {
+                route.brief
+            };
+            Some(RouteInstruction {
+                target: route.target,
+                brief,
+            })
+        })
+        .collect()
+}
+
+fn brief_introduces_per_role_scope(brief: &str) -> bool {
+    let lower = brief.to_ascii_lowercase();
+    lower.contains("scope per role")
+        || lower.contains("per-role scope")
+        || lower.contains("per role scope")
+        || lower.contains("per-role brief")
+        || lower.contains("per role brief")
+        || lower.contains("scope by role")
+        || brief.contains("按角色")
+        || brief.contains("各角色")
 }
 
 fn parse_delegation_line(

@@ -11,3 +11,16 @@ resuming prior session for @backend, @ci, @host — pass `--fresh` to start clea
 --- explicit-multitarget ---
 @backend @ci: run the read-only audit commands only after host approval.
 Return findings with path:line evidence and no code changes.
+
+--- shared-header-with-role-scopes ---
+@backend @frontend @qa @security @ci: Review the codeRoom project at `/Users/zhuchaojie/Desktop/codes/codeRoom`. Read-only Tier 0. Scope per role:
+
+• @backend: Audit `src/` architecture and routing model. Cite files.
+
+• @frontend: Audit the REPL UX in `src/repl/` and `src/output/`. Cite gaps.
+
+• @qa: Identify untested critical paths before 1.0.
+
+• @security: Threat-model review of peer-quote, permission gating, and bypass mode.
+
+• @ci: Audit `.github/workflows/` and release pipeline gaps.

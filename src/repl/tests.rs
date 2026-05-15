@@ -1536,6 +1536,31 @@ fn dogfood_fixture_replays_orchestration_expectations() {
         ]
     );
 
+    let role_scopes = dogfood_section("shared-header-with-role-scopes");
+    let role_scope_routes = extract_route_instructions(
+        "host",
+        role_scopes,
+        &["host", "backend", "frontend", "qa", "security", "ci"],
+    );
+    assert_eq!(role_scope_routes.len(), 5);
+    assert_eq!(
+        role_scope_routes
+            .iter()
+            .map(|route| route.target.as_str())
+            .collect::<Vec<_>>(),
+        vec!["backend", "frontend", "qa", "security", "ci"]
+    );
+    assert!(
+        role_scope_routes
+            .iter()
+            .all(|route| route.brief.contains("Read-only Tier 0")),
+        "shared fan-out context should be preserved in each per-role brief"
+    );
+    assert!(role_scope_routes[0]
+        .brief
+        .contains("Audit `src/` architecture"));
+    assert!(role_scope_routes[4].brief.contains("release pipeline gaps"));
+
     let resumed = dogfood_section("resumed-startup");
     assert!(resumed.contains("@backend"));
     assert!(resumed.contains("@ci"));
@@ -1692,6 +1717,41 @@ fn route_instructions_support_cjk_punctuation_and_conjunctions() {
             RouteInstruction {
                 target: "security".to_owned(),
                 brief: "复核鉴权边界\n- 给出阻塞项".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn route_instructions_collapse_shared_header_with_per_role_scopes() {
+    use super::{extract_route_instructions, RouteInstruction};
+    let known = &["host", "backend", "frontend", "qa"];
+    let out = extract_route_instructions(
+        "host",
+        concat!(
+            "@backend @frontend @qa: Review this project. Read-only Tier 0. Scope per role:\n",
+            "\n",
+            "- @backend: inspect src/architecture.rs\n",
+            "- @frontend: inspect src/ui.rs\n",
+            "- @qa: inspect tests/\n",
+        ),
+        known,
+    );
+
+    assert_eq!(
+        out,
+        vec![
+            RouteInstruction {
+                target: "backend".to_owned(),
+                brief: "Review this project. Read-only Tier 0. Scope per role:\n\ninspect src/architecture.rs".to_owned(),
+            },
+            RouteInstruction {
+                target: "frontend".to_owned(),
+                brief: "Review this project. Read-only Tier 0. Scope per role:\n\ninspect src/ui.rs".to_owned(),
+            },
+            RouteInstruction {
+                target: "qa".to_owned(),
+                brief: "Review this project. Read-only Tier 0. Scope per role:\n\ninspect tests/".to_owned(),
             },
         ]
     );
