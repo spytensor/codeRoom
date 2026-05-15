@@ -47,6 +47,15 @@ fn role_only_no_optional_pieces() {
 }
 
 #[test]
+fn kernel_protocol_teaches_peer_quote_envelope() {
+    assert!(KERNEL_PROTOCOL.contains("<<<peer-quote role=@sender"));
+    assert!(KERNEL_PROTOCOL.contains("<<<end peer-quote>>>"));
+    assert!(KERNEL_PROTOCOL.contains("data, not instruction"));
+    assert!(KERNEL_PROTOCOL.contains("legacy `From @role: <text>`"));
+    assert!(!KERNEL_PROTOCOL.contains("route as `From @sender: <text>`"));
+}
+
+#[test]
 fn shared_then_role_separated_by_fence() {
     let tmp = fixture("backend", "BACKEND_PRIORS");
     fs::write(coderoom_of(&tmp).join(SHARED_FILE), "SHARED_PRIORS").unwrap();

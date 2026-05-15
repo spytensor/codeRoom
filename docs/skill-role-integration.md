@@ -85,7 +85,7 @@ Default behavior when a role file omits the `skills:` block:
   exist precisely because every role needs them.
 - `shared`: none visible. Shared skills must be explicitly opted into so a
   new role does not silently inherit project-wide capabilities.
-- Role-private: all visible. Anything in `roles/<role>/skills/` is private to
+- Role-private: all visible. Anything in `skills/roles/<role>/` is private to
   that role by construction.
 
 This default makes capability inheritance an explicit user act, matching the

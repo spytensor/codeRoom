@@ -301,11 +301,11 @@ A role's effective system prompt is composed at spawn time:
 ```
 
 The built-in kernel is not copied into `.coderoom/`. It owns the routing
-syntax (`@role` line starts), peer brief format (`From @role:`), patch/journal
-authority rules, and WorkCard `cr-task` block. User-editable project and role
-priors can tune behavior, but they cannot redefine those runtime contracts.
-Every composed section carries a source header so `cr prompt show <role>` is
-auditable.
+syntax (`@role` line starts), peer brief envelope (`<<<peer-quote ...>>>>`,
+with legacy `From @role:` accepted during migration), patch/journal authority
+rules, and WorkCard `cr-task` block. User-editable project and role priors can
+tune behavior, but they cannot redefine those runtime contracts. Every
+composed section carries a source header so `cr prompt show <role>` is auditable.
 
 The team roster explicitly marks which role is host so non-host roles can
 escalate back to the user via `@<host>` when they need direction.

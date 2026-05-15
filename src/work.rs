@@ -50,13 +50,8 @@ pub(crate) fn extract_cr_task(text: &str) -> CrTaskExtraction {
 }
 
 pub(crate) fn fallback_title(prompt: &str) -> String {
-    // Auto-routed turns receive a brief shaped like
-    //   "From @<role>: <real task description>"
-    // (see `src/repl.rs::send_and_drain`). Without stripping that
-    // prefix, the WorkCard title for the dispatched role's first
-    // turn reads "From @host: …" — routing metadata leaks into a
-    // user-facing surface. Strip the prefix before picking the
-    // first non-blank line.
+    // Auto-routed turns receive routing metadata around the real task
+    // description. Strip that metadata before picking a WorkCard title.
     let stripped = strip_route_brief_prefix(prompt);
     let first_line = stripped
         .lines()
@@ -67,11 +62,15 @@ pub(crate) fn fallback_title(prompt: &str) -> String {
 }
 
 /// If `input` starts with the auto-route brief prefix
-/// (`From @<role>: <body>`), return the slice after `": "`. Otherwise
-/// return `input` unchanged. The role token must be a single word
-/// (no whitespace) so we don't accidentally chew real content that
-/// happens to start with "From @".
+/// (`<<<peer-quote ...>>>>` or legacy `From @<role>: <body>`), return
+/// the quoted body. Otherwise return `input` unchanged. The legacy role
+/// token must be a single word (no whitespace) so we don't accidentally
+/// chew real content that happens to start with "From @".
 pub(crate) fn strip_route_brief_prefix(input: &str) -> &str {
+    if let Some(payload) = crate::peer_quote::payload(input) {
+        return payload;
+    }
+
     let trimmed = input.trim_start();
     let Some(rest) = trimmed.strip_prefix("From @") else {
         return input;
@@ -201,17 +200,27 @@ mod tests {
 
     #[test]
     fn fallback_title_strips_auto_route_brief_prefix() {
-        // The brief shape produced by `send_and_drain`:
-        //   "From @host: <real task>"
-        // Without the strip the WorkCard title for the dispatched
-        // role's first turn would say "From @host: ..." which is
-        // routing metadata, not the work.
+        let envelope = crate::peer_quote::format_peer_quote(
+            "host",
+            "dh1:abcd",
+            "tu-1",
+            "scan the auth module",
+        );
+        assert_eq!(fallback_title(&envelope), "scan the auth module");
+
+        let multiline = crate::peer_quote::format_peer_quote(
+            "host",
+            "dh1:abcd",
+            "tu-1",
+            "audit permission boundaries\nthen report back",
+        );
+        assert_eq!(fallback_title(&multiline), "audit permission boundaries");
+
+        // Legacy transition form remains recognized for old logs/tests.
         assert_eq!(
             fallback_title("From @host: scan the auth module"),
             "scan the auth module"
         );
-        // Multi-line brief — strip prefix, then take first
-        // non-blank line as today.
         assert_eq!(
             fallback_title("From @host: audit permission boundaries\nthen report back"),
             "audit permission boundaries"
