@@ -32,6 +32,11 @@ pub(crate) const SLASH_COMMANDS: &[SlashCommand] = &[
         takes_args: true,
     },
     SlashCommand {
+        name: "compact",
+        description: "compact live engine context for a role",
+        takes_args: true,
+    },
+    SlashCommand {
         name: "deny",
         description: "deny a tool for the session",
         takes_args: true,
@@ -183,6 +188,10 @@ pub enum Command {
         /// Correction text — written verbatim into the new patch file.
         text: String,
     },
+    /// `/compact <role|all>` — ask one or all running roles to compact
+    /// their live engine conversation context using a supervised
+    /// engine-native primitive when supported.
+    Compact(String),
     /// `/refresh <role>` — re-instantiate the role with the latest
     /// composed priors (shared.md + role.md + active patches). The
     /// old subprocess is dropped; a fresh one starts.
@@ -281,6 +290,14 @@ pub fn parse_line(input: &str) -> Command {
                 }
             }
             "patch" => parse_patch_arg(arg).unwrap_or(Command::Help),
+            "compact" if !arg.is_empty() => {
+                let target = arg.strip_prefix('@').unwrap_or(arg).trim();
+                if target.is_empty() {
+                    Command::Help
+                } else {
+                    Command::Compact(target.to_owned())
+                }
+            }
             "welcome" => Command::Welcome,
             "allow" if !arg.is_empty() => Command::Allow(arg.to_owned()),
             "deny" if !arg.is_empty() => Command::Deny(arg.to_owned()),

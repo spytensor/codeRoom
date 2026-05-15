@@ -43,8 +43,8 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, warn};
 
 use crate::adapter::{
-    AdapterError, AdapterResult, Engine, EngineAdapter, PermissionMode, RoleConfig, RoleHandle,
-    UserMessage,
+    AdapterError, AdapterResult, CompactResult, Engine, EngineAdapter, PermissionMode, RoleConfig,
+    RoleHandle, UserMessage,
 };
 use crate::crep::{CrepEvent, StopReason};
 use crate::turn::{TurnId, LEGACY_TURN_ID};
@@ -802,6 +802,33 @@ async fn write_stdin<W>(
                 if turn_done.recv().await.is_none() {
                     debug!(role, "turn boundary channel closed; stopping stdin writer");
                     *current_turn.lock().await = None;
+                    return;
+                }
+            }
+            UserMessage::CompactContext { respond_to } => {
+                let envelope = build_user_envelope(&role, "/compact");
+                let line = format!("{envelope}\n");
+                if let Err(error) = stdin.write_all(line.as_bytes()).await {
+                    warn!(role, %error, "failed to write compact command to stdin");
+                    let _ = respond_to.send(CompactResult::Failed {
+                        reason: "failed to write `/compact` to Claude Code stdin".to_owned(),
+                    });
+                    return;
+                }
+                if let Err(error) = stdin.flush().await {
+                    warn!(role, %error, "failed to flush compact command");
+                    let _ = respond_to.send(CompactResult::Failed {
+                        reason: "failed to flush `/compact` to Claude Code".to_owned(),
+                    });
+                    return;
+                }
+                if let Some(()) = turn_done.recv().await {
+                    let _ = respond_to.send(CompactResult::Completed);
+                } else {
+                    debug!(role, "turn boundary channel closed during compact");
+                    let _ = respond_to.send(CompactResult::Failed {
+                        reason: "Claude Code stopped before compaction completed".to_owned(),
+                    });
                     return;
                 }
             }

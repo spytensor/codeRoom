@@ -1146,8 +1146,9 @@ mod tests {
         let mut editor = slash_editor();
         editor.insert('/');
         editor.insert('h');
-        // SLASH_COMMANDS in alphabetical order: allow, deny, exit, halt,
-        // help, host, journal, patch, refresh, stop, transcript, welcome.
+        // SLASH_COMMANDS in alphabetical order: allow, compact, deny,
+        // exit, halt, help, host, journal, patch, refresh, stop,
+        // transcript, welcome.
         // For prefix "h" the first match is `halt`.
         assert_eq!(editor.ghost_suffix().as_deref(), Some("alt"));
     }

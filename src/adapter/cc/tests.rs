@@ -460,6 +460,42 @@ async fn write_stdin_waits_for_turn_boundary_before_next_prompt() {
     assert!(second.contains("second"));
 }
 
+#[tokio::test]
+async fn write_stdin_compacts_after_turn_boundary() {
+    let (client, server) = tokio::io::duplex(4096);
+    let mut lines = BufReader::new(client).lines();
+    let (tx_user, rx_user) = mpsc::channel(4);
+    let (turn_done_tx, turn_done_rx) = mpsc::channel(4);
+    let current_turn = Arc::new(Mutex::new(None));
+
+    tokio::spawn(write_stdin(
+        "backend".to_owned(),
+        rx_user,
+        server,
+        turn_done_rx,
+        Arc::clone(&current_turn),
+    ));
+
+    let (response_tx, mut response_rx) = oneshot::channel();
+    tx_user
+        .send(UserMessage::compact_context(response_tx))
+        .await
+        .unwrap();
+
+    let line = lines.next_line().await.unwrap().unwrap();
+    assert!(line.contains("/compact"));
+
+    let response_before_boundary =
+        tokio::time::timeout(Duration::from_millis(50), &mut response_rx).await;
+    assert!(
+        response_before_boundary.is_err(),
+        "compact completed before turn boundary"
+    );
+
+    turn_done_tx.send(()).await.unwrap();
+    assert_eq!(response_rx.await.unwrap(), CompactResult::Completed);
+}
+
 #[test]
 fn translate_missing_type_yields_nothing() {
     let line = json!({"some": "noise"});

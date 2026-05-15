@@ -39,8 +39,8 @@ use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use crate::adapter::{
-    AdapterError, AdapterResult, Engine, EngineAdapter, PermissionMode, RoleConfig, RoleHandle,
-    UserMessage,
+    AdapterError, AdapterResult, CompactResult, Engine, EngineAdapter, PermissionMode, RoleConfig,
+    RoleHandle, UserMessage,
 };
 use crate::crep::{CrepEvent, StopReason};
 use crate::turn::TurnId;
@@ -1268,8 +1268,16 @@ async fn write_loop(
         if runtime.base.stopping.load(Ordering::SeqCst) {
             break;
         }
-        let UserMessage::Prompt(prompt) = msg else {
-            continue;
+        let prompt = match msg {
+            UserMessage::Prompt(prompt) => prompt,
+            UserMessage::CompactContext { respond_to } => {
+                let _ = respond_to.send(CompactResult::Unsupported {
+                    reason: "Codex live context compaction is not wired through CodeRoom yet"
+                        .to_owned(),
+                });
+                continue;
+            }
+            UserMessage::ToolDecision { .. } => continue,
         };
         let turn_id = prompt.turn_id.clone();
         let thread_id_for_events = prompt.thread_id.clone();

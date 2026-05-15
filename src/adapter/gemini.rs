@@ -39,8 +39,8 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, warn};
 
 use crate::adapter::{
-    AdapterError, AdapterResult, Engine, EngineAdapter, PermissionMode, RoleConfig, RoleHandle,
-    UserMessage,
+    AdapterError, AdapterResult, CompactResult, Engine, EngineAdapter, PermissionMode, RoleConfig,
+    RoleHandle, UserMessage,
 };
 use crate::crep::{CrepEvent, StopReason};
 use crate::turn::TurnId;
@@ -242,8 +242,16 @@ impl GeminiLoop {
             let Some(msg) = msg else {
                 break StopReason::Completed;
             };
-            let UserMessage::Prompt(prompt) = msg else {
-                continue;
+            let prompt = match msg {
+                UserMessage::Prompt(prompt) => prompt,
+                UserMessage::CompactContext { respond_to } => {
+                    let _ = respond_to.send(CompactResult::Unsupported {
+                        reason: "Gemini does not expose a supervised live compaction primitive in CodeRoom"
+                            .to_owned(),
+                    });
+                    continue;
+                }
+                UserMessage::ToolDecision { .. } => continue,
             };
             let turn_id = prompt.turn_id.clone();
             let thread_id = prompt.thread_id.clone();

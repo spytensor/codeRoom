@@ -327,10 +327,17 @@ impl RoleHandle {
 }
 
 /// A user-originated message routed to a role's session.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum UserMessage {
     /// Free-form prompt text. The role decides how to respond.
     Prompt(PromptMessage),
+    /// Ask the engine to compact its live conversation context using
+    /// the engine-native primitive, when the adapter supports one.
+    CompactContext {
+        /// One-shot completion report for the REPL command that issued
+        /// the request.
+        respond_to: oneshot::Sender<CompactResult>,
+    },
     /// Wrapper's verdict on a previously-proposed tool call.
     /// Sent in response to `CrepEvent::ToolCallProposed`.
     ToolDecision {
@@ -340,6 +347,23 @@ pub enum UserMessage {
         allow: bool,
         /// Reason shown to the engine if denied.
         reason: Option<String>,
+    },
+}
+
+/// Result of an engine-native live context compaction request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompactResult {
+    /// Adapter sent the native compact request and observed a turn boundary.
+    Completed,
+    /// This adapter has no supervised native compact path yet.
+    Unsupported {
+        /// User-facing reason.
+        reason: String,
+    },
+    /// Adapter attempted compaction but could not finish safely.
+    Failed {
+        /// User-facing reason.
+        reason: String,
     },
 }
 
@@ -392,6 +416,11 @@ impl UserMessage {
     /// Free-form prompt text without turn attribution.
     pub fn legacy_prompt(text: impl Into<String>) -> Self {
         Self::Prompt(PromptMessage::legacy(text))
+    }
+
+    /// Engine-native live context compaction request.
+    pub fn compact_context(respond_to: oneshot::Sender<CompactResult>) -> Self {
+        Self::CompactContext { respond_to }
     }
 }
 
@@ -586,6 +615,8 @@ mod tests {
     #[test]
     fn user_message_variants_construct() {
         let _prompt = UserMessage::legacy_prompt("hello");
+        let (tx, _rx) = oneshot::channel();
+        let _compact = UserMessage::compact_context(tx);
         let _decision = UserMessage::ToolDecision {
             tool_use_id: "toolu_x".into(),
             allow: false,

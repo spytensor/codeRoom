@@ -196,6 +196,9 @@ Useful commands:
 - `@all <text>` broadcasts one prompt to every running role.
 - `/resume` lists saved CodeRoom room sessions; `/resume <number|id|prefix|latest>`
   switches every role to that saved set of engine sessions.
+- `/compact <role|all>` asks supported engines to compact live role context
+  in-place. This is separate from `cr compact <role>`, which compacts old
+  patches and journals into priors on disk.
 - `/patch <role> <text>`, `/refresh <role>`, `/transcript <role>`, and
   `/journal <role>` are available inside the REPL.
 - `/halt` (no arg) interrupts every in-flight turn; `/halt @role`

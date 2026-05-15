@@ -319,6 +319,20 @@ fn parse_allow_and_deny() {
     assert_eq!(parse_line("/deny"), Command::Help);
 }
 
+#[test]
+fn parse_compact_with_role_or_all() {
+    assert_eq!(
+        parse_line("/compact backend"),
+        Command::Compact("backend".into())
+    );
+    assert_eq!(
+        parse_line("/compact @backend"),
+        Command::Compact("backend".into())
+    );
+    assert_eq!(parse_line("/compact @all"), Command::Compact("all".into()));
+    assert_eq!(parse_line("/compact"), Command::Help);
+}
+
 #[tokio::test]
 async fn first_run_marker_round_trip() {
     let tmp = tempfile::tempdir().unwrap();

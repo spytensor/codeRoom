@@ -31,7 +31,7 @@ use tracing::{debug, warn};
 use crate::adapter::cc::CcAdapter;
 use crate::adapter::codex::CodexAdapter;
 use crate::adapter::gemini::GeminiAdapter;
-use crate::adapter::{Engine, EngineAdapter, PermissionMode, UserMessage};
+use crate::adapter::{CompactResult, Engine, EngineAdapter, PermissionMode, UserMessage};
 use crate::bus::MessageBus;
 use crate::config::{Config, CODEROOM_DIR};
 use crate::crep::{CrepEvent, StopReason};
@@ -82,6 +82,7 @@ impl Adapters {
 
 /// Live state for a single running role inside the REPL.
 struct RunningRole {
+    engine: Engine,
     tx_user: mpsc::Sender<UserMessage>,
     stop_tx: Option<oneshot::Sender<StopReason>>,
     /// Turn-level cancellation channel surfaced by the adapter.
@@ -431,6 +432,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                 .await;
             }
             Command::Halt(target) => handle_halt(&roles, target.as_deref()).await,
+            Command::Compact(target) => handle_compact(&roles, &target).await,
             Command::Welcome => {
                 print_home(&cfg, &coderoom_dir, project_root, false);
             }
@@ -1237,6 +1239,63 @@ async fn handle_halt(roles: &HashMap<String, RunningRole>, target: Option<&str>)
     output::system(format!("/halt → {label}"));
 }
 
+/// Handle `/compact <role|all>` from the prompt. This is deliberately
+/// manual-only: automatic token-pressure triggers need reliable per-engine
+/// usage telemetry first. Unsupported engines report honestly instead of
+/// pretending wrapper-side summarization is equivalent to engine-native
+/// context compaction.
+async fn handle_compact(roles: &HashMap<String, RunningRole>, target: &str) {
+    let normalized = target.strip_prefix('@').unwrap_or(target).trim();
+    if normalized.is_empty() {
+        output::bad("usage: /compact <role|all>");
+        return;
+    }
+    let mut targets: Vec<&String> = if normalized == "all" {
+        roles.keys().collect()
+    } else if roles.contains_key(normalized) {
+        roles
+            .keys()
+            .filter(|name| name.as_str() == normalized)
+            .collect()
+    } else {
+        output::bad(format!("no such role: @{normalized}"));
+        return;
+    };
+    targets.sort();
+
+    for name in targets {
+        let Some(running) = roles.get(name) else {
+            continue;
+        };
+        output::system(format!(
+            "/compact -> @{} ({})",
+            name,
+            running.engine.as_str()
+        ));
+        let (tx, rx) = oneshot::channel();
+        if let Err(error) = running.tx_user.send(UserMessage::compact_context(tx)).await {
+            debug!(role = %name, %error, "compact request channel closed");
+            output::bad(format!("@{name}: compact request could not be delivered"));
+            continue;
+        }
+        match rx.await {
+            Ok(CompactResult::Completed) => {
+                output::ok(format!("@{name}: live context compacted"));
+            }
+            Ok(CompactResult::Unsupported { reason }) => {
+                output::warn(format!("@{name}: compact unsupported: {reason}"));
+            }
+            Ok(CompactResult::Failed { reason }) => {
+                output::bad(format!("@{name}: compact failed: {reason}"));
+            }
+            Err(error) => {
+                debug!(role = %name, %error, "compact response channel dropped");
+                output::bad(format!("@{name}: compact response channel closed"));
+            }
+        }
+    }
+}
+
 /// Cancel SLO — how long the REPL waits for an adapter to honour an
 /// interrupt before escalating to a process kill via `stop_tx`.
 /// Per `docs/v0.2-trust-and-interrupt.md` § H.1.
@@ -1650,7 +1709,7 @@ async fn spawn_role(context: &SpawnContext<'_>, name: &str) -> Result<RunningRol
     let parts = handle.into_parts();
     let crate::adapter::RoleHandleParts {
         role: rname,
-        engine: _,
+        engine,
         tx_user,
         rx_events,
         stop_tx,
@@ -1664,6 +1723,7 @@ async fn spawn_role(context: &SpawnContext<'_>, name: &str) -> Result<RunningRol
         Arc::clone(context.bus),
     );
     Ok(RunningRole {
+        engine,
         tx_user,
         stop_tx: Some(stop_tx),
         interrupt_tx,
