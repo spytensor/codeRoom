@@ -47,6 +47,11 @@ pub(crate) const SLASH_COMMANDS: &[SlashCommand] = &[
         takes_args: false,
     },
     SlashCommand {
+        name: "fresh",
+        description: "restart all roles with clean engine sessions",
+        takes_args: false,
+    },
+    SlashCommand {
         name: "halt",
         description: "interrupt the current turn (optionally @role)",
         // Bare `/halt` (halt every running role) is the common path;
@@ -220,6 +225,9 @@ pub enum Command {
     /// running role. `/halt @role` interrupts that role only. Roles
     /// stay alive — only the turn ends. v0.2 § E.
     Halt(Option<String>),
+    /// `/fresh` clears persisted session ids and restarts every role
+    /// in a clean engine conversation without leaving the REPL.
+    Fresh,
     /// `/host <role>` — session-only host role swap.
     Host(String),
     /// `/help` — print the help banner.
@@ -254,6 +262,7 @@ pub fn parse_line(input: &str) -> Command {
                     Command::Halt(Some(role.to_owned()))
                 }
             }
+            "fresh" => Command::Fresh,
             "host" if !arg.is_empty() => {
                 Command::Host(arg.strip_prefix('@').unwrap_or(arg).to_owned())
             }

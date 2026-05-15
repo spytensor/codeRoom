@@ -500,6 +500,31 @@ mod tests {
     }
 
     #[test]
+    fn start_new_room_session_creates_empty_current_room() {
+        let project = fixture();
+        write_session_id(project.path(), "host", "old-session").unwrap();
+
+        let room = start_new_room_session(project.path()).unwrap();
+
+        assert!(room.role_sessions.is_empty());
+        assert_eq!(
+            read_current_room_id(project.path()).unwrap().as_deref(),
+            Some(room.id.as_str())
+        );
+        assert_eq!(
+            read_room_session(project.path(), &room.id)
+                .unwrap()
+                .role_sessions,
+            BTreeMap::new()
+        );
+        assert_eq!(
+            read_session_id(project.path(), "host").unwrap().as_deref(),
+            Some("old-session"),
+            "callers clear ids separately so the room snapshot stays explicit",
+        );
+    }
+
+    #[test]
     fn picker_renders_cursor_glyph_on_active_row() {
         let sessions = vec![
             RoomSession {

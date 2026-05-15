@@ -15,7 +15,7 @@
 //! shared across simultaneously-working roles) is still tracked
 //! separately as a v0.2.x deliverable.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::{IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -148,12 +148,92 @@ pub async fn run(project_root: &Path) -> Result<()> {
     run_with_options(project_root, RunOptions::default()).await
 }
 
+fn resumable_role_names(project_root: &Path, cfg: &Config) -> Vec<String> {
+    let mut resumed = Vec::new();
+    for name in cfg.role_names() {
+        let Some(session_id) = sessions::read_session_id(project_root, name).ok().flatten() else {
+            continue;
+        };
+        let engine = cfg
+            .roles
+            .get(name)
+            .and_then(|role| role.engine)
+            .unwrap_or(cfg.default_engine);
+        if is_resumable_session_id(engine, name, &session_id) {
+            resumed.push(name.to_owned());
+        }
+    }
+    resumed.sort();
+    resumed
+}
+
+fn role_mentions(names: &[String]) -> String {
+    names
+        .iter()
+        .map(|name| format!("@{name}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn resume_guard_resume_message(names: &[String]) -> String {
+    format!(
+        "resume guard: resuming prior engine sessions for {} — use `/fresh` or `cr start --fresh` for audits/release work",
+        role_mentions(names)
+    )
+}
+
+fn resume_guard_prompt_message(names: &[String]) -> String {
+    format!(
+        "resume guard: prior engine sessions found for {} — use `/fresh` or `cr start --fresh` for audits/release work",
+        role_mentions(names)
+    )
+}
+
+fn resume_guard_noninteractive_message(names: &[String]) -> String {
+    format!(
+        "{}; non-interactive start cannot confirm",
+        resume_guard_resume_message(names)
+    )
+}
+
+fn confirm_resume_guard(names: &[String]) -> Result<bool> {
+    print!("{} Resume them? [y/N] ", resume_guard_prompt_message(names));
+    std::io::stdout().flush()?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "YES"))
+}
+
+fn clear_all_sessions_for_fresh_start(project_root: &Path, source: &str) {
+    if let Err(error) = sessions::clear_all(project_root) {
+        output::warn(format!("{source}: could not clear prior sessions: {error}"));
+    } else {
+        output::hint(format!(
+            "{source}: starting fresh — prior role sessions cleared"
+        ));
+    }
+    if let Err(error) = sessions::start_new_room_session(project_root) {
+        output::warn(format!(
+            "{source}: could not create fresh room session: {error}"
+        ));
+    }
+}
+
+fn maybe_note_resumed_role(pending: &mut BTreeSet<String>, role: &str) {
+    if pending.remove(role) {
+        output::warn(format!(
+            "@{role} is using a resumed engine session — use `/refresh @{role}` or `/fresh` for clean context"
+        ));
+    }
+}
+
 /// REPL entry point with explicit runtime options.
 #[allow(clippy::too_many_lines)]
 pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Result<()> {
     let coderoom_dir = project_root.join(CODEROOM_DIR);
+    let interactive_tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     if !coderoom_dir.exists() {
-        let opts = if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        let opts = if interactive_tty {
             crate::init::InitOptions::manual()
         } else {
             crate::init::InitOptions::auto()
@@ -186,6 +266,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
     // can see the current role roster before sessions vanish; it
     // runs BEFORE the bus opens / roles spawn so spawn_role reads
     // a clean state.
+    let mut resumed_roles = BTreeSet::new();
     if options.fresh {
         if let Err(error) = sessions::clear_all(project_root) {
             output::warn(format!(
@@ -204,32 +285,19 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
         // Surface which roles will actually resume so the user
         // isn't surprised. Stale synthetic placeholders are filtered
         // out before they reach the engine's native resume path.
-        let mut resumed_wired: Vec<String> = Vec::new();
-        for name in cfg.role_names() {
-            let Some(session_id) = sessions::read_session_id(project_root, name).ok().flatten()
-            else {
-                continue;
-            };
-            let engine = cfg
-                .roles
-                .get(name)
-                .and_then(|r| r.engine)
-                .unwrap_or(cfg.default_engine);
-            if !is_resumable_session_id(engine, name, &session_id) {
-                continue;
-            }
-            resumed_wired.push(name.to_owned());
-        }
-        resumed_wired.sort();
+        let resumed_wired = resumable_role_names(project_root, &cfg);
         if !resumed_wired.is_empty() {
-            let names = resumed_wired
-                .iter()
-                .map(|n| format!("@{n}"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            output::hint(format!(
-                "resuming prior session for {names} — pass `--fresh` to start clean"
-            ));
+            if interactive_tty {
+                if confirm_resume_guard(&resumed_wired)? {
+                    output::warn(resume_guard_resume_message(&resumed_wired));
+                    resumed_roles = resumed_wired.into_iter().collect();
+                } else {
+                    clear_all_sessions_for_fresh_start(project_root, "resume guard");
+                }
+            } else {
+                output::warn(resume_guard_noninteractive_message(&resumed_wired));
+                resumed_roles = resumed_wired.into_iter().collect();
+            }
         }
     }
 
@@ -284,7 +352,6 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
 
     let mut renderer_rx = bus.subscribe();
     let mut live_renderer_rx = bus.subscribe_live();
-    let interactive_tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let mut stdin = if interactive_tty {
         None
     } else {
@@ -307,6 +374,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
     // and returned alongside the read line.
     let mut bridge_rx_holder: Option<tokio::sync::mpsc::Receiver<BridgeRequestSink>> =
         Some(bridge_rx);
+    let mut resumed_notice_pending = resumed_roles.clone();
 
     loop {
         let input = if interactive_tty {
@@ -395,6 +463,20 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                     bus: &bus,
                 };
                 refresh_role(&spawn_context, &mut roles, &role).await;
+                resumed_notice_pending.remove(&role);
+            }
+            Command::Fresh => {
+                let spawn_context = SpawnContext {
+                    cfg: &cfg,
+                    adapters: &adapters,
+                    coderoom_dir: &coderoom_dir,
+                    permission_policy_path: &permission_policy_path,
+                    permission_socket_path: bridge_handle.as_ref().map(BridgeHandle::socket_path),
+                    permission_mode_override: options.permission_mode_override,
+                    bus: &bus,
+                };
+                handle_fresh(&spawn_context, &mut roles, project_root).await;
+                resumed_notice_pending.clear();
             }
             Command::Resume(selector) => {
                 let spawn_context = SpawnContext {
@@ -413,6 +495,9 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                     project_root,
                 )
                 .await;
+                resumed_notice_pending = resumable_role_names(project_root, &cfg)
+                    .into_iter()
+                    .collect();
             }
             Command::Transcript(role) => {
                 show_transcript(&coderoom_dir, &role, &cfg.host_role).await;
@@ -484,6 +569,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                     &text,
                     &cfg.host_role,
                     &last_ctrl_c,
+                    &mut resumed_notice_pending,
                 )
                 .await?;
             }
@@ -515,6 +601,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                         &text,
                         &cfg.host_role,
                         &last_ctrl_c,
+                        &mut resumed_notice_pending,
                     )
                     .await?;
                 }
@@ -531,6 +618,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                     &text,
                     &cfg.host_role,
                     &last_ctrl_c,
+                    &mut resumed_notice_pending,
                 )
                 .await?;
             }
@@ -662,6 +750,7 @@ async fn send_and_drain(
     text: &str,
     host_role: &str,
     last_ctrl_c: &Arc<Mutex<Option<std::time::Instant>>>,
+    resumed_notice_pending: &mut BTreeSet<String>,
 ) -> Result<()> {
     // Pre-flight: validate any `@./img.png` style image refs the user
     // typed. Missing files, oversized images, or unsupported formats
@@ -689,6 +778,7 @@ async fn send_and_drain(
     });
 
     while let Some(current) = queue.pop_front() {
+        maybe_note_resumed_role(resumed_notice_pending, &current.role);
         publish_turn_dispatched(bus, &current).await;
         let Some(captured) = drain_one_turn_handling_ctrl_c(
             roles,
@@ -1566,6 +1656,28 @@ async fn handle_resume(
             "s"
         }
     ));
+}
+
+async fn handle_fresh(
+    context: &SpawnContext<'_>,
+    roles: &mut HashMap<String, RunningRole>,
+    project_root: &Path,
+) {
+    output::system("restarting CodeRoom with fresh role sessions");
+    shutdown_all_roles(roles, StopReason::Refreshed);
+    clear_all_sessions_for_fresh_start(project_root, "/fresh");
+
+    for role in context.cfg.role_names() {
+        match spawn_role(context, role).await {
+            Ok(running) => {
+                roles.insert(role.to_owned(), running);
+            }
+            Err(error) => {
+                output::bad(format!("spawning @{role} fresh failed: {error:#}"));
+            }
+        }
+    }
+    output::ok("fresh session started");
 }
 
 fn print_room_sessions(project_root: &Path) {

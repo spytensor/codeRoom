@@ -394,6 +394,7 @@ cr cost                          # cost breakdown per role since YYYY-MM-DD
 /patch <role> <text>             # save correction
 /refresh <role>                  # tear down + respawn from priors+patches+journal
 /resume [number|id|prefix|latest] # list or switch saved room sessions
+/fresh                           # clear saved engine sessions and restart all roles
 /stop <role>                     # terminate the role's subprocess (v0.1 semantics)
 /halt                            # (v0.2) interrupt every in-flight turn; roles stay alive
 /halt <role>                     # (v0.2) interrupt one role's in-flight turn
