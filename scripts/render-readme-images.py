@@ -229,12 +229,12 @@ def render_boot_dashboard() -> None:
     draw.rectangle((left + 30, top - 21, left + 30 + text_width(draw, title, TITLE), top + 9), fill=BG)
     draw_text(draw, (left + 36, top - 19), title, CYAN, TITLE)
 
-    draw_text(draw, (136, 178), "welcome back, chaojiezhu", WHITE, FONT)
+    draw_text(draw, (136, 178), "welcome back, Ada", WHITE, FONT)
     roles = [
+        ("@host", "cc", "1M", PURPLE),
         ("@backend", "cc", "1M", BLUE),
-        ("@ci", "cc", "1M", GREEN),
-        ("@ghost", "cc", "1M", PURPLE),
         ("@security", "codex", "default", SECURITY),
+        ("@ci", "cc", "default", CI),
     ]
     y = 243
     for role, engine, model, color in roles:
@@ -246,7 +246,7 @@ def render_boot_dashboard() -> None:
         y += 43
 
     draw.rectangle((136, 427, 209, 464), fill=CYAN)
-    draw_text(draw, (148, 430), "1.0k", BG, BOLD)
+    draw_text(draw, (148, 430), "1.8k", BG, BOLD)
     draw_text(draw, (237, 431), "base tokens loaded", WHITE, FONT)
     draw_text(draw, (136, 489), "~/codes/codeRoom", MUTED, FONT)
 
@@ -268,7 +268,7 @@ def render_boot_dashboard() -> None:
 
     draw_text(draw, (right_x, 539), "/help for commands", MUTED, FONT)
     draw_text(draw, (132, 714), "type a task · @role · /help · /exit", MUTED, SMALL)
-    prompt(draw, 88, 754, "@security scan repo permission boundaries")
+    prompt(draw, 88, 754, "@host prepare the v0.4.3 release")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     image.save(OUT_DIR / "boot-dashboard.png")
@@ -276,7 +276,7 @@ def render_boot_dashboard() -> None:
 
 def status_line(draw: ScaledDraw, y: int, role: str) -> None:
     _ = role
-    line = "  2 roles working · ... @security · 1m · checking permissions    ... @backend · waiting approval"
+    line = "  3 roles working · ... @host · recording gate evidence    ... @security · waiting approval"
     draw_text(draw, (96, y), fit_text(draw, line, 1040, FONT), MUTED, FONT)
 
 
@@ -326,7 +326,7 @@ def permission_card(
         "waiting for your approval",
         [
             ("✓", GREEN, "read src/adapter/cc.rs"),
-            ("?", YELLOW, "wants Bash `cargo test --workspace` — [a]llow · [s]ession · [d]eny"),
+            ("?", YELLOW, "wants Bash `cargo test --all-features --locked` — [a]llow · [s]ession · [d]eny"),
         ],
         color,
     )
@@ -402,70 +402,70 @@ def handoff_banner(
 def right_rail(draw: ScaledDraw) -> None:
     x = 1244
     draw.rectangle((1204, 128, 1726, 764), fill=RAIL_BG)
-    draw_text(draw, (x, 149), "default surface", YELLOW, TITLE)
-    draw_text(draw, (x, 197), "show", WHITE, FONT)
-    draw_text(draw, (x + 26, 230), "role header + inset replies", MUTED, SMALL)
-    draw_text(draw, (x + 26, 264), "active progress + blockers", MUTED, SMALL)
-    draw_text(draw, (x, 319), "summarize", WHITE, FONT)
-    draw_text(draw, (x + 26, 352), "tool count + current step", MUTED, SMALL)
-    draw_text(draw, (x + 26, 386), "done line only when useful", MUTED, SMALL)
-    draw_text(draw, (x, 441), "hide", WHITE, FONT)
-    draw_text(draw, (x + 26, 474), "allowed once/session", MUTED, SMALL)
-    draw_text(draw, (x + 26, 508), "ready/work lifecycle noise", MUTED, SMALL)
-    draw_text(draw, (x + 26, 542), "raw tool input/output", MUTED, SMALL)
+    draw_text(draw, (x, 149), "gate surface", YELLOW, TITLE)
+    draw_text(draw, (x, 197), "cr gate init", WHITE, FONT)
+    draw_text(draw, (x + 26, 230), "one ledger per work thread", MUTED, SMALL)
+    draw_text(draw, (x + 26, 264), "host records tier + feature", MUTED, SMALL)
+    draw_text(draw, (x, 319), "evidence", WHITE, FONT)
+    draw_text(draw, (x + 26, 352), "research, plan, review", MUTED, SMALL)
+    draw_text(draw, (x + 26, 386), "sign-off and verification", MUTED, SMALL)
+    draw_text(draw, (x, 441), "close", WHITE, FONT)
+    draw_text(draw, (x + 26, 474), "blocks on missing proof", MUTED, SMALL)
+    draw_text(draw, (x + 26, 508), "bypass requires reason", MUTED, SMALL)
+    draw_text(draw, (x + 26, 542), "templates live in .coderoom", MUTED, SMALL)
 
-    draw_text(draw, (x, 586), "audit surface", YELLOW, TITLE)
-    draw_text(draw, (x, 633), "cr show", WHITE, FONT)
-    draw_text(draw, (x + 26, 668), "full CREP event log", MUTED, FONT)
-    draw_text(draw, (x, 719), "verbose tools", WHITE, FONT)
-    draw_text(draw, (x + 26, 754), "opt-in live trace", MUTED, FONT)
+    draw_text(draw, (x, 586), "context tools", YELLOW, TITLE)
+    draw_text(draw, (x, 633), "/compact", WHITE, FONT)
+    draw_text(draw, (x + 26, 668), "shrink live role context", MUTED, FONT)
+    draw_text(draw, (x, 719), "cr compact", WHITE, FONT)
+    draw_text(draw, (x + 26, 754), "fold old history into priors", MUTED, FONT)
 
 
 def render_work_cards() -> None:
     image, draw = new_canvas()
-    prompt(draw, 82, 84, "@security @backend review README claims and tighten the UI")
-    status_line(draw, 134, "@security")
+    prompt(draw, 82, 84, "@host drive release readiness for v0.4.3")
+    status_line(draw, 134, "@host")
     active_card(
         draw,
         208,
-        "@security",
-        "audit permission and routing claims",
-        "checking permission boundaries",
+        "@host",
+        "drive Tier 1 release gate",
+        "recording gate evidence",
         [
-            ("✓", GREEN, "read README.md"),
-            ("✓", GREEN, "grep permission_mode in src/"),
-            ("…", WHITE, "reading src/permissions/mod.rs"),
+            ("✓", GREEN, "cr gate init --tier 1 --feature v0.4.3"),
+            ("✓", GREEN, "recorded research, plan, and sign-off artifacts"),
+            ("…", WHITE, "waiting for independent review + verification"),
         ],
-        (10, 118, 108),
+        PURPLE,
     )
 
     permission_card(
         draw,
         430,
-        "@backend",
-        "verify implementation details",
-        BLUE,
+        "@security",
+        "cross-model review",
+        SECURITY,
     )
 
-    done_summary(draw, 636, "@qa", "audit README testability claims", "52s", 5, YELLOW)
+    done_summary(draw, 636, "@ci", "verify release workflow", "1m12s", 4, CI)
     reply_quote(
         draw,
         684,
-        "@qa",
-        "@security",
-        "permission flow is safe; README testability claims need one correction",
-        YELLOW,
-        SECURITY,
+        "@ci",
+        "@host",
+        "fmt, clippy, tests, release build, and remote CI are green",
+        CI,
+        PURPLE,
     )
     chat_line(
         draw,
         732,
-        "@qa",
-        'README says "fully tested"; src/turn.rs still lacks unit coverage.',
-        YELLOW,
+        "@ci",
+        "GitHub Release assets and npm latest are live for v0.4.3.",
+        CI,
     )
 
-    done_summary(draw, 830, "@security", "audit permission and routing claims", "2m41s", 9, SECURITY)
+    done_summary(draw, 830, "@host", "drive Tier 1 release gate", "2m41s", 9, PURPLE)
     right_rail(draw)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
