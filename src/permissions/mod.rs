@@ -86,6 +86,34 @@ impl PermissionPolicy {
         self.deny.contains(tool)
     }
 
+    /// Whether this policy has no explicit decisions.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.allow.is_empty() && self.deny.is_empty()
+    }
+
+    /// Human-readable summary for startup and `/permissions`.
+    #[must_use]
+    pub fn summary(&self) -> Option<String> {
+        if self.is_empty() {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if !self.allow.is_empty() {
+            parts.push(format!(
+                "allow: {}",
+                self.allow.iter().cloned().collect::<Vec<_>>().join(", ")
+            ));
+        }
+        if !self.deny.is_empty() {
+            parts.push(format!(
+                "deny: {}",
+                self.deny.iter().cloned().collect::<Vec<_>>().join(", ")
+            ));
+        }
+        Some(parts.join("; "))
+    }
+
     /// Return an explicit session decision for `tool`, if one exists.
     /// Deny wins over allow, matching the hook-side policy resolver.
     #[must_use]
@@ -122,6 +150,13 @@ pub fn update_policy(
 ) -> Result<PermissionPolicy> {
     let mut policy = PermissionPolicy::load(path)?;
     update(&mut policy);
+    policy.save(path)?;
+    Ok(policy)
+}
+
+/// Clear every explicit decision from a permission policy file.
+pub fn clear_policy(path: &Path) -> Result<PermissionPolicy> {
+    let policy = PermissionPolicy::default();
     policy.save(path)?;
     Ok(policy)
 }
@@ -503,6 +538,38 @@ mod tests {
         assert_eq!(saved, loaded);
         assert!(loaded.allow.contains("Read"));
         assert!(loaded.deny.contains("Bash"));
+    }
+
+    #[test]
+    fn policy_summary_surfaces_active_decisions() {
+        let mut policy = PermissionPolicy::default();
+        assert!(policy.summary().is_none());
+
+        policy.allow_tool("Write");
+        policy.allow_tool("Read");
+        policy.deny_tool("Bash");
+
+        assert_eq!(
+            policy.summary().as_deref(),
+            Some("allow: Read, Write; deny: Bash")
+        );
+    }
+
+    #[test]
+    fn clear_policy_removes_saved_decisions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("policy.json");
+        update_policy(&path, |policy| {
+            policy.allow_tool("Read");
+            policy.deny_tool("Bash");
+        })
+        .unwrap();
+
+        clear_policy(&path).unwrap();
+
+        let loaded = PermissionPolicy::load(&path).unwrap();
+        assert!(loaded.is_empty());
+        assert!(loaded.summary().is_none());
     }
 
     #[test]

@@ -189,12 +189,12 @@ fn paint_outcome(role: &str, host_role: &str, response: &BridgeResponse) {
 }
 
 /// Pure formatter for the one-line outcome echo — same testability
-/// rationale as [`format_prompt_line`]. Successful allow decisions return
-/// `None` because the default live surface keeps them audit-only; denials
-/// remain visible and self-attributing in plain-text capture (`cr ... | tee`)
-/// and on terminals without truecolor.
+/// rationale as [`format_prompt_line`]. Successful once-only allow decisions
+/// return `None` because the default live surface keeps them audit-only;
+/// session-scoped decisions and denials remain visible and self-attributing in
+/// plain-text capture (`cr ... | tee`) and on terminals without truecolor.
 fn format_outcome_line(role: &str, host_role: &str, response: &BridgeResponse) -> Option<String> {
-    if response.decision == PermissionDecision::Allow {
+    if response.decision == PermissionDecision::Allow && response.scope == DecisionScope::Once {
         return None;
     }
     let role_paint = output::role_color(role, host_role);
@@ -204,10 +204,17 @@ fn format_outcome_line(role: &str, host_role: &str, response: &BridgeResponse) -
         DecisionScope::Once => "once",
         DecisionScope::Session => "session",
     };
+    let (glyph_styled, action) = match response.decision {
+        PermissionDecision::Allow => ("✓".with(output::OK).bold(), "allowed".with(output::OK)),
+        PermissionDecision::Deny => ("⊘".with(output::BAD).bold(), "denied".with(output::BAD)),
+    };
+    let reset_hint = if response.scope == DecisionScope::Session {
+        "; clear with /permissions clear"
+    } else {
+        ""
+    };
     Some(format!(
-        "{gutter} {glyph_styled} {role_label} {action} ({scope_label})",
-        glyph_styled = "⊘".with(output::BAD).bold(),
-        action = "denied".with(output::BAD),
+        "{gutter} {glyph_styled} {role_label} {action} ({scope_label}{reset_hint})",
     ))
 }
 
@@ -538,14 +545,31 @@ mod tests {
     }
 
     #[test]
-    fn allow_outcome_is_silent() {
+    fn allow_once_outcome_is_silent() {
+        let response = BridgeResponse {
+            v: 1,
+            decision: PermissionDecision::Allow,
+            scope: DecisionScope::Once,
+            reason: "user allowed (once)".to_owned(),
+        };
+        assert!(format_outcome_line("backend", "host", &response).is_none());
+    }
+
+    #[test]
+    fn allow_session_outcome_is_visible_with_reset_hint() {
         let response = BridgeResponse {
             v: 1,
             decision: PermissionDecision::Allow,
             scope: DecisionScope::Session,
             reason: "user allowed (session)".to_owned(),
         };
-        assert!(format_outcome_line("backend", "host", &response).is_none());
+        let line = strip_ansi(
+            &format_outcome_line("backend", "host", &response).expect("session allow renders"),
+        );
+        assert_eq!(
+            line,
+            "▎ ✓ @backend allowed (session; clear with /permissions clear)"
+        );
     }
 
     #[test]
