@@ -79,6 +79,20 @@ pub struct UserConfig {
     #[serde(default)]
     pub schema_version: Option<u32>,
 
+    /// Deprecated pre-layered user default. Accepted for compatibility
+    /// with old `~/Library/Application Support/coderoom/config.toml`
+    /// files and treated like `[defaults].engine`.
+    #[serde(default, skip_serializing)]
+    pub engine: Option<Engine>,
+    /// Deprecated pre-layered user default. Accepted for compatibility
+    /// and treated like `[defaults].permission_mode`.
+    #[serde(default, skip_serializing)]
+    pub permission_mode: Option<PermissionMode>,
+    /// Deprecated v0.1-era budget hint. Accepted so older top-level
+    /// user config files do not prevent CodeRoom from starting.
+    #[serde(default, skip_serializing)]
+    pub budget_per_role_usd: Option<f64>,
+
     /// Cross-engine fallbacks when a project doesn't pin a value.
     #[serde(default)]
     pub defaults: Option<UserDefaults>,
@@ -189,6 +203,11 @@ pub struct ProjectConfigRaw {
     /// Schema version. Informational at v0.2.
     #[serde(default)]
     pub schema_version: Option<u32>,
+    /// Deprecated v0.1-era budget hint. Accepted so older project
+    /// `.coderoom/config.toml` files do not prevent CodeRoom from
+    /// starting; ignored by the current runtime and omitted on writes.
+    #[serde(default, skip_serializing)]
+    pub budget_per_role_usd: Option<f64>,
     /// Project-pinned default engine. Falls through to user when absent.
     #[serde(default)]
     pub default_engine: Option<Engine>,
@@ -435,6 +454,7 @@ fn merge(
             user.and_then(|u| u.defaults.as_ref())
                 .and_then(|d| d.engine)
         })
+        .or_else(|| user.and_then(|u| u.engine))
         .ok_or(ConfigError::MissingDefaultEngine)?;
 
     let default_model = project.default_model.clone().or_else(|| {
@@ -448,6 +468,7 @@ fn merge(
             user.and_then(|u| u.defaults.as_ref())
                 .and_then(|d| d.permission_mode)
         })
+        .or_else(|| user.and_then(|u| u.permission_mode))
         .unwrap_or(PermissionMode::Ask);
 
     Ok(Config {
