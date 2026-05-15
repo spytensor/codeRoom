@@ -268,7 +268,7 @@ def render_boot_dashboard() -> None:
 
     draw_text(draw, (right_x, 539), "/help for commands", MUTED, FONT)
     draw_text(draw, (132, 714), "type a task · @role · /help · /exit", MUTED, SMALL)
-    prompt(draw, 88, 754, "@host prepare the v0.4.3 release")
+    prompt(draw, 88, 754, "@host verify the v0.4.4 hotfix")
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     image.save(OUT_DIR / "boot-dashboard.png")
@@ -423,7 +423,7 @@ def right_rail(draw: ScaledDraw) -> None:
 
 def render_work_cards() -> None:
     image, draw = new_canvas()
-    prompt(draw, 82, 84, "@host drive release readiness for v0.4.3")
+    prompt(draw, 82, 84, "@host drive release readiness for v0.4.4")
     status_line(draw, 134, "@host")
     active_card(
         draw,
@@ -432,7 +432,7 @@ def render_work_cards() -> None:
         "drive Tier 1 release gate",
         "recording gate evidence",
         [
-            ("✓", GREEN, "cr gate init --tier 1 --feature v0.4.3"),
+            ("✓", GREEN, "cr gate init --tier 1 --feature v0.4.4"),
             ("✓", GREEN, "recorded research, plan, and sign-off artifacts"),
             ("…", WHITE, "waiting for independent review + verification"),
         ],
@@ -461,7 +461,7 @@ def render_work_cards() -> None:
         draw,
         732,
         "@ci",
-        "GitHub Release assets and npm latest are live for v0.4.3.",
+        "GitHub Release assets and npm latest are live for v0.4.4.",
         CI,
     )
 

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-05-15
+
+### Fixed
+
+- **Legacy budget config compatibility now covers project configs.**
+  Project `.coderoom/config.toml` files with the removed top-level
+  `budget_per_role_usd` key are accepted for compatibility and ignored
+  by the current runtime, so existing workspaces created before v0.4.2
+  do not prevent `cr` from starting.
+- **Legacy top-level user defaults remain loadable.** User config files
+  using the older top-level `engine`, `permission_mode`, and
+  `budget_per_role_usd` keys now map those values into the layered
+  defaults path instead of failing TOML deserialization.
+
 ## [0.4.3] - 2026-05-15
 
 ### Added
@@ -1055,7 +1069,8 @@ API stability, not feature completeness.
 - **No timestamps in CREP events.** `cr cost --since` honors the log
   file's mtime only; per-event timestamps land in v0.2.
 
-[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/spytensor/codeRoom/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/spytensor/codeRoom/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/spytensor/codeRoom/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/spytensor/codeRoom/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/spytensor/codeRoom/compare/v0.4.0...v0.4.1

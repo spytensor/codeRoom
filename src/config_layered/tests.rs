@@ -113,6 +113,59 @@ budget_per_role_usd = 0.5
 }
 
 #[test]
+fn legacy_user_top_level_defaults_are_accepted() {
+    let tmp = TempDir::new().unwrap();
+    let user_path = tmp.path().join("user/config.toml");
+    write_user(
+        &user_path,
+        r#"
+engine = "codex"
+permission_mode = "auto"
+budget_per_role_usd = 0.5
+"#,
+    );
+    let coderoom = tmp.path().join(CODEROOM_DIR);
+    // Project intentionally omits default_engine and permission_mode.
+    std::fs::create_dir_all(coderoom.join(ROLES_DIR)).unwrap();
+    std::fs::write(
+        coderoom.join(CONFIG_FILE),
+        r#"
+host_role = "host"
+
+[roles.host]
+"#,
+    )
+    .unwrap();
+    std::fs::write(coderoom.join(ROLES_DIR).join("host.md"), "host\n").unwrap();
+
+    let cfg = load(tmp.path(), Some(&user_path)).expect("legacy top-level user defaults load");
+    assert_eq!(cfg.default_engine, Engine::Codex);
+    assert_eq!(cfg.permission_mode, PermissionMode::Auto);
+}
+
+#[test]
+fn legacy_project_budget_hint_is_accepted_but_ignored() {
+    let tmp = TempDir::new().unwrap();
+    let coderoom = tmp.path().join(CODEROOM_DIR);
+    std::fs::create_dir_all(coderoom.join(ROLES_DIR)).unwrap();
+    std::fs::write(
+        coderoom.join(CONFIG_FILE),
+        r#"
+default_engine = "cc"
+budget_per_role_usd = 0.50
+host_role = "host"
+
+[roles.host]
+"#,
+    )
+    .unwrap();
+    std::fs::write(coderoom.join(ROLES_DIR).join("host.md"), "host\n").unwrap();
+
+    let cfg = load(tmp.path(), None).expect("legacy project budget hint should load");
+    assert_eq!(cfg.default_engine, Engine::Cc);
+}
+
+#[test]
 fn project_engine_overrides_user_engine() {
     let tmp = TempDir::new().unwrap();
     let user_path = tmp.path().join("user-config.toml");
@@ -267,6 +320,7 @@ fn merged_always_include_unions_layers_then_filters_never() {
     };
     let project = ProjectConfigRaw {
         schema_version: None,
+        budget_per_role_usd: None,
         default_engine: Some(Engine::Cc),
         default_model: None,
         permission_mode: None,

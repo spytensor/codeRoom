@@ -1,6 +1,6 @@
 {
   "name": "@spytensor/coderoom",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "A coordination shell for multi-role agent CLI sessions in a single chat-style terminal.",
   "keywords": [
     "cli",

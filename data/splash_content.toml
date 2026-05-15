@@ -16,6 +16,14 @@ items = [
 ]
 
 [[whats_new]]
+version = "0.4.4"
+items = [
+  "legacy budget_per_role_usd project configs no longer block startup",
+  "older top-level user defaults still map into layered config",
+  "hotfix release keeps v0.4.3 SDLC gates and live compact intact",
+]
+
+[[whats_new]]
 version = "0.4.3"
 items = [
   "host-led SDLC gates track evidence, review, sign-off, and verification",
