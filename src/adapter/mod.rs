@@ -330,7 +330,7 @@ impl RoleHandle {
 #[derive(Debug, Clone)]
 pub enum UserMessage {
     /// Free-form prompt text. The role decides how to respond.
-    Prompt(String),
+    Prompt(PromptMessage),
     /// Wrapper's verdict on a previously-proposed tool call.
     /// Sent in response to `CrepEvent::ToolCallProposed`.
     ToolDecision {
@@ -343,11 +343,82 @@ pub enum UserMessage {
     },
 }
 
-pub(crate) fn role_spoke_events_from_text(
+/// Prompt text plus the CREP turn/thread ids assigned by the REPL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptMessage {
+    /// Free-form prompt text shown to the role.
+    pub text: String,
+    /// Unique id for this role turn.
+    pub turn_id: crate::turn::TurnId,
+    /// Shared id for this user-originated auto-route chain.
+    pub thread_id: crate::turn::TurnId,
+}
+
+impl PromptMessage {
+    /// Construct a prompt for a real REPL-dispatched turn.
+    pub fn new(
+        text: impl Into<String>,
+        turn_id: impl Into<crate::turn::TurnId>,
+        thread_id: impl Into<crate::turn::TurnId>,
+    ) -> Self {
+        Self {
+            text: text.into(),
+            turn_id: turn_id.into(),
+            thread_id: thread_id.into(),
+        }
+    }
+
+    /// Construct a v0.1-shaped prompt for adapter unit tests and
+    /// headless smoke paths that do not model turn attribution.
+    pub fn legacy(text: impl Into<String>) -> Self {
+        Self::new(
+            text,
+            crate::turn::LEGACY_TURN_ID,
+            crate::turn::LEGACY_TURN_ID,
+        )
+    }
+}
+
+impl UserMessage {
+    /// Free-form prompt text with explicit turn attribution.
+    pub fn prompt(
+        text: impl Into<String>,
+        turn_id: impl Into<crate::turn::TurnId>,
+        thread_id: impl Into<crate::turn::TurnId>,
+    ) -> Self {
+        Self::Prompt(PromptMessage::new(text, turn_id, thread_id))
+    }
+
+    /// Free-form prompt text without turn attribution.
+    pub fn legacy_prompt(text: impl Into<String>) -> Self {
+        Self::Prompt(PromptMessage::legacy(text))
+    }
+}
+
+#[cfg(test)]
+fn role_spoke_events_from_text(
     role: &str,
     text: &str,
     cost_usd: f64,
     cache_read: u64,
+) -> Vec<CrepEvent> {
+    role_spoke_events_from_text_with_ids(
+        role,
+        text,
+        cost_usd,
+        cache_read,
+        crate::turn::LEGACY_TURN_ID,
+        crate::turn::LEGACY_TURN_ID,
+    )
+}
+
+pub(crate) fn role_spoke_events_from_text_with_ids(
+    role: &str,
+    text: &str,
+    cost_usd: f64,
+    cache_read: u64,
+    turn_id: &str,
+    thread_id: &str,
 ) -> Vec<CrepEvent> {
     let extracted = crate::work::extract_cr_task(text);
     let mut events = Vec::new();
@@ -355,8 +426,8 @@ pub(crate) fn role_spoke_events_from_text(
         events.push(CrepEvent::WorkTitle {
             role: role.to_owned(),
             title,
-            turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-            thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+            turn_id: turn_id.to_owned(),
+            thread_id: thread_id.to_owned(),
         });
     }
     let body = extracted.body.trim().to_owned();
@@ -367,8 +438,8 @@ pub(crate) fn role_spoke_events_from_text(
         mentions,
         cost_usd,
         cache_read,
-        turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-        thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+        turn_id: turn_id.to_owned(),
+        thread_id: thread_id.to_owned(),
     });
     events
 }
@@ -514,7 +585,7 @@ mod tests {
 
     #[test]
     fn user_message_variants_construct() {
-        let _prompt = UserMessage::Prompt("hello".into());
+        let _prompt = UserMessage::legacy_prompt("hello");
         let _decision = UserMessage::ToolDecision {
             tool_use_id: "toolu_x".into(),
             allow: false,
@@ -552,6 +623,32 @@ mod tests {
                 thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn role_spoke_events_can_carry_turn_ids() {
+        let events = role_spoke_events_from_text_with_ids(
+            "qa",
+            "```cr-task\nReview adapter timeout paths\n```\n\nDone.",
+            0.5,
+            42,
+            "tu-1",
+            "th-1",
+        );
+        for event in events {
+            match event {
+                CrepEvent::WorkTitle {
+                    turn_id, thread_id, ..
+                }
+                | CrepEvent::RoleSpoke {
+                    turn_id, thread_id, ..
+                } => {
+                    assert_eq!(turn_id, "tu-1");
+                    assert_eq!(thread_id, "th-1");
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
     }
 
     #[test]

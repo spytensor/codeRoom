@@ -32,14 +32,14 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use regex::Regex;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tracing::{debug, warn};
 
 use crate::adapter::{
@@ -47,7 +47,7 @@ use crate::adapter::{
     UserMessage,
 };
 use crate::crep::{CrepEvent, StopReason};
-use crate::turn::TurnId;
+use crate::turn::{TurnId, LEGACY_TURN_ID};
 
 /// Channel capacity for both the user-message inbound queue and the CREP
 /// event outbound queue. Sized for typical interactive usage; can be
@@ -166,6 +166,7 @@ impl EngineAdapter for CcAdapter {
         let (stop_tx, stop_rx) = oneshot::channel::<StopReason>();
         let (interrupt_tx, interrupt_rx) =
             mpsc::channel::<TurnId>(crate::adapter::INTERRUPT_CHANNEL_CAPACITY);
+        let current_turn = Arc::new(Mutex::new(None::<ActiveTurn>));
         // Internal stop: emit_cc_interrupt_events fires this so
         // `wait_child` can terminate the subprocess on user halt. See
         // `docs/v0.2-trust-and-interrupt.md` § F.1: until the
@@ -182,6 +183,7 @@ impl EngineAdapter for CcAdapter {
             stdout,
             tx_events.clone(),
             turn_done_tx,
+            Arc::clone(&current_turn),
         ));
         tokio::spawn(drain_stderr(config.name.clone(), stderr));
 
@@ -193,6 +195,7 @@ impl EngineAdapter for CcAdapter {
             rx_user,
             stdin,
             turn_done_rx,
+            Arc::clone(&current_turn),
         ));
 
         // Turn-interrupt drain (cc's spec § F.1 fallback): emit a
@@ -208,6 +211,7 @@ impl EngineAdapter for CcAdapter {
             interrupt_rx,
             tx_events.clone(),
             internal_stop_tx,
+            Arc::clone(&current_turn),
         ));
 
         // Process waiter: emit a final RoleStopped when the subprocess exits.
@@ -217,6 +221,7 @@ impl EngineAdapter for CcAdapter {
             tx_events,
             stop_rx,
             internal_stop_rx,
+            Arc::clone(&current_turn),
         ));
 
         Ok(RoleHandle::new_with_tempfiles(
@@ -231,11 +236,18 @@ impl EngineAdapter for CcAdapter {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ActiveTurn {
+    turn_id: TurnId,
+    thread_id: TurnId,
+}
+
 async fn emit_cc_interrupt_events(
     role: String,
     mut rx: mpsc::Receiver<TurnId>,
     events: mpsc::Sender<CrepEvent>,
     internal_stop: mpsc::Sender<StopReason>,
+    current_turn: Arc<Mutex<Option<ActiveTurn>>>,
 ) {
     // Wait for the first /halt. There is at most one meaningful halt
     // in this adapter's lifetime — once it lands we kill the cc
@@ -248,20 +260,22 @@ async fn emit_cc_interrupt_events(
         turn_id = %turn_id,
         "cc /halt: emit TurnInterrupted then kill subprocess (spec § F.1 fallback)"
     );
+    let active = current_turn.lock().await.clone();
+    let (event_turn_id, event_thread_id) = active.map_or_else(
+        || (turn_id, LEGACY_TURN_ID.to_owned()),
+        |turn| (turn.turn_id, turn.thread_id),
+    );
     let _ = events
         .send(CrepEvent::TurnInterrupted {
             role: role.clone(),
-            turn_id: if turn_id.is_empty() {
-                crate::turn::LEGACY_TURN_ID.to_owned()
-            } else {
-                turn_id
-            },
-            thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+            turn_id: event_turn_id,
+            thread_id: event_thread_id,
             source: crate::crep::InterruptSource::UserHalt,
             partial_text: None,
             partial_mentions: Vec::new(),
         })
         .await;
+    *current_turn.lock().await = None;
     // Kill the subprocess so the halted prompt's eventual RoleSpoke
     // cannot leak into a future turn. Idempotent — `try_send`
     // swallows the error if `wait_child` has already taken its
@@ -435,7 +449,18 @@ fn is_mention_boundary(text: &str, at_idx: usize) -> bool {
 ///
 /// Pure function: no I/O, no async. Easy to unit-test against canned
 /// stream-json samples.
+#[cfg(test)]
 fn translate(role: &str, priors_hash: &str, line: &Value) -> Vec<CrepEvent> {
+    translate_for_turn(role, priors_hash, line, LEGACY_TURN_ID, LEGACY_TURN_ID)
+}
+
+fn translate_for_turn(
+    role: &str,
+    priors_hash: &str,
+    line: &Value,
+    turn_id: &str,
+    thread_id: &str,
+) -> Vec<CrepEvent> {
     let Some(t) = line.get("type").and_then(Value::as_str) else {
         return Vec::new();
     };
@@ -476,16 +501,16 @@ fn translate(role: &str, priors_hash: &str, line: &Value) -> Vec<CrepEvent> {
                 .and_then(|u| u.get("cache_read_input_tokens"))
                 .and_then(Value::as_u64)
                 .unwrap_or(0);
-            let mut events = extract_permission_denials(role, line);
-            events.extend(crate::adapter::role_spoke_events_from_text(
-                role, &text, cost_usd, cache_read,
+            let mut events = extract_permission_denials(role, line, turn_id, thread_id);
+            events.extend(crate::adapter::role_spoke_events_from_text_with_ids(
+                role, &text, cost_usd, cache_read, turn_id, thread_id,
             ));
             events
         }
 
-        "assistant" => extract_assistant_events(role, line),
+        "assistant" => extract_assistant_events(role, line, turn_id, thread_id),
 
-        "user" => extract_tool_results(role, line),
+        "user" => extract_tool_results(role, line, turn_id, thread_id),
 
         // Other event types (rate_limit_event, hook events, etc.) are
         // intentionally ignored at v0.1; they show up in the transcript
@@ -494,7 +519,12 @@ fn translate(role: &str, priors_hash: &str, line: &Value) -> Vec<CrepEvent> {
     }
 }
 
-fn extract_permission_denials(role: &str, line: &Value) -> Vec<CrepEvent> {
+fn extract_permission_denials(
+    role: &str,
+    line: &Value,
+    turn_id: &str,
+    thread_id: &str,
+) -> Vec<CrepEvent> {
     let Some(denials) = line.get("permission_denials").and_then(Value::as_array) else {
         return Vec::new();
     };
@@ -523,14 +553,19 @@ fn extract_permission_denials(role: &str, line: &Value) -> Vec<CrepEvent> {
                 tool_name,
                 tool_input,
                 reason,
-                turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-                thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                turn_id: turn_id.to_owned(),
+                thread_id: thread_id.to_owned(),
             }
         })
         .collect()
 }
 
-fn extract_assistant_events(role: &str, line: &Value) -> Vec<CrepEvent> {
+fn extract_assistant_events(
+    role: &str,
+    line: &Value,
+    turn_id: &str,
+    thread_id: &str,
+) -> Vec<CrepEvent> {
     let Some(content) = line
         .get("message")
         .and_then(|m| m.get("content"))
@@ -548,8 +583,8 @@ fn extract_assistant_events(role: &str, line: &Value) -> Vec<CrepEvent> {
                         events.push(CrepEvent::WorkTitle {
                             role: role.to_owned(),
                             title,
-                            turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-                            thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                            turn_id: turn_id.to_owned(),
+                            thread_id: thread_id.to_owned(),
                         });
                     }
                 }
@@ -567,8 +602,8 @@ fn extract_assistant_events(role: &str, line: &Value) -> Vec<CrepEvent> {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned(),
-                turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-                thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                turn_id: turn_id.to_owned(),
+                thread_id: thread_id.to_owned(),
             }),
             _ => {}
         }
@@ -576,7 +611,12 @@ fn extract_assistant_events(role: &str, line: &Value) -> Vec<CrepEvent> {
     events
 }
 
-fn extract_tool_results(role: &str, line: &Value) -> Vec<CrepEvent> {
+fn extract_tool_results(
+    role: &str,
+    line: &Value,
+    turn_id: &str,
+    thread_id: &str,
+) -> Vec<CrepEvent> {
     let Some(content) = line
         .get("message")
         .and_then(|m| m.get("content"))
@@ -611,8 +651,8 @@ fn extract_tool_results(role: &str, line: &Value) -> Vec<CrepEvent> {
                     .to_owned(),
                 ok,
                 output_summary: truncate(&output_summary, 200),
-                turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-                thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                turn_id: turn_id.to_owned(),
+                thread_id: thread_id.to_owned(),
             }
         })
         .collect()
@@ -633,6 +673,7 @@ async fn read_stdout(
     stdout: ChildStdout,
     events: mpsc::Sender<CrepEvent>,
     turn_done: mpsc::Sender<()>,
+    current_turn: Arc<Mutex<Option<ActiveTurn>>>,
 ) {
     let mut lines = BufReader::new(stdout).lines();
     // WorkTitle dedup set, keyed on turn_id. v0.1 events with no
@@ -652,7 +693,13 @@ async fn read_stdout(
                         continue;
                     }
                 };
-                for event in translate(&role, &priors_hash, &value) {
+                let active = current_turn.lock().await.clone();
+                let (turn_id, thread_id) = active
+                    .as_ref()
+                    .map_or((LEGACY_TURN_ID, LEGACY_TURN_ID), |turn| {
+                        (turn.turn_id.as_str(), turn.thread_id.as_str())
+                    });
+                for event in translate_for_turn(&role, &priors_hash, &value, turn_id, thread_id) {
                     let Some(event) = dedupe_work_title_for_turn(event, &mut seen_titles_by_turn)
                     else {
                         continue;
@@ -677,6 +724,7 @@ async fn read_stdout(
                     }
                     if let Some(id) = boundary_turn_id {
                         seen_titles_by_turn.remove(&id);
+                        *current_turn.lock().await = None;
                         let _ = turn_done.send(()).await;
                     }
                 }
@@ -727,24 +775,33 @@ async fn write_stdin<W>(
     mut rx: mpsc::Receiver<UserMessage>,
     mut stdin: W,
     mut turn_done: mpsc::Receiver<()>,
+    current_turn: Arc<Mutex<Option<ActiveTurn>>>,
 ) where
     W: AsyncWrite + Unpin,
 {
     while let Some(msg) = rx.recv().await {
         match msg {
-            UserMessage::Prompt(text) => {
+            UserMessage::Prompt(prompt) => {
+                *current_turn.lock().await = Some(ActiveTurn {
+                    turn_id: prompt.turn_id.clone(),
+                    thread_id: prompt.thread_id.clone(),
+                });
+                let text = prompt.text;
                 let envelope = build_user_envelope(&role, &text);
                 let line = format!("{envelope}\n");
                 if let Err(error) = stdin.write_all(line.as_bytes()).await {
                     warn!(role, %error, "failed to write prompt to stdin; closing");
+                    *current_turn.lock().await = None;
                     return;
                 }
                 if let Err(error) = stdin.flush().await {
                     warn!(role, %error, "failed to flush stdin");
+                    *current_turn.lock().await = None;
                     return;
                 }
                 if turn_done.recv().await.is_none() {
                     debug!(role, "turn boundary channel closed; stopping stdin writer");
+                    *current_turn.lock().await = None;
                     return;
                 }
             }
@@ -768,6 +825,7 @@ async fn wait_child(
     events: mpsc::Sender<CrepEvent>,
     stop_rx: oneshot::Receiver<StopReason>,
     mut internal_stop_rx: mpsc::Receiver<StopReason>,
+    current_turn: Arc<Mutex<Option<ActiveTurn>>>,
 ) {
     let reason = tokio::select! {
         status = child.wait() => match status {
@@ -788,11 +846,16 @@ async fn wait_child(
             reason
         }
     };
+    let turn_id = current_turn
+        .lock()
+        .await
+        .as_ref()
+        .map(|turn| turn.turn_id.clone());
     let _ = events
         .send(CrepEvent::RoleStopped {
             role,
             reason,
-            turn_id: None,
+            turn_id,
         })
         .await;
 }

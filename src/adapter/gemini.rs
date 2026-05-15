@@ -245,6 +245,8 @@ impl GeminiLoop {
             let UserMessage::Prompt(prompt) = msg else {
                 continue;
             };
+            let turn_id = prompt.turn_id.clone();
+            let thread_id = prompt.thread_id.clone();
             let outcome = run_one_turn(
                 GeminiTurnRequest {
                     gemini_path: &self.gemini_path,
@@ -252,10 +254,12 @@ impl GeminiLoop {
                     priors_path: &self.priors_path,
                     priors_text: &self.priors_text,
                     prompt_mode: self.prompt_mode,
-                    user_prompt: &prompt,
+                    user_prompt: &prompt.text,
                     role: &self.role,
                     events: self.events.clone(),
                     resume_session_id: self.resume_session_id.as_deref(),
+                    turn_id: &turn_id,
+                    thread_id: &thread_id,
                 },
                 &mut self.stop_rx,
                 &mut self.interrupt_rx,
@@ -268,12 +272,6 @@ impl GeminiLoop {
                     session_id,
                 } => {
                     self.record_session_id(session_id).await;
-                    // Emit a turn-boundary event so the REPL's drain
-                    // unblocks when the user halts. We don't yet know
-                    // the dispatched turn_id (UserMessage will carry
-                    // it once parallel dispatch lands), so tag with
-                    // the legacy empty-string id; drain matches on
-                    // role + variant, not on id.
                     let trimmed = partial_text.trim().to_owned();
                     let partial_mentions = if trimmed.is_empty() {
                         Vec::new()
@@ -284,8 +282,8 @@ impl GeminiLoop {
                         .events
                         .send(CrepEvent::TurnInterrupted {
                             role: self.role.clone(),
-                            turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-                            thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                            turn_id: turn_id.clone(),
+                            thread_id: thread_id.clone(),
                             source: crate::crep::InterruptSource::UserHalt,
                             partial_text: if trimmed.is_empty() {
                                 None
@@ -298,9 +296,9 @@ impl GeminiLoop {
                 }
                 GeminiTurnOutcome::Completed(Ok(turn)) => {
                     self.record_session_id(turn.session_id.clone()).await;
-                    for event in
-                        crate::adapter::role_spoke_events_from_text(&self.role, &turn.text, 0.0, 0)
-                    {
+                    for event in crate::adapter::role_spoke_events_from_text_with_ids(
+                        &self.role, &turn.text, 0.0, 0, &turn_id, &thread_id,
+                    ) {
                         let _ = self.events.send(event).await;
                     }
                 }
@@ -314,8 +312,8 @@ impl GeminiLoop {
                             mentions: Vec::new(),
                             cost_usd: 0.0,
                             cache_read: 0,
-                            turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-                            thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                            turn_id,
+                            thread_id,
                         })
                         .await;
                 }
@@ -379,6 +377,8 @@ struct GeminiTurnRequest<'a> {
     role: &'a str,
     events: mpsc::Sender<CrepEvent>,
     resume_session_id: Option<&'a str>,
+    turn_id: &'a str,
+    thread_id: &'a str,
 }
 
 /// Run a single `gemini -p` invocation and translate its stream-json stdout.
@@ -450,6 +450,10 @@ async fn run_one_turn(
         Arc::clone(&stdout_accum),
         stream_state,
         request.events.clone(),
+        GeminiTurnIds {
+            turn_id: request.turn_id.to_owned(),
+            thread_id: request.thread_id.to_owned(),
+        },
     ));
     let stderr_task = tokio::spawn(read_pipe_streaming(stderr, Arc::clone(&stderr_accum)));
 
@@ -513,10 +517,9 @@ async fn read_stdout_streaming(
     raw_accum: Arc<Mutex<Vec<u8>>>,
     stream_state: GeminiStreamState,
     events: mpsc::Sender<CrepEvent>,
+    turn_ids: GeminiTurnIds,
 ) -> std::io::Result<GeminiTurn> {
-    let mut fallback_lines = Vec::new();
-    let mut tool_ids = GeminiSyntheticToolIds::default();
-    let mut delta_sequence = 0u64;
+    let mut parse_state = GeminiParseState::default();
     let mut pending = Vec::<u8>::new();
     let mut buf = vec![0u8; 4096];
     loop {
@@ -536,9 +539,8 @@ async fn read_stdout_streaming(
                 &line,
                 &stream_state,
                 &events,
-                &mut fallback_lines,
-                &mut tool_ids,
-                &mut delta_sequence,
+                &mut parse_state,
+                &turn_ids,
             )
             .await;
         }
@@ -549,15 +551,14 @@ async fn read_stdout_streaming(
             &pending,
             &stream_state,
             &events,
-            &mut fallback_lines,
-            &mut tool_ids,
-            &mut delta_sequence,
+            &mut parse_state,
+            &turn_ids,
         )
         .await;
     }
     let mut text = stream_state.assistant_text.lock().await.clone();
-    if text.is_empty() && !fallback_lines.is_empty() {
-        text = fallback_lines.join("\n");
+    if text.is_empty() && !parse_state.fallback_lines.is_empty() {
+        text = parse_state.fallback_lines.join("\n");
     }
     Ok(GeminiTurn {
         text: text.trim().to_owned(),
@@ -571,14 +572,26 @@ struct GeminiStreamState {
     session_id: Arc<Mutex<Option<String>>>,
 }
 
+#[derive(Debug, Clone)]
+struct GeminiTurnIds {
+    turn_id: String,
+    thread_id: String,
+}
+
+#[derive(Default)]
+struct GeminiParseState {
+    fallback_lines: Vec<String>,
+    tool_ids: GeminiSyntheticToolIds,
+    delta_sequence: u64,
+}
+
 async fn process_gemini_stream_line(
     role: &str,
     line: &[u8],
     stream_state: &GeminiStreamState,
     events: &mpsc::Sender<CrepEvent>,
-    fallback_lines: &mut Vec<String>,
-    tool_ids: &mut GeminiSyntheticToolIds,
-    delta_sequence: &mut u64,
+    parse_state: &mut GeminiParseState,
+    turn_ids: &GeminiTurnIds,
 ) {
     let line = String::from_utf8_lossy(line);
     let line = line.trim();
@@ -586,7 +599,7 @@ async fn process_gemini_stream_line(
         return;
     }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-        fallback_lines.push(line.to_owned());
+        parse_state.fallback_lines.push(line.to_owned());
         return;
     };
     match value.get("type").and_then(serde_json::Value::as_str) {
@@ -600,29 +613,41 @@ async fn process_gemini_stream_line(
         {
             if let Some(content) = value.get("content").and_then(serde_json::Value::as_str) {
                 stream_state.assistant_text.lock().await.push_str(content);
-                *delta_sequence = value
+                parse_state.delta_sequence = value
                     .get("sequence")
                     .and_then(serde_json::Value::as_u64)
-                    .unwrap_or_else(|| (*delta_sequence).saturating_add(1));
+                    .unwrap_or_else(|| parse_state.delta_sequence.saturating_add(1));
                 let _ = events.try_send(CrepEvent::RoleOutputDelta {
                     role: role.to_owned(),
                     text_delta: content.to_owned(),
-                    sequence: *delta_sequence,
-                    turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-                    thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                    sequence: parse_state.delta_sequence,
+                    turn_id: turn_ids.turn_id.clone(),
+                    thread_id: turn_ids.thread_id.clone(),
                 });
             }
         }
         Some("tool_use") => {
-            let tool_use_id = tool_ids.for_use(&value);
+            let tool_use_id = parse_state.tool_ids.for_use(&value);
             let _ = events
-                .send(gemini_tool_use_to_event(role, &value, tool_use_id))
+                .send(gemini_tool_use_to_event(
+                    role,
+                    &value,
+                    tool_use_id,
+                    &turn_ids.turn_id,
+                    &turn_ids.thread_id,
+                ))
                 .await;
         }
         Some("tool_result") => {
-            let tool_use_id = tool_ids.for_result(&value);
+            let tool_use_id = parse_state.tool_ids.for_result(&value);
             let _ = events
-                .send(gemini_tool_result_to_event(role, &value, tool_use_id))
+                .send(gemini_tool_result_to_event(
+                    role,
+                    &value,
+                    tool_use_id,
+                    &turn_ids.turn_id,
+                    &turn_ids.thread_id,
+                ))
                 .await;
         }
         _ => {}
@@ -797,6 +822,8 @@ fn gemini_tool_use_to_event(
     role: &str,
     value: &serde_json::Value,
     tool_use_id: String,
+    turn_id: &str,
+    thread_id: &str,
 ) -> CrepEvent {
     CrepEvent::ToolCallProposed {
         role: role.to_owned(),
@@ -810,8 +837,8 @@ fn gemini_tool_use_to_event(
             .cloned()
             .unwrap_or(serde_json::Value::Null),
         tool_use_id,
-        turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-        thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+        turn_id: turn_id.to_owned(),
+        thread_id: thread_id.to_owned(),
     }
 }
 
@@ -819,6 +846,8 @@ fn gemini_tool_result_to_event(
     role: &str,
     value: &serde_json::Value,
     tool_use_id: String,
+    turn_id: &str,
+    thread_id: &str,
 ) -> CrepEvent {
     let ok = value
         .get("status")
@@ -839,8 +868,8 @@ fn gemini_tool_result_to_event(
         tool_use_id,
         ok,
         output_summary: truncate(summary, TOOL_OUTPUT_SUMMARY_MAX_CHARS),
-        turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-        thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+        turn_id: turn_id.to_owned(),
+        thread_id: thread_id.to_owned(),
     }
 }
 
@@ -904,6 +933,10 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             GeminiStreamState::default(),
             tx,
+            GeminiTurnIds {
+                turn_id: "tu-1".to_owned(),
+                thread_id: "th-1".to_owned(),
+            },
         )
         .await
         .unwrap();
@@ -922,23 +955,23 @@ mod tests {
                     tool_name: "Read".into(),
                     tool_input: serde_json::json!({"file_path": "README.md"}),
                     tool_use_id: "read-1".into(),
-                    turn_id: String::new(),
-                    thread_id: String::new(),
+                    turn_id: "tu-1".into(),
+                    thread_id: "th-1".into(),
                 },
                 CrepEvent::ToolCallExecuted {
                     role: "backend".into(),
                     tool_use_id: "read-1".into(),
                     ok: true,
                     output_summary: "hello".into(),
-                    turn_id: String::new(),
-                    thread_id: String::new(),
+                    turn_id: "tu-1".into(),
+                    thread_id: "th-1".into(),
                 },
                 CrepEvent::RoleOutputDelta {
                     role: "backend".into(),
                     text_delta: "Done".into(),
                     sequence: 1,
-                    turn_id: String::new(),
-                    thread_id: String::new(),
+                    turn_id: "tu-1".into(),
+                    thread_id: "th-1".into(),
                 },
             ]
         );
@@ -955,6 +988,10 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             GeminiStreamState::default(),
             tx,
+            GeminiTurnIds {
+                turn_id: "tu-1".to_owned(),
+                thread_id: "th-1".to_owned(),
+            },
         )
         .await
         .unwrap();
@@ -988,6 +1025,10 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             GeminiStreamState::default(),
             tx,
+            GeminiTurnIds {
+                turn_id: "tu-1".to_owned(),
+                thread_id: "th-1".to_owned(),
+            },
         )
         .await
         .unwrap();
@@ -1019,6 +1060,10 @@ mod tests {
             Arc::new(Mutex::new(Vec::new())),
             GeminiStreamState::default(),
             tx,
+            GeminiTurnIds {
+                turn_id: "tu-1".to_owned(),
+                thread_id: "th-1".to_owned(),
+            },
         )
         .await
         .unwrap();

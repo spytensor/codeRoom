@@ -21,6 +21,7 @@ use super::work::{self, TurnWork};
 pub(super) struct CapturedTurn {
     pub(super) text: String,
     pub(super) turn_id: crate::turn::TurnId,
+    pub(super) thread_id: crate::turn::TurnId,
     /// Tool-call activity observed during this drain. Used by
     /// `send_and_drain` to gate auto-routing — a turn whose tools were
     /// systematically denied probably produced an ungrounded reply, and
@@ -200,10 +201,15 @@ pub(super) async fn drain_one_turn(
     bridge_rx: &mut tokio::sync::mpsc::Receiver<BridgeRequestSink>,
     role: &str,
     text: &str,
+    turn_id: &str,
+    thread_id: &str,
     host_role: &str,
     work: Arc<Mutex<TurnWork>>,
 ) -> Result<Option<CapturedTurn>> {
-    if let Err(error) = tx_user.send(UserMessage::Prompt(text.to_owned())).await {
+    if let Err(error) = tx_user
+        .send(UserMessage::prompt(text, turn_id, thread_id))
+        .await
+    {
         warn!(role, %error, "user-message channel for role closed");
         return Ok(None);
     }
@@ -342,6 +348,7 @@ pub(super) async fn drain_one_turn(
                             captured = Some(CapturedTurn {
                                 text: cleaned.text.clone(),
                                 turn_id: turn_id.clone(),
+                                thread_id: thread_id.clone(),
                                 activity: activity.clone(),
                             });
                             status.clear();

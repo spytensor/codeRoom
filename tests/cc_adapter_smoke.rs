@@ -51,8 +51,8 @@ async fn cc_smoke_says_hello() {
 
     handle
         .tx_user
-        .send(UserMessage::Prompt(
-            "Reply with exactly the word: HELLO".to_owned(),
+        .send(UserMessage::legacy_prompt(
+            "Reply with exactly the word: HELLO",
         ))
         .await
         .expect("send prompt");

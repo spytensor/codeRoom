@@ -419,6 +419,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
             Command::Journal(role) => {
                 write_journal(
                     &mut roles,
+                    &bus,
                     &mut renderer_rx,
                     &mut live_renderer_rx,
                     bridge_rx_holder.as_mut().expect("bridge_rx held by REPL"),
@@ -473,6 +474,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
             Command::SendTo { role, text } => {
                 send_and_drain(
                     &mut roles,
+                    &bus,
                     &mut renderer_rx,
                     &mut live_renderer_rx,
                     bridge_rx_holder.as_mut().expect("bridge_rx held by REPL"),
@@ -503,6 +505,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                 for role in names {
                     send_and_drain(
                         &mut roles,
+                        &bus,
                         &mut renderer_rx,
                         &mut live_renderer_rx,
                         bridge_rx_holder.as_mut().expect("bridge_rx held by REPL"),
@@ -518,6 +521,7 @@ pub async fn run_with_options(project_root: &Path, options: RunOptions) -> Resul
                 let host = cfg.host_role.clone();
                 send_and_drain(
                     &mut roles,
+                    &bus,
                     &mut renderer_rx,
                     &mut live_renderer_rx,
                     bridge_rx_holder.as_mut().expect("bridge_rx held by REPL"),
@@ -648,6 +652,7 @@ async fn mark_welcomed(coderoom_dir: &Path) {
 )]
 async fn send_and_drain(
     roles: &mut HashMap<String, RunningRole>,
+    bus: &Arc<MessageBus>,
     rx: &mut tokio::sync::broadcast::Receiver<CrepEvent>,
     live_rx: &mut tokio::sync::broadcast::Receiver<CrepEvent>,
     bridge_rx: &mut tokio::sync::mpsc::Receiver<BridgeRequestSink>,
@@ -671,17 +676,27 @@ async fn send_and_drain(
 
     // Worklist of pending turns. The initial entry is the user's
     // direct dispatch; auto-routed follow-ups are appended below.
-    let mut queue: VecDeque<(String, String)> = VecDeque::new();
-    queue.push_back((role.to_owned(), text.to_owned()));
+    let thread_id = crate::turn::new_thread_id();
+    let mut queue: VecDeque<QueuedTurn> = VecDeque::new();
+    queue.push_back(QueuedTurn {
+        role: role.to_owned(),
+        text: text.to_owned(),
+        turn_id: crate::turn::new_turn_id(),
+        thread_id,
+        parent_turn_id: None,
+    });
 
-    while let Some((current_role, current_text)) = queue.pop_front() {
+    while let Some(current) = queue.pop_front() {
+        publish_turn_dispatched(bus, &current).await;
         let Some(captured) = drain_one_turn_handling_ctrl_c(
             roles,
             rx,
             live_rx,
             bridge_rx,
-            &current_role,
-            &current_text,
+            &current.role,
+            &current.text,
+            &current.turn_id,
+            &current.thread_id,
             host_role,
             last_ctrl_c,
         )
@@ -709,7 +724,7 @@ async fn send_and_drain(
         };
 
         let known: Vec<&str> = roles.keys().map(String::as_str).collect();
-        let route_instructions = extract_route_instructions(&current_role, &captured.text, &known);
+        let route_instructions = extract_route_instructions(&current.role, &captured.text, &known);
 
         // Grounding gate: if the role's tool calls were systematically
         // denied, don't auto-route its explicit `@<peer>` delegations. The
@@ -740,9 +755,12 @@ async fn send_and_drain(
             println!(
                 "  {} {}",
                 "↳".with(output::FADE),
-                format!("skipping auto-route: @{current_role} had {summary} this turn{suggestion}")
-                    .with(output::DIM)
-                    .italic(),
+                format!(
+                    "skipping auto-route: @{} had {summary} this turn{suggestion}",
+                    current.role
+                )
+                .with(output::DIM)
+                .italic(),
             );
             continue;
         }
@@ -754,10 +772,10 @@ async fn send_and_drain(
         let width = crossterm::terminal::size().map_or(80, |(cols, _)| usize::from(cols));
         for instruction in route_instructions {
             let priors_hash = roles
-                .get(&current_role)
+                .get(&current.role)
                 .map_or("", |running| running.priors_hash.as_str());
             let brief = format_peer_brief(
-                &current_role,
+                &current.role,
                 priors_hash,
                 &captured.turn_id,
                 &instruction.brief,
@@ -771,17 +789,51 @@ async fn send_and_drain(
                 "{}",
                 render::format_reply_quote(
                     &instruction.target,
-                    &current_role,
+                    &current.role,
                     host_role,
                     &instruction.brief,
                     width
                 )
             );
-            queue.push_back((instruction.target, brief));
+            queue.push_back(QueuedTurn {
+                role: instruction.target,
+                text: brief,
+                turn_id: crate::turn::new_turn_id(),
+                thread_id: captured.thread_id.clone(),
+                parent_turn_id: Some(captured.turn_id.clone()),
+            });
         }
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct QueuedTurn {
+    role: String,
+    text: String,
+    turn_id: crate::turn::TurnId,
+    thread_id: crate::turn::TurnId,
+    parent_turn_id: Option<crate::turn::TurnId>,
+}
+
+async fn publish_turn_dispatched(bus: &Arc<MessageBus>, turn: &QueuedTurn) {
+    if let Err(error) = bus
+        .publish(CrepEvent::TurnDispatched {
+            role: turn.role.clone(),
+            turn_id: turn.turn_id.clone(),
+            thread_id: turn.thread_id.clone(),
+            parent_turn_id: turn.parent_turn_id.clone(),
+            queue_position: 0,
+        })
+        .await
+    {
+        warn!(
+            role = %turn.role,
+            %error,
+            "failed to publish turn dispatch event"
+        );
+    }
 }
 
 fn format_peer_brief(sender: &str, priors_hash: &str, turn_id: &str, payload: &str) -> String {
@@ -1055,6 +1107,8 @@ async fn drain_one_turn_handling_ctrl_c(
     bridge_rx: &mut tokio::sync::mpsc::Receiver<BridgeRequestSink>,
     role: &str,
     text: &str,
+    turn_id: &str,
+    thread_id: &str,
     host_role: &str,
     last_ctrl_c: &Arc<Mutex<Option<std::time::Instant>>>,
 ) -> Result<Option<CapturedTurn>> {
@@ -1074,6 +1128,8 @@ async fn drain_one_turn_handling_ctrl_c(
         bridge_rx,
         role,
         text,
+        turn_id,
+        thread_id,
         host_role,
         Arc::clone(&work_state),
     );
@@ -1111,7 +1167,7 @@ async fn drain_one_turn_handling_ctrl_c(
             // Fire interrupt; wait for the adapter to wrap up (its
             // `TurnInterrupted` or RoleSpoke), bounded by the cancel SLO
             // from § H.1.
-            let _ = interrupt_tx.send(crate::turn::LEGACY_TURN_ID.to_owned()).await;
+            let _ = interrupt_tx.send(turn_id.to_owned()).await;
             let escalate_at = tokio::time::sleep(CANCEL_SLO);
             tokio::pin!(escalate_at);
             tokio::select! {
@@ -1198,6 +1254,7 @@ const CANCEL_SLO: Duration = Duration::from_secs(5);
 )]
 async fn write_journal(
     roles: &mut HashMap<String, RunningRole>,
+    bus: &Arc<MessageBus>,
     rx: &mut tokio::sync::broadcast::Receiver<CrepEvent>,
     live_rx: &mut tokio::sync::broadcast::Receiver<CrepEvent>,
     bridge_rx: &mut tokio::sync::mpsc::Receiver<BridgeRequestSink>,
@@ -1222,6 +1279,14 @@ async fn write_journal(
         format!("asking @{role} for a journal entry...").with(output::DIM)
     );
 
+    let turn = QueuedTurn {
+        role: role.to_owned(),
+        text: prompt.to_owned(),
+        turn_id: crate::turn::new_turn_id(),
+        thread_id: crate::turn::new_thread_id(),
+        parent_turn_id: None,
+    };
+    publish_turn_dispatched(bus, &turn).await;
     let Ok(Some(captured)) = drain_one_turn_handling_ctrl_c(
         roles,
         rx,
@@ -1229,6 +1294,8 @@ async fn write_journal(
         bridge_rx,
         role,
         prompt,
+        &turn.turn_id,
+        &turn.thread_id,
         host_role,
         last_ctrl_c,
     )

@@ -369,6 +369,8 @@ struct PendingEntry {
     activity: Arc<Notify>,
     partial_text: Arc<Mutex<String>>,
     thread_id: Arc<Mutex<Option<String>>>,
+    coderoom_turn_id: TurnId,
+    coderoom_thread_id: TurnId,
 }
 
 #[derive(Clone)]
@@ -419,7 +421,9 @@ impl RpcClient {
         params: Value,
         id: u64,
     ) -> Result<Value, RpcError> {
-        self.request_with_id_capture(method, params, id).await.0
+        self.request_with_id_capture(method, params, id, None)
+            .await
+            .0
     }
 
     async fn request_with_id_capture(
@@ -427,6 +431,7 @@ impl RpcClient {
         method: &str,
         params: Value,
         id: u64,
+        turn_ids: Option<(TurnId, TurnId)>,
     ) -> (Result<Value, RpcError>, String, Option<String>) {
         let envelope = serde_json::json!({
             "jsonrpc": "2.0",
@@ -438,6 +443,12 @@ impl RpcClient {
         let activity = Arc::new(Notify::new());
         let partial_text = Arc::new(Mutex::new(String::new()));
         let thread_id = Arc::new(Mutex::new(None));
+        let (coderoom_turn_id, coderoom_thread_id) = turn_ids.unwrap_or_else(|| {
+            (
+                crate::turn::LEGACY_TURN_ID.into(),
+                crate::turn::LEGACY_TURN_ID.into(),
+            )
+        });
         self.pending.lock().await.insert(
             id,
             PendingEntry {
@@ -445,6 +456,8 @@ impl RpcClient {
                 activity: Arc::clone(&activity),
                 partial_text: Arc::clone(&partial_text),
                 thread_id: Arc::clone(&thread_id),
+                coderoom_turn_id,
+                coderoom_thread_id,
             },
         );
         let _guard = PendingRequestGuard {
@@ -663,18 +676,23 @@ async fn read_rpc_loop(
                             Arc::clone(&entry.activity),
                             Arc::clone(&entry.partial_text),
                             Arc::clone(&entry.thread_id),
+                            entry.coderoom_turn_id.clone(),
+                            entry.coderoom_thread_id.clone(),
                         )
                     })
                 } else {
                     None
                 };
-                if let Some((activity, _, event_thread_id)) = &request_state {
+                if let Some((activity, _, event_thread_id, _, _)) = &request_state {
                     activity.notify_one();
                     if let Some(thread_id) = codex_event_thread_id(&value) {
                         *event_thread_id.lock().await = Some(thread_id);
                     }
                 }
                 if let Some(mut event) = codex_notification_to_event(&runtime.role, &value) {
+                    if let Some((_, _, _, turn_id, thread_id)) = &request_state {
+                        stamp_event_ids(&mut event, turn_id, thread_id);
+                    }
                     if let CrepEvent::RoleOutputDelta {
                         text_delta,
                         sequence,
@@ -687,7 +705,7 @@ async fn read_rpc_loop(
                         } else {
                             fallback_delta_sequence = fallback_delta_sequence.max(*sequence);
                         }
-                        if let Some((_, partial_text, _)) = &request_state {
+                        if let Some((_, partial_text, _, _, _)) = &request_state {
                             partial_text.lock().await.push_str(text_delta);
                         }
                         let _ = runtime.events.try_send(event);
@@ -1139,6 +1157,53 @@ fn codex_notification_to_event(role: &str, value: &Value) -> Option<CrepEvent> {
     }
 }
 
+fn stamp_event_ids(event: &mut CrepEvent, turn_id: &str, thread_id: &str) {
+    match event {
+        CrepEvent::WorkTitle {
+            turn_id: event_turn_id,
+            thread_id: event_thread_id,
+            ..
+        }
+        | CrepEvent::RoleSpoke {
+            turn_id: event_turn_id,
+            thread_id: event_thread_id,
+            ..
+        }
+        | CrepEvent::RoleOutputDelta {
+            turn_id: event_turn_id,
+            thread_id: event_thread_id,
+            ..
+        }
+        | CrepEvent::TurnInterrupted {
+            turn_id: event_turn_id,
+            thread_id: event_thread_id,
+            ..
+        }
+        | CrepEvent::ToolCallProposed {
+            turn_id: event_turn_id,
+            thread_id: event_thread_id,
+            ..
+        }
+        | CrepEvent::ToolCallExecuted {
+            turn_id: event_turn_id,
+            thread_id: event_thread_id,
+            ..
+        }
+        | CrepEvent::PermissionDenied {
+            turn_id: event_turn_id,
+            thread_id: event_thread_id,
+            ..
+        } => {
+            turn_id.clone_into(event_turn_id);
+            thread_id.clone_into(event_thread_id);
+        }
+        CrepEvent::TurnDispatched { .. }
+        | CrepEvent::RoleStarted { .. }
+        | CrepEvent::RoleSessionUpdated { .. }
+        | CrepEvent::RoleStopped { .. } => {}
+    }
+}
+
 /// Render codex's `command` array (e.g. `["/bin/bash", "-lc", "ls foo"]`)
 /// as a single human-readable string for tool-call summaries. The common
 /// `bash -c <script>` / `bash -lc <script>` shape collapses to just the
@@ -1206,7 +1271,9 @@ async fn write_loop(
         let UserMessage::Prompt(prompt) = msg else {
             continue;
         };
-        let prompt = degrade_image_refs_for_codex(&prompt);
+        let turn_id = prompt.turn_id.clone();
+        let thread_id_for_events = prompt.thread_id.clone();
+        let prompt = degrade_image_refs_for_codex(&prompt.text);
         let params = codex_tool_call_params(
             &prompt,
             &priors_text,
@@ -1223,7 +1290,12 @@ async fn write_loop(
         let request_id = client.alloc_id().await;
         *current_tools_call.lock().await = Some(request_id);
         let (outcome, partial_text, event_thread_id) = client
-            .request_with_id_capture("tools/call", params, request_id)
+            .request_with_id_capture(
+                "tools/call",
+                params,
+                request_id,
+                Some((turn_id.clone(), thread_id_for_events.clone())),
+            )
             .await;
         *current_tools_call.lock().await = None;
 
@@ -1257,7 +1329,12 @@ async fn write_loop(
                     let _ = runtime
                         .base
                         .events
-                        .send(turn_interrupted_event(&runtime.base.role, &partial_text))
+                        .send(turn_interrupted_event(
+                            &runtime.base.role,
+                            &partial_text,
+                            &turn_id,
+                            &thread_id_for_events,
+                        ))
                         .await;
                     continue;
                 }
@@ -1277,9 +1354,14 @@ async fn write_loop(
                     }
                 }
                 let text = extract_text_from_tool_result(&result);
-                for event in
-                    crate::adapter::role_spoke_events_from_text(&runtime.base.role, &text, 0.0, 0)
-                {
+                for event in crate::adapter::role_spoke_events_from_text_with_ids(
+                    &runtime.base.role,
+                    &text,
+                    0.0,
+                    0,
+                    &turn_id,
+                    &thread_id_for_events,
+                ) {
                     let _ = runtime.base.events.send(event).await;
                 }
             }
@@ -1303,7 +1385,12 @@ async fn write_loop(
                     let _ = runtime
                         .base
                         .events
-                        .send(turn_interrupted_event(&runtime.base.role, &partial_text))
+                        .send(turn_interrupted_event(
+                            &runtime.base.role,
+                            &partial_text,
+                            &turn_id,
+                            &thread_id_for_events,
+                        ))
                         .await;
                     continue;
                 }
@@ -1317,8 +1404,8 @@ async fn write_loop(
                         mentions: Vec::new(),
                         cost_usd: 0.0,
                         cache_read: 0,
-                        turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-                        thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                        turn_id,
+                        thread_id: thread_id_for_events,
                     })
                     .await;
             }
@@ -1327,7 +1414,12 @@ async fn write_loop(
     debug!(role = %runtime.base.role, "codex write loop exiting");
 }
 
-fn turn_interrupted_event(role: &str, partial_text: &str) -> CrepEvent {
+fn turn_interrupted_event(
+    role: &str,
+    partial_text: &str,
+    turn_id: &str,
+    thread_id: &str,
+) -> CrepEvent {
     let trimmed = partial_text.trim().to_owned();
     let partial_mentions = if trimmed.is_empty() {
         Vec::new()
@@ -1336,8 +1428,8 @@ fn turn_interrupted_event(role: &str, partial_text: &str) -> CrepEvent {
     };
     CrepEvent::TurnInterrupted {
         role: role.to_owned(),
-        turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
-        thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+        turn_id: turn_id.to_owned(),
+        thread_id: thread_id.to_owned(),
         source: crate::crep::InterruptSource::UserHalt,
         partial_text: if trimmed.is_empty() {
             None
@@ -2061,15 +2153,20 @@ mod tests {
 
     #[test]
     fn interrupted_event_carries_partial_text_and_mentions() {
-        let event = turn_interrupted_event("security", "partial reply for @backend\n");
+        let event =
+            turn_interrupted_event("security", "partial reply for @backend\n", "tu-1", "th-1");
         match event {
             CrepEvent::TurnInterrupted {
                 role,
+                turn_id,
+                thread_id,
                 partial_text,
                 partial_mentions,
                 ..
             } => {
                 assert_eq!(role, "security");
+                assert_eq!(turn_id, "tu-1");
+                assert_eq!(thread_id, "th-1");
                 assert_eq!(partial_text.as_deref(), Some("partial reply for @backend"));
                 assert_eq!(partial_mentions, vec!["backend"]);
             }

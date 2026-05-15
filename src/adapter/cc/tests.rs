@@ -219,6 +219,85 @@ fn translate_result_yields_permission_denied_events() {
 }
 
 #[test]
+fn translate_for_turn_stamps_cc_events_with_turn_ids() {
+    let assistant = json!({
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "text", "text": "```cr-task\nInspect permissions\n```"},
+                {
+                    "type": "tool_use",
+                    "id": "toolu_01abc",
+                    "name": "Read",
+                    "input": {"file_path": "README.md"}
+                }
+            ]
+        }
+    });
+    let user = json!({
+        "type": "user",
+        "message": {
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_01abc",
+                    "content": "ok",
+                    "is_error": false
+                }
+            ]
+        }
+    });
+    let result = json!({
+        "type": "result",
+        "subtype": "success",
+        "result": "Done",
+        "permission_denials": [
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf target"},
+                "reason": "blocked"
+            }
+        ]
+    });
+
+    let events = [
+        translate_for_turn("backend", "h", &assistant, "tu-1", "th-1"),
+        translate_for_turn("backend", "h", &user, "tu-1", "th-1"),
+        translate_for_turn("backend", "h", &result, "tu-1", "th-1"),
+    ]
+    .concat();
+
+    assert!(matches!(events[0], CrepEvent::WorkTitle { .. }));
+    assert!(matches!(events[1], CrepEvent::ToolCallProposed { .. }));
+    assert!(matches!(events[2], CrepEvent::ToolCallExecuted { .. }));
+    assert!(matches!(events[3], CrepEvent::PermissionDenied { .. }));
+    assert!(matches!(events[4], CrepEvent::RoleSpoke { .. }));
+    for event in events {
+        match event {
+            CrepEvent::WorkTitle {
+                turn_id, thread_id, ..
+            }
+            | CrepEvent::ToolCallProposed {
+                turn_id, thread_id, ..
+            }
+            | CrepEvent::ToolCallExecuted {
+                turn_id, thread_id, ..
+            }
+            | CrepEvent::PermissionDenied {
+                turn_id, thread_id, ..
+            }
+            | CrepEvent::RoleSpoke {
+                turn_id, thread_id, ..
+            } => {
+                assert_eq!(turn_id, "tu-1");
+                assert_eq!(thread_id, "th-1");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn hook_settings_points_at_hidden_hook_command() {
     let tmp = tempfile::tempdir().unwrap();
     let policy_path = tmp.path().join("permission_policy.json");
@@ -347,20 +426,22 @@ async fn write_stdin_waits_for_turn_boundary_before_next_prompt() {
     let mut lines = BufReader::new(client).lines();
     let (tx_user, rx_user) = mpsc::channel(4);
     let (turn_done_tx, turn_done_rx) = mpsc::channel(4);
+    let current_turn = Arc::new(Mutex::new(None));
 
     tokio::spawn(write_stdin(
         "backend".to_owned(),
         rx_user,
         server,
         turn_done_rx,
+        Arc::clone(&current_turn),
     ));
 
     tx_user
-        .send(UserMessage::Prompt("first".into()))
+        .send(UserMessage::legacy_prompt("first"))
         .await
         .unwrap();
     tx_user
-        .send(UserMessage::Prompt("second".into()))
+        .send(UserMessage::legacy_prompt("second"))
         .await
         .unwrap();
 
