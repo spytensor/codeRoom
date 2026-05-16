@@ -34,7 +34,7 @@ use crate::adapter::gemini::GeminiAdapter;
 use crate::adapter::{CompactResult, Engine, EngineAdapter, PermissionMode, UserMessage};
 use crate::bus::MessageBus;
 use crate::config::{Config, CODEROOM_DIR};
-use crate::crep::{CrepEvent, StopReason};
+use crate::crep::{CrepEvent, StopReason, TurnOutcome};
 use crate::output;
 use crate::permissions::{BridgeHandle, BridgeRequestSink, PermissionPolicy};
 use crate::priors;
@@ -926,6 +926,32 @@ async fn send_and_drain(
                 .with(output::DIM)
                 .italic(),
             );
+            continue;
+        }
+
+        // Outcome short-circuit (amendment A-014): the role declared a
+        // non-`Continue` conversation outcome via the `cr-status:`
+        // marker, so do not route this reply's delegations. We narrate
+        // the skip only when the reply *did* contain explicit
+        // delegations (`@role:` blocks); a clean reply that ends with
+        // `cr-status: converged` and no delegation lines stops the
+        // chain silently. Decision order matters: this runs *after*
+        // the grounding gate above, because an ungrounded role's
+        // outcome claim is itself a guess.
+        if !matches!(captured.outcome, TurnOutcome::Continue) {
+            if !route_instructions.is_empty() {
+                println!(
+                    "  {} {}",
+                    "↳".with(output::FADE),
+                    format!(
+                        "skipping auto-route: @{} declared {} — not routing this reply's delegations",
+                        current.role,
+                        captured.outcome.label(),
+                    )
+                    .with(output::DIM)
+                    .italic(),
+                );
+            }
             continue;
         }
 

@@ -92,6 +92,7 @@ fn show_filter_keeps_role_events_and_applies_tail() {
             cache_read: 0,
             turn_id: String::new(),
             thread_id: String::new(),
+            outcome: crate::crep::TurnOutcome::Continue,
         },
         CrepEvent::ToolCallProposed {
             role: "backend".into(),
@@ -149,6 +150,7 @@ fn show_normalizes_legacy_cr_task_role_spoke() {
         cache_read: 0,
         turn_id: String::new(),
         thread_id: String::new(),
+        outcome: crate::crep::TurnOutcome::Continue,
     };
 
     let normalized = normalize_show_event(&event);
@@ -629,7 +631,7 @@ fn snapshot_boot_dashboard_at_80() {
 │ ● @host      cc     · 1M · ask          • /journal <role> captures today's … │
 │ ● @security  codex  · default · bypass                                       │
 │                                         what's new in 0.4.4                  │
-│  2.4k  base tokens loaded               • legacy budget_per_role_usd projec… │
+│  2.8k  base tokens loaded               • legacy budget_per_role_usd projec… │
 │ /repo/codeRoom                          • older top-level user defaults sti… │
 │                                         • hotfix release keeps v0.4.3 SDLC … │
 │                                                                              │
@@ -664,6 +666,7 @@ fn snapshot_render_event_lines() {
             cache_read: 42,
             turn_id: String::new(),
             thread_id: String::new(),
+            outcome: crate::crep::TurnOutcome::Continue,
         },
         CrepEvent::ToolCallProposed {
             role: "backend".into(),
@@ -721,6 +724,7 @@ fn multi_line_role_spoke_uses_inset_message_block() {
         mentions: vec![],
         turn_id: String::new(),
         thread_id: String::new(),
+        outcome: crate::crep::TurnOutcome::Continue,
     };
     let rendered = strip_ansi(&render_event_line(&event, "host"));
     insta::assert_snapshot!(rendered, @r"
@@ -899,6 +903,7 @@ fn role_spoke_renders_markdown_lite_with_wrapping() {
         mentions: vec![],
         turn_id: String::new(),
         thread_id: String::new(),
+        outcome: crate::crep::TurnOutcome::Continue,
     };
     let rendered = strip_ansi(&render_event_line_at_width(&event, "host", 48));
 

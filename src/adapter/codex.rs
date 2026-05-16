@@ -1414,6 +1414,7 @@ async fn write_loop(
                         cache_read: 0,
                         turn_id,
                         thread_id: thread_id_for_events,
+                        outcome: crate::crep::TurnOutcome::Continue,
                     })
                     .await;
             }

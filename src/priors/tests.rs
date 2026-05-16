@@ -67,6 +67,21 @@ fn kernel_protocol_teaches_peer_quote_envelope() {
 }
 
 #[test]
+fn kernel_protocol_teaches_turn_outcome_contract() {
+    // A-014: the kernel must teach the `cr-status:` marker so roles
+    // can declare conversation-level outcomes the dispatcher reads.
+    // These substrings are load-bearing — the adapter parser only
+    // recognises these exact variant strings.
+    assert!(KERNEL_PROTOCOL.contains("## Turn outcome contract"));
+    assert!(KERNEL_PROTOCOL.contains("`cr-status: <variant>`"));
+    assert!(KERNEL_PROTOCOL.contains("on its own final line"));
+    assert!(KERNEL_PROTOCOL.contains("nothing after it"));
+    assert!(KERNEL_PROTOCOL.contains("`no_increment`"));
+    assert!(KERNEL_PROTOCOL.contains("`converged`"));
+    assert!(KERNEL_PROTOCOL.contains("`needs_user`"));
+}
+
+#[test]
 fn shared_then_role_separated_by_fence() {
     let tmp = fixture("backend", "BACKEND_PRIORS");
     fs::write(coderoom_of(&tmp).join(SHARED_FILE), "SHARED_PRIORS").unwrap();

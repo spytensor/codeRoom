@@ -122,6 +122,7 @@ pub(super) fn normalize_show_event(event: &CrepEvent) -> Vec<CrepEvent> {
         cache_read,
         turn_id,
         thread_id,
+        outcome,
     } = event
     else {
         return vec![event.clone()];
@@ -147,6 +148,7 @@ pub(super) fn normalize_show_event(event: &CrepEvent) -> Vec<CrepEvent> {
             cache_read: *cache_read,
             turn_id: turn_id.clone(),
             thread_id: thread_id.clone(),
+            outcome: *outcome,
         });
     }
     events

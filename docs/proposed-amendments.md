@@ -870,6 +870,158 @@ CREP protocol: new `SkillInvoked` event. Additive.
 
 *(pending review)*
 
+## A-014: Structured turn outcome for routing termination
+
+- **Status:** proposed
+- **Filed:** 2026-05-16
+- **Touches:** Kernel protocol routing contract in `src/priors.rs`. `CrepEvent::RoleSpoke` schema in `src/crep.rs`. Auto-router short-circuit in `src/repl.rs::send_and_drain` (sits next to the grounding gate at line 899). Adjacent to A-005 (supersession by #163 mechanical caps), A-007 (peer-quote envelope), and A-012 (two-phase turn writes — see migration note).
+
+### Problem
+
+A-005 was superseded by #163, which restored mechanical dispatcher
+limits (default max hop depth 5, fan-out 8, queue 32) plus the
+explicit `@role:` delegation separator from #172. Those changes prevent
+*runaway* chains but do not prevent *unnecessary* chains within the
+limits:
+
+- A peer receiving a brief outside its lens still produces a full
+  turn — priors push it to "stay inside your domain" and "contribute",
+  and there is no syntactic way to opt out cheaply.
+- A host that has finished synthesising still tends to close with a
+  `@role:` line, which the router treats as a fresh delegation rather
+  than the closing summary the host intended.
+- Sibling routing (host → @a, host → @b, host → @c, each producing a
+  `@host:` follow-up) burns three hops worth of tokens even when the
+  host already knows the answer after the first reply.
+
+The mechanical floor is correct (#163's caps are not arbitrary; they
+prevent the worst case). The missing piece is a *semantic* signal: a
+role-level way to say "this reply is the end of the chain" or "I have
+no domain-specific input" that the dispatcher can read and act on
+without re-interpreting natural language. Today the convergence signal
+only lives in the absence of a `@role:` line, which is a single-bit
+encoding: roles can say "route this" but not "do not route this".
+
+### Alternatives considered
+
+1. **Lower the depth cap below 5.** Treats the symptom (fewer hops
+   possible) but penalises legitimate longer chains the same way it
+   penalises waste. The right number is not knowable in advance.
+   Rejected.
+2. **Confirmation prompt before each follow-up hop.** Breaks the
+   chat illusion; the user becomes the manual router. Already
+   rejected in A-005. Still rejected.
+3. **Priors-only fix (rewrite host.md to teach restraint).** The
+   teaching belongs there, but priors cannot enforce a contract the
+   dispatcher does not understand — a role that produces a closing
+   `@user: here is the answer` still gets its mention treated as a
+   route. Necessary but not sufficient.
+4. **Heuristic detection on the dispatcher side ("looks like a
+   summary, skip routing").** Brittle, regex-driven, and silently
+   wrong. Rejected.
+5. **Structured `TurnOutcome` field on `RoleSpoke` + trailing
+   `cr-status: <variant>` marker the adapter parses and strips.**
+   Accepted (this amendment). The role declares what just happened
+   in a single protocol-level slot; the router reads the slot, not
+   prose.
+
+### Proposed change
+
+**Protocol (`src/crep.rs`):**
+
+```rust
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnOutcome {
+    #[default]
+    Continue,     // route any `@role:` delegations as today
+    NoIncrement,  // role has no domain-specific input; do not route
+    Converged,    // thread is resolved; do not route
+    NeedsUser,    // user decision required; halt the chain
+}
+
+pub enum CrepEvent {
+    RoleSpoke {
+        // ... existing fields ...
+        #[serde(default)]
+        outcome: TurnOutcome,
+    },
+    // ... other variants unchanged ...
+}
+```
+
+`#[serde(default)]` keeps v0.1–v0.4 logs deserialising as `Continue`;
+adapters that do not parse the marker emit `Continue` automatically.
+
+**Convention (kernel layer in `src/priors.rs::KERNEL_PROTOCOL`):**
+a new `## Turn outcome contract` section teaches roles that the last
+non-blank line of a reply may be `cr-status: <variant>` with one of
+the three variants above; adapters strip the line before passing the
+text to the bus. This sits at protocol authority — `Authority:
+protocol` already overrides project and role priors, which is the
+right place for routing-semantics contracts to live (alongside the
+`<<<peer-quote>>>` and routing contracts already in this layer).
+
+**Dispatcher (`src/repl.rs::send_and_drain`):** the existing grounding
+gate at the top of the per-turn loop is followed by a sibling check:
+
+```rust
+if !matches!(captured.outcome, TurnOutcome::Continue)
+    && !route_instructions.is_empty()
+{
+    println!(
+        "  {} {}",
+        "↳".with(output::FADE),
+        format!(
+            "skipping auto-route: @{} declared {} — not routing this reply's delegations",
+            current.role,
+            captured.outcome.label(),
+        ).with(output::DIM).italic(),
+    );
+    continue;
+}
+```
+
+Decision order matters: the grounding gate runs first (an ungrounded
+role's outcome claim is itself a guess), then the outcome check, then
+the existing routing loop. A reply with no `@role:` delegations and a
+non-`Continue` outcome stops the chain silently; we only narrate when
+mentions existed and were dropped.
+
+### Migration impact
+
+User-facing: zero by default. Roles that do not learn the convention
+keep producing `Continue` and `send_and_drain` behaves exactly as
+today. Roles that adopt `cr-status: no_increment` for off-domain
+briefs shorten chains; hosts that adopt `cr-status: converged` close
+their synthesis turn even when it ends with a `@user` mention.
+
+CREP wire: one new field on `RoleSpoke`, `#[serde(default)]`. v0.4
+JSONL replays deserialise unchanged. `cr show` can grep
+`jq 'select(.outcome=="converged")'` for chain endings.
+
+A-005 / #163 compatibility: A-014 does NOT reintroduce or alter any
+mechanical cap. The `RouteDispatcher`'s depth / fan-out / queue
+limits remain the structural runaway bound. A-014 adds a semantic
+*convergence* signal that lives strictly inside the per-turn loop,
+upstream of `RouteDispatcher::enqueue_auto_route`. The two layers
+compose: caps catch what semantics fail to express, semantics shorten
+what caps would otherwise allow.
+
+A-012 interaction: if/when A-012 (two-phase turn writes) is accepted,
+`outcome` migrates from `RoleSpoke` to `TurnCommit` — a one-line
+field move, schema migration is trivial. Designed to not block A-012.
+
+Spend: A-014 should reduce spend on long discussion-class chains
+because peers exit cheaply with one short turn ending in
+`cr-status: no_increment` instead of a paragraph and a re-routing
+mention. Code-change chains are unaffected — they terminate naturally
+on tool work, not discussion.
+
+### Decision
+
+*(pending review)*
+
 ## Implemented amendments
 
 Implemented amendments are marked inline with `implemented in vX.Y.Z`.

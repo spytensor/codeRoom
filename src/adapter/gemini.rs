@@ -322,6 +322,7 @@ impl GeminiLoop {
                             cache_read: 0,
                             turn_id,
                             thread_id,
+                            outcome: crate::crep::TurnOutcome::Continue,
                         })
                         .await;
                 }
