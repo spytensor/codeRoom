@@ -459,7 +459,8 @@ pub(crate) fn role_spoke_events_from_text_with_ids(
             thread_id: thread_id.to_owned(),
         });
     }
-    let body = extracted.body.trim().to_owned();
+    let mut body = extracted.body.trim().to_owned();
+    let outcome = extract_status_marker(&mut body);
     let mentions = cc::parse_mentions(&body);
     events.push(CrepEvent::RoleSpoke {
         role: role.to_owned(),
@@ -469,8 +470,74 @@ pub(crate) fn role_spoke_events_from_text_with_ids(
         cache_read,
         turn_id: turn_id.to_owned(),
         thread_id: thread_id.to_owned(),
+        outcome,
     });
     events
+}
+
+/// Parse the trailing `cr-status: <variant>` marker introduced by
+/// amendment A-014 and, when present, strip it from `text`.
+///
+/// The marker is recognised only when it forms the entire last
+/// non-blank line of the reply — this avoids accidentally swallowing
+/// mid-paragraph occurrences and keeps the role's prose visible. A
+/// missing marker, or one with an unrecognised variant, leaves `text`
+/// unchanged and yields [`crate::crep::TurnOutcome::Continue`],
+/// preserving today's auto-routing behaviour. Recognised variants are
+/// stripped along with any trailing whitespace they leave behind, so
+/// the user-facing reply does not show the protocol exhaust. An empty
+/// variant (`cr-status:` with nothing after the colon) is treated as
+/// a malformed marker: still `Continue`, but the line is stripped so
+/// the bare marker doesn't bleed into the reply.
+pub(crate) fn extract_status_marker(text: &mut String) -> crate::crep::TurnOutcome {
+    use crate::crep::TurnOutcome;
+
+    // Locate the last non-blank line.
+    let bytes = text.as_bytes();
+    let mut end = bytes.len();
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    let line_start = bytes[..end]
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |i| i + 1);
+    let last_line = text[line_start..end].trim();
+
+    let Some(rest) = last_line.strip_prefix("cr-status:") else {
+        return TurnOutcome::Continue;
+    };
+    let variant = rest.trim();
+    let outcome = match variant {
+        "continue" => TurnOutcome::Continue,
+        "no_increment" => TurnOutcome::NoIncrement,
+        "converged" => TurnOutcome::Converged,
+        "needs_user" => TurnOutcome::NeedsUser,
+        "" => {
+            // Malformed but clearly intended-as-marker: strip the line
+            // so the user doesn't see a bare `cr-status:` and treat as
+            // Continue so the chain keeps today's behaviour.
+            tracing::warn!("empty cr-status variant; stripping marker and treating as Continue");
+            TurnOutcome::Continue
+        }
+        other => {
+            // Unknown variant: leave the line in place so the
+            // unrecognised directive is at least visible in the
+            // transcript for diagnosis.
+            tracing::warn!(marker = %other, "unknown cr-status marker; ignoring");
+            return TurnOutcome::Continue;
+        }
+    };
+
+    // Strip the marker line and any whitespace immediately preceding
+    // it, so the cleaned reply doesn't end with a hanging blank line.
+    let mut new_len = line_start;
+    let bytes = text.as_bytes();
+    while new_len > 0 && bytes[new_len - 1].is_ascii_whitespace() {
+        new_len -= 1;
+    }
+    text.truncate(new_len);
+    outcome
 }
 
 /// Errors an adapter may surface during start/teardown.
@@ -652,6 +719,7 @@ mod tests {
                 cache_read: 42,
                 turn_id: crate::turn::LEGACY_TURN_ID.to_owned(),
                 thread_id: crate::turn::LEGACY_TURN_ID.to_owned(),
+                outcome: crate::crep::TurnOutcome::Continue,
             }
         );
     }
@@ -679,6 +747,120 @@ mod tests {
                 }
                 other => panic!("unexpected event: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn status_marker_absent_yields_continue_and_no_strip() {
+        let mut text = "I had a look — looks fine.".to_owned();
+        let outcome = extract_status_marker(&mut text);
+        assert_eq!(outcome, crate::crep::TurnOutcome::Continue);
+        assert_eq!(text, "I had a look — looks fine.");
+    }
+
+    #[test]
+    fn status_marker_recognised_variants_strip_and_classify() {
+        for (marker, expected) in [
+            ("continue", crate::crep::TurnOutcome::Continue),
+            ("no_increment", crate::crep::TurnOutcome::NoIncrement),
+            ("converged", crate::crep::TurnOutcome::Converged),
+            ("needs_user", crate::crep::TurnOutcome::NeedsUser),
+        ] {
+            let mut text = format!("Findings for @backend.\n\ncr-status: {marker}");
+            let outcome = extract_status_marker(&mut text);
+            assert_eq!(outcome, expected, "marker {marker}");
+            assert_eq!(text, "Findings for @backend.", "marker {marker}");
+        }
+    }
+
+    #[test]
+    fn status_marker_unknown_variant_leaves_text_alone() {
+        let mut text = "body\ncr-status: maybe".to_owned();
+        let outcome = extract_status_marker(&mut text);
+        assert_eq!(outcome, crate::crep::TurnOutcome::Continue);
+        assert_eq!(text, "body\ncr-status: maybe");
+    }
+
+    #[test]
+    fn status_marker_empty_variant_strips_and_returns_continue() {
+        // `cr-status:` with no variant (or only whitespace after the
+        // colon) is a malformed but clearly-intended marker. Strip the
+        // line so the user doesn't see a bare `cr-status:` in the
+        // reply, and return Continue so the chain keeps today's
+        // behaviour.
+        for malformed in ["body\ncr-status:", "body\ncr-status:   ", "body\ncr-status:\n"] {
+            let mut text = malformed.to_owned();
+            let outcome = extract_status_marker(&mut text);
+            assert_eq!(
+                outcome,
+                crate::crep::TurnOutcome::Continue,
+                "input {malformed:?}"
+            );
+            assert_eq!(text, "body", "input {malformed:?}");
+        }
+    }
+
+    #[test]
+    fn status_marker_only_recognised_at_end() {
+        // Mid-paragraph occurrences must not be swallowed — the marker
+        // only counts as the entire last non-blank line.
+        let mut text = "cr-status: converged was something we discussed.\nMore body.".to_owned();
+        let outcome = extract_status_marker(&mut text);
+        assert_eq!(outcome, crate::crep::TurnOutcome::Continue);
+        assert_eq!(
+            text,
+            "cr-status: converged was something we discussed.\nMore body."
+        );
+    }
+
+    #[test]
+    fn status_marker_tolerates_trailing_whitespace_and_extra_blank_lines() {
+        let mut text = "body\n\n\ncr-status:   converged   \n\n\n".to_owned();
+        let outcome = extract_status_marker(&mut text);
+        assert_eq!(outcome, crate::crep::TurnOutcome::Converged);
+        assert_eq!(text, "body");
+    }
+
+    #[test]
+    fn status_marker_alone_yields_empty_text() {
+        let mut text = "cr-status: needs_user".to_owned();
+        let outcome = extract_status_marker(&mut text);
+        assert_eq!(outcome, crate::crep::TurnOutcome::NeedsUser);
+        assert_eq!(text, "");
+    }
+
+    #[test]
+    fn status_marker_multiple_markers_only_last_is_processed() {
+        // Documented behaviour: only the final non-blank line is the
+        // marker. An earlier `cr-status:` line stays in the body
+        // verbatim — the role wrote it, the user should see it. Lock
+        // the shape so a future refactor doesn't quietly change it.
+        let mut text = "Earlier work.\ncr-status: converged\n\nMore body.\ncr-status: needs_user"
+            .to_owned();
+        let outcome = extract_status_marker(&mut text);
+        assert_eq!(outcome, crate::crep::TurnOutcome::NeedsUser);
+        assert_eq!(text, "Earlier work.\ncr-status: converged\n\nMore body.");
+    }
+
+    #[test]
+    fn role_spoke_events_strip_status_marker_and_propagate_outcome() {
+        let events = role_spoke_events_from_text(
+            "security",
+            "Nothing in my lens here.\n\ncr-status: no_increment",
+            0.0,
+            0,
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            CrepEvent::RoleSpoke {
+                text,
+                outcome,
+                ..
+            } => {
+                assert_eq!(text, "Nothing in my lens here.");
+                assert_eq!(*outcome, crate::crep::TurnOutcome::NoIncrement);
+            }
+            other => panic!("expected RoleSpoke, got {other:?}"),
         }
     }
 
