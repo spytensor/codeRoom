@@ -74,7 +74,7 @@ fs2 = "0.4"
 nix = { version = "0.31", default-features = false, features = ["signal"] }
 
 [dev-dependencies]
-assert_cmd = "2.0"
+assert_cmd = "2.2"
 predicates = "3.1"
 pretty_assertions = "1.4"
 insta = "1"
